@@ -17,14 +17,9 @@ import { audio } from './audio.js';
 import { hands, HANDS, type HandState } from './hand-input.js';
 import { getHeadWorld, getHeadYaw, yawForward } from './rig.js';
 import { sceneRefs } from './scene-system.js';
-import { CLIMB_TRIGGER_S, game, Phase, setPhase } from './state.js';
-import {
-  clamp,
-  pathX,
-  terrainHeight,
-  TRAIL_HALF_WIDTH,
-  WALL_S,
-} from './terrain.js';
+import { holding } from './equipment.js';
+import { currentLevel } from './level.js';
+import { game, Phase } from './state.js';
 import { buildPole, POLE_TIP_DISTANCE } from './world-builders.js';
 
 /** Body speed per unit of planted-hand speed. */
@@ -52,6 +47,8 @@ interface PoleState {
   /** Smoothed visual orientation. */
   readonly quat: Quaternion;
 }
+
+const groundHeight = (x: number, z: number): number => currentLevel().groundAt(x, z);
 
 const Z_AXIS = new Vector3(0, 0, 1);
 const DOWN = new Vector3(0, -1, 0);
@@ -126,11 +123,11 @@ export class PoleSystem extends createSystem({}) {
     } else {
       // Coast on the snow, a little more drag when heading uphill.
       getHeadWorld(this.world, this.head);
-      const ahead = terrainHeight(
+      const ahead = groundHeight(
         this.head.x + game.velocity.x * 0.25,
         this.head.z + game.velocity.z * 0.25,
       );
-      const uphill = Math.max(0, ahead - terrainHeight(this.head.x, this.head.z));
+      const uphill = Math.max(0, ahead - groundHeight(this.head.x, this.head.z));
       game.velocity.multiplyScalar(Math.exp(-(1.3 + uphill * 6) * dt));
     }
     const v = Math.hypot(game.velocity.x, game.velocity.z);
@@ -143,7 +140,7 @@ export class PoleSystem extends createSystem({}) {
 
   /** Returns true if this pole is planted and being pushed. */
   private updatePole(hand: HandState, pole: PoleState, dt: number): boolean {
-    if (!hand.tracked) {
+    if (!hand.tracked || !holding(hand.handedness, 'poles')) {
       pole.mesh.visible = false;
       pole.planted = false;
       return false;
@@ -163,7 +160,7 @@ export class PoleSystem extends createSystem({}) {
     this.dir.copy(Z_AXIS).applyQuaternion(hand.quaternion);
     this.dir.multiplyScalar(1 - DOWN_BIAS).addScaledVector(DOWN, DOWN_BIAS).normalize();
     this.tip.copy(hand.position).addScaledVector(this.dir, POLE_TIP_DISTANCE);
-    const ground = terrainHeight(this.tip.x, this.tip.z);
+    const ground = groundHeight(this.tip.x, this.tip.z);
 
     if (!pole.planted && this.tip.y < ground + PLANT_DEPTH) {
       pole.planted = true;
@@ -224,13 +221,10 @@ export class PoleSystem extends createSystem({}) {
     const forward = keyboard.getKeyPressed('KeyW') || keyboard.getKeyPressed('ArrowUp');
     const back = keyboard.getKeyPressed('KeyS') || keyboard.getKeyPressed('ArrowDown');
     getHeadWorld(this.world, this.head);
-    // Follow the trail's direction so W always heads uphill along it.
-    const z = this.head.z;
-    this.fwd.set(pathX(z - 1) - pathX(z), 0, -1).normalize();
-    // gently steer back to the centre line
-    this.fwd.x += clamp((pathX(z) - this.head.x) * 0.15, -0.3, 0.3);
-    this.fwd.normalize();
-    const target = forward ? DESKTOP_SPEED : back ? -1.2 : 0;
+    // Follow the route so W always heads the right way along it.
+    currentLevel().walkDirection(this.head.x, this.head.z, this.fwd);
+    const cruise = currentLevel().desktopWalkSpeed ?? DESKTOP_SPEED;
+    const target = forward ? cruise : back ? -1.2 : 0;
     const vx = this.fwd.x * target;
     const vz = this.fwd.z * target;
     game.velocity.x += (vx - game.velocity.x) * Math.min(1, dt * 3);
@@ -249,7 +243,8 @@ export class PoleSystem extends createSystem({}) {
       const side = hand === hands.left ? -1 : 1;
       const phase = this.strideClock + (side > 0 ? Math.PI : 0);
       const swing = Math.sin(phase);
-      pole.mesh.visible = true;
+      pole.mesh.visible = holding(hand.handedness, 'poles');
+      if (!pole.mesh.visible) continue;
       pole.mesh.position
         .copy(this.head)
         .addScaledVector(this.right, side * 0.3)
@@ -259,7 +254,7 @@ export class PoleSystem extends createSystem({}) {
         .copy(pole.mesh.position)
         .addScaledVector(this.dir, 0.1 - swing * 0.45)
         .addScaledVector(this.right, side * 0.08);
-      this.tip.y = terrainHeight(this.tip.x, this.tip.z) - 0.1;
+      this.tip.y = groundHeight(this.tip.x, this.tip.z) - 0.1;
       this.dir.subVectors(this.tip, pole.mesh.position).normalize();
       pole.mesh.quaternion.setFromUnitVectors(Z_AXIS, this.dir);
       yawForward(yaw, this.dir);
@@ -273,34 +268,17 @@ export class PoleSystem extends createSystem({}) {
     }
   }
 
-  /** Keep the player on the trail corridor and glue their feet to the snow. */
+  /** Keep the player on the route and glue their feet to the snow. */
   private constrainToTrail(dt: number): void {
     const rig = this.player;
     rig.updateMatrixWorld(true);
     getHeadWorld(this.world, this.head);
-    let s = -this.head.z;
-    const centre = pathX(this.head.z);
-    const lateral = this.head.x - centre;
-    const clampedLateral = clamp(lateral, -TRAIL_HALF_WIDTH, TRAIL_HALF_WIDTH);
-    if (clampedLateral !== lateral) {
-      rig.position.x += clampedLateral - lateral;
-      game.velocity.x *= 0.5;
-    }
-    const clampedS = clamp(s, -6, WALL_S - 0.6);
-    if (clampedS !== s) {
-      rig.position.z -= clampedS - s;
-      game.velocity.z = 0;
-      s = clampedS;
-    }
-    const ground = terrainHeight(this.head.x, this.head.z);
-    rig.position.y += (ground - rig.position.y) * Math.min(1, dt * 12);
-
-    const remaining = Math.max(0, Math.round(WALL_S - s));
-    if (game.distanceToCliff.peek() !== remaining) game.distanceToCliff.value = remaining;
-
-    if (s >= CLIMB_TRIGGER_S) {
-      game.velocity.set(0, 0, 0);
-      setPhase(Phase.Climbing);
-    }
+    currentLevel().constrainWalk(this.head, rig, game.velocity, dt);
+    if (game.phase.peek() !== Phase.Poling) return;
+    rig.updateMatrixWorld(true);
+    getHeadWorld(this.world, this.head);
+    const floor = groundHeight(this.head.x, this.head.z);
+    rig.position.y += (floor - rig.position.y) * Math.min(1, dt * 12);
   }
+
 }

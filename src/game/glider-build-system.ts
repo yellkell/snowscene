@@ -79,7 +79,7 @@ export class GliderBuildSystem extends createSystem({
 
   init(): void {
     const base = new Vector3(WORKBENCH_POS.x, SUMMIT_Y, WORKBENCH_POS.z);
-    this.world.createTransformEntity(buildWorkbench(base), { persistent: true });
+    this.world.createTransformEntity(buildWorkbench(base), { parent: sceneRefs.tutorialRoot ?? undefined, persistent: true });
 
     const kit = buildGlider();
     this.kitRoot = kit.root;
@@ -91,7 +91,7 @@ export class GliderBuildSystem extends createSystem({
     this.kitRoot.traverse((child) => {
       child.castShadow = true;
     });
-    this.world.createTransformEntity(this.kitRoot, { persistent: true });
+    this.world.createTransformEntity(this.kitRoot, { parent: sceneRefs.tutorialRoot ?? undefined, persistent: true });
     this.kitRoot.updateMatrixWorld(true);
     const kitQuat = this.kitRoot.getWorldQuaternion(new Quaternion());
     const yawed = (angle: number) =>
@@ -138,7 +138,7 @@ export class GliderBuildSystem extends createSystem({
       group.scale.setScalar(KIT_SCALE);
       group.position.copy(rest[id].pos);
       group.quaternion.copy(rest[id].quat);
-      const entity = this.world.createTransformEntity(group, { persistent: true });
+      const entity = this.world.createTransformEntity(group, { parent: sceneRefs.tutorialRoot ?? undefined, persistent: true });
       entity.addComponent(GliderPart, { partId: id, placed: false });
       this.parts.set(id, {
         entity,

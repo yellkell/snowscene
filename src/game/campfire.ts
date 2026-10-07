@@ -19,6 +19,7 @@ import {
   Color,
   ConeGeometry,
   createSystem,
+  type Entity,
   CylinderGeometry,
   DoubleSide,
   Group,
@@ -28,6 +29,7 @@ import {
   Mesh,
   MeshStandardMaterial,
   NormalBlending,
+  Object3D,
   PlaneGeometry,
   PointLight,
   Points,
@@ -39,6 +41,7 @@ import {
 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { getHeadWorld } from './rig.js';
+import { sceneRefs } from './scene-system.js';
 import { LAKE_CENTER_X, LAKE_CENTER_Z, LAKE_Y } from './terrain.js';
 import { segmentMatrix } from './mesh-utils.js';
 import { buildBarkTexture } from './textures.js';
@@ -47,7 +50,6 @@ import { buildBarkTexture } from './textures.js';
 export const FIRE_POS = new Vector3(LAKE_CENTER_X + 2, LAKE_Y + 0.02, LAKE_CENTER_Z - 2);
 /** Radius of the party (dancers, lights, tents) around the fire. */
 export const PARTY_RADIUS = 16;
-const FLAME_HEIGHT = 10;
 
 const flameUniforms = { uTime: { value: 0 } };
 
@@ -206,27 +208,43 @@ function glowTexture(): CanvasTexture {
   return texture;
 }
 
-function buildBonfire(): Group {
+export interface BonfireOptions {
+  /** 1 = the towering party bonfire; ~0.3 = a camp fire. */
+  scale: number;
+  /** Dancers, festoon lights, benches and tents around it. */
+  party: boolean;
+  /** Cast real firelight (a point light). Keep to one or two in view. */
+  light: boolean;
+  /** Direction (yaw) visitors approach from; the party leaves it open. */
+  approachYaw?: number;
+}
+
+function buildLogStack(scale: number): Group {
   const fire = new Group();
   fire.name = 'Bonfire';
   const bark = new MeshStandardMaterial({ map: buildBarkTexture(), roughness: 0.9 });
   const charred = new MeshStandardMaterial({ color: 0x1c1410, roughness: 1 });
   const stone = new MeshStandardMaterial({ color: 0x5a5856, roughness: 0.95 });
-  // A towering teepee of logs over a charred core.
-  for (let i = 0; i < 10; i++) {
-    const a = (i / 10) * Math.PI * 2;
-    const log = new Mesh(new CylinderGeometry(0.2, 0.28, 4.6, 8), i % 2 ? bark : charred);
-    log.position.set(Math.cos(a) * 1.1, 1.8, Math.sin(a) * 1.1);
+  // A teepee of logs over a charred core.
+  const logs = scale > 0.6 ? 10 : 7;
+  for (let i = 0; i < logs; i++) {
+    const a = (i / logs) * Math.PI * 2;
+    const log = new Mesh(
+      new CylinderGeometry(0.2 * scale + 0.03, 0.28 * scale + 0.04, 4.6 * scale, 8),
+      i % 2 ? bark : charred,
+    );
+    log.position.set(Math.cos(a) * 1.1 * scale, 1.8 * scale, Math.sin(a) * 1.1 * scale);
     // lean the tops in toward the centre
     log.rotation.set(-Math.sin(a) * 0.45, 0, Math.cos(a) * 0.45);
     log.castShadow = true;
     fire.add(log);
   }
   // Ring of stones.
-  for (let i = 0; i < 26; i++) {
-    const a = (i / 26) * Math.PI * 2;
-    const rock = new Mesh(new IcosahedronGeometry(0.38, 1), stone);
-    rock.position.set(Math.cos(a) * 3.6, 0.15, Math.sin(a) * 3.6);
+  const stones = Math.round(14 + 12 * scale);
+  for (let i = 0; i < stones; i++) {
+    const a = (i / stones) * Math.PI * 2;
+    const rock = new Mesh(new IcosahedronGeometry(0.2 + 0.18 * scale, 1), stone);
+    rock.position.set(Math.cos(a) * 3.6 * scale, 0.12, Math.sin(a) * 3.6 * scale);
     rock.scale.set(1.2, 0.7, 1);
     rock.rotation.y = a * 3;
     fire.add(rock);
@@ -234,7 +252,7 @@ function buildBonfire(): Group {
   return fire;
 }
 
-function buildCampEdge(): Group {
+function buildCampEdge(approachYaw: number): Group {
   const camp = new Group();
   camp.name = 'Camp';
   const bark = new MeshStandardMaterial({ map: buildBarkTexture(), roughness: 0.9 });
@@ -248,10 +266,10 @@ function buildCampEdge(): Group {
     bench.receiveShadow = true;
     camp.add(bench);
   }
-  // Expedition tents around the edge (leaving the glide-in side open).
+  // Expedition tents around the edge (leaving the approach side open).
   const fabrics = [0xd8452b, 0xe8b13a, 0x2f6fb5, 0x3f9a5a, 0xb53f8f];
   for (let i = 0; i < 5; i++) {
-    const a = -Math.PI / 2 + 0.9 + (i / 4) * (Math.PI * 2 - 1.8);
+    const a = approachYaw + 0.9 + (i / 4) * (Math.PI * 2 - 1.8);
     const tent = new Mesh(
       new ConeGeometry(1.7, 2.3, 4, 1),
       new MeshStandardMaterial({ color: fabrics[i], roughness: 0.75, side: DoubleSide }),
@@ -275,9 +293,8 @@ function buildFestoonLights(): Group {
   const radius = 12.5;
   const height = 4.2;
   const bulbsPerSpan = 14;
-  const bulbGeo = new IcosahedronGeometry(0.09, 1);
   const bulbs = new InstancedMesh(
-    bulbGeo,
+    new IcosahedronGeometry(0.09, 1),
     new MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 2.2 }),
     poles * bulbsPerSpan,
   );
@@ -335,9 +352,10 @@ interface Dancer {
   speed: number;
   baseYaw: number;
   arms: Mesh[];
+  baseY: number;
 }
 
-/** A simple partygoer in a winter jacket and beanie, facing the fire. */
+/** A simple partygoer in a winter jacket and beanie. */
 function buildDancer(jacket: number, hat: number, skin: number): { root: Group; arms: Mesh[] } {
   const root = new Group();
   const jacketMat = new MeshStandardMaterial({ color: jacket, roughness: 0.8 });
@@ -369,60 +387,79 @@ function buildDancer(jacket: number, hat: number, skin: number): { root: Group; 
   return { root, arms };
 }
 
-export class CampfireSystem extends createSystem({}) {
-  private light!: PointLight;
-  private glow!: Sprite;
-  private sparks!: Plume;
-  private smoke!: Plume;
+/**
+ * One fire (optionally with a party around it). Build it with a parent
+ * entity creator, then call `update` every frame.
+ */
+export class Bonfire {
+  readonly position: Vector3;
+  readonly options: BonfireOptions;
+  private light: PointLight | null = null;
+  private glow: Sprite;
+  private sparks: Plume;
+  private smoke: Plume;
   private dancers: Dancer[] = [];
-  private readonly head = new Vector3();
+  private readonly flameHeight: number;
+  visible = true;
+  readonly objects: Object3D[] = [];
 
-  init(): void {
-    const add = (object: Parameters<typeof this.world.createTransformEntity>[0]) =>
-      this.world.createTransformEntity(object, { persistent: true });
+  constructor(position: Vector3, options: BonfireOptions) {
+    this.position = position.clone();
+    this.options = options;
+    const scale = options.scale;
+    this.flameHeight = 10 * scale;
+    const approach = options.approachYaw ?? -Math.PI / 2;
+    const place = (object: Object3D) => {
+      object.position.add(this.position);
+      this.objects.push(object);
+    };
 
-    for (const build of [buildBonfire, buildCampEdge, buildFestoonLights]) {
-      const group = build();
-      group.position.copy(FIRE_POS);
-      add(group);
-    }
-
-    // Partygoers in a loose ring, facing the fire.
-    const jackets = [0xd8452b, 0x2f6fb5, 0xe8b13a, 0x3f9a5a, 0xb53f8f, 0xf06a2a, 0x22a3a3];
-    const hats = [0xf2f2f2, 0xc9302c, 0x1d3b6e, 0xe0b23a, 0x2e2e2e];
-    const skins = [0xf1c7a5, 0xd9a47a, 0xa86f4a, 0x7a4b2e, 0xe6b991];
-    const count = 16;
-    for (let i = 0; i < count; i++) {
-      // leave a gap on the side the glider comes in from (-Z)
-      const ang = -Math.PI / 2 + 0.6 + (i / (count - 1)) * (Math.PI * 2 - 1.2);
-      const r = 6.2 + ((i * 37) % 10) / 10 * 1.8;
-      const { root, arms } = buildDancer(jackets[i % jackets.length], hats[i % hats.length], skins[i % skins.length]);
-      root.position.set(FIRE_POS.x + Math.cos(ang) * r, FIRE_POS.y, FIRE_POS.z + Math.sin(ang) * r);
-      const baseYaw = Math.atan2(-Math.cos(ang), -Math.sin(ang));
-      root.rotation.y = baseYaw;
-      root.name = `Partygoer${i}`;
-      add(root);
-      this.dancers.push({ root, arms, phase: i * 1.7, speed: 2.4 + (i % 4) * 0.35, baseYaw });
+    place(buildLogStack(scale));
+    if (options.party) {
+      place(buildCampEdge(approach));
+      place(buildFestoonLights());
+      // Partygoers in a loose ring, facing the fire, gap on the approach side.
+      const jackets = [0xd8452b, 0x2f6fb5, 0xe8b13a, 0x3f9a5a, 0xb53f8f, 0xf06a2a, 0x22a3a3];
+      const hats = [0xf2f2f2, 0xc9302c, 0x1d3b6e, 0xe0b23a, 0x2e2e2e];
+      const skins = [0xf1c7a5, 0xd9a47a, 0xa86f4a, 0x7a4b2e, 0xe6b991];
+      const count = 16;
+      for (let i = 0; i < count; i++) {
+        const ang = approach + 0.6 + (i / (count - 1)) * (Math.PI * 2 - 1.2);
+        const r = 6.2 + (((i * 37) % 10) / 10) * 1.8;
+        const { root, arms } = buildDancer(
+          jackets[i % jackets.length],
+          hats[i % hats.length],
+          skins[i % skins.length],
+        );
+        root.position.set(Math.cos(ang) * r, 0, Math.sin(ang) * r);
+        const baseYaw = Math.atan2(-Math.cos(ang), -Math.sin(ang));
+        root.rotation.y = baseYaw;
+        root.name = `Partygoer${i}`;
+        place(root);
+        this.dancers.push({ root, arms, phase: i * 1.7, speed: 2.4 + (i % 4) * 0.35, baseYaw, baseY: this.position.y });
+      }
     }
 
     const flames = new Group();
     flames.name = 'Flames';
-    flames.position.copy(FIRE_POS);
-    for (let i = 0; i < 5; i++) {
-      const plane = new Mesh(new PlaneGeometry(7.5, FLAME_HEIGHT), flameMaterial(i * 0.37));
-      plane.position.y = FLAME_HEIGHT / 2 + 0.1;
-      plane.rotation.y = (i / 5) * Math.PI;
+    const planes = scale > 0.6 ? 5 : 3;
+    for (let i = 0; i < planes; i++) {
+      const plane = new Mesh(new PlaneGeometry(7.5 * scale, this.flameHeight), flameMaterial(i * 0.37 + position.x));
+      plane.position.y = this.flameHeight / 2 + 0.1 * scale;
+      plane.rotation.y = (i / planes) * Math.PI;
       plane.scale.x = i % 2 ? 0.75 : 1;
       flames.add(plane);
     }
-    add(flames);
+    place(flames);
 
-    this.light = new PointLight(new Color(1, 0.55, 0.22), 3500, 160, 2);
-    this.light.position.set(FIRE_POS.x, FIRE_POS.y + 4, FIRE_POS.z);
-    this.light.name = 'Firelight';
-    add(this.light);
+    if (options.light) {
+      this.light = new PointLight(new Color(1, 0.55, 0.22), 3500 * scale * scale, 160 * scale, 2);
+      this.light.position.set(0, 4 * scale, 0);
+      this.light.name = 'Firelight';
+      place(this.light);
+    }
 
-    // From afar a warm halo marks the party as a beacon.
+    // From afar a warm halo marks the fire as a beacon.
     this.glow = new Sprite(
       new SpriteMaterial({
         map: glowTexture(),
@@ -432,21 +469,22 @@ export class CampfireSystem extends createSystem({}) {
         opacity: 0,
       }),
     );
-    this.glow.position.set(FIRE_POS.x, FIRE_POS.y + 4, FIRE_POS.z);
-    add(this.glow);
+    this.glow.position.set(0, 4 * scale, 0);
+    place(this.glow);
 
-    const fx = FIRE_POS.x;
-    const fy = FIRE_POS.y;
-    const fz = FIRE_POS.z;
+    const fx = this.position.x;
+    const fy = this.position.y;
+    const fz = this.position.z;
+    const fh = this.flameHeight;
     this.sparks = new Plume(
-      320,
+      Math.round(320 * scale) + 40,
       (i, p, v) => {
-        p[i * 3] = fx + (Math.random() - 0.5) * 2.5;
-        p[i * 3 + 1] = fy + 1.5 + Math.random() * 2;
-        p[i * 3 + 2] = fz + (Math.random() - 0.5) * 2.5;
-        v[i * 3] = (Math.random() - 0.5) * 2;
-        v[i * 3 + 1] = 4 + Math.random() * 7;
-        v[i * 3 + 2] = (Math.random() - 0.5) * 2;
+        p[i * 3] = fx + (Math.random() - 0.5) * 2.5 * scale;
+        p[i * 3 + 1] = fy + (1.5 + Math.random() * 2) * scale;
+        p[i * 3 + 2] = fz + (Math.random() - 0.5) * 2.5 * scale;
+        v[i * 3] = (Math.random() - 0.5) * 2 * scale;
+        v[i * 3 + 1] = (4 + Math.random() * 7) * Math.sqrt(scale);
+        v[i * 3 + 2] = (Math.random() - 0.5) * 2 * scale;
         return 1.5 + Math.random() * 2.5;
       },
       (dt, i, p, v, t) => {
@@ -461,16 +499,16 @@ export class CampfireSystem extends createSystem({}) {
       new Color(1.6, 0.6, 0.15),
       true,
     );
-    add(this.sparks.points);
+    this.objects.push(this.sparks.points);
 
     this.smoke = new Plume(
-      90,
+      Math.round(90 * scale) + 20,
       (i, p, v) => {
-        p[i * 3] = fx + (Math.random() - 0.5) * 1.5;
-        p[i * 3 + 1] = fy + FLAME_HEIGHT * 0.75;
-        p[i * 3 + 2] = fz + (Math.random() - 0.5) * 1.5;
+        p[i * 3] = fx + (Math.random() - 0.5) * 1.5 * scale;
+        p[i * 3 + 1] = fy + fh * 0.75;
+        p[i * 3 + 2] = fz + (Math.random() - 0.5) * 1.5 * scale;
         v[i * 3] = 0.5 + Math.random() * 0.5;
-        v[i * 3 + 1] = 3.5 + Math.random() * 1.5;
+        v[i * 3 + 1] = (3.5 + Math.random() * 1.5) * Math.sqrt(scale);
         v[i * 3 + 2] = (Math.random() - 0.5) * 0.5;
         return 18 + Math.random() * 6;
       },
@@ -480,26 +518,30 @@ export class CampfireSystem extends createSystem({}) {
         p[i * 3 + 2] += v[i * 3 + 2] * dt;
       },
       (t) => Math.min(1, t * 5) * (1 - t) * 0.6,
-      (t) => 2.2 + t * 16,
+      (t) => (2.2 + t * 16) * Math.sqrt(scale),
       new Color(0.16, 0.15, 0.15),
       false,
     );
-    add(this.smoke.points);
+    this.objects.push(this.smoke.points);
   }
 
-  update(delta: number, time: number): void {
-    const dt = Math.min(delta, 0.1);
-    flameUniforms.uTime.value = time;
-    const flicker =
-      0.8 + 0.2 * Math.sin(time * 13.1) * Math.sin(time * 7.3 + 1.7) + 0.08 * Math.sin(time * 31);
-    this.light.intensity = 3500 * flicker;
+  setVisible(visible: boolean): void {
+    this.visible = visible;
+    for (const object of this.objects) object.visible = visible;
+  }
+
+  /** Returns the fire's audible level at the viewer (0..1). */
+  update(dt: number, time: number, viewer: Vector3, flicker: number): number {
+    if (!this.visible) return 0;
+    const scale = this.options.scale;
+    if (this.light) this.light.intensity = 3500 * scale * scale * flicker;
     this.sparks.update(dt);
     this.smoke.update(dt);
 
     // Dancers bob, sway and throw their arms up.
     for (const d of this.dancers) {
       const t = time * d.speed + d.phase;
-      d.root.position.y = FIRE_POS.y + Math.abs(Math.sin(t)) * 0.12;
+      d.root.position.y = d.baseY + Math.abs(Math.sin(t)) * 0.12;
       d.root.rotation.y = d.baseYaw + Math.sin(t * 0.5) * 0.35;
       d.root.rotation.z = Math.sin(t) * 0.08;
       const raise = 0.5 + 0.5 * Math.sin(t * 0.5 + d.phase);
@@ -507,16 +549,44 @@ export class CampfireSystem extends createSystem({}) {
       d.arms[1].rotation.z = 0.3 + raise * 2.4 + Math.sin(t * 2 + 1) * 0.2;
     }
 
-    getHeadWorld(this.world, this.head);
-    const dist = this.head.distanceTo(FIRE_POS);
-    // From afar the fire reads as a warm beacon; up close the flames speak
-    // for themselves.
-    const beacon = Math.min(1, Math.max(0, (dist - 30) / 70));
+    const dist = viewer.distanceTo(this.position);
+    const beacon = Math.min(1, Math.max(0, (dist - 30 * scale) / (70 * scale)));
     (this.glow.material as SpriteMaterial).opacity = beacon * (0.8 + 0.2 * flicker);
-    this.glow.scale.setScalar((12 + beacon * 18) * (0.9 + 0.1 * flicker));
+    this.glow.scale.setScalar((12 + beacon * 18) * scale * (0.9 + 0.1 * flicker));
+    return Math.pow(Math.max(0, 1 - dist / (90 * Math.max(0.4, scale))), 1.5);
+  }
+}
 
-    // Crackle and roar grow as you approach.
-    const level = Math.pow(Math.max(0, 1 - dist / 90), 1.5);
+/** Every fire in the world; the campfire system animates them all. */
+export const fires: Bonfire[] = [];
+
+export class CampfireSystem extends createSystem({}) {
+  private readonly head = new Vector3();
+
+  init(): void {
+    // The tutorial's party on the frozen lake.
+    const party = new Bonfire(FIRE_POS, { scale: 1, party: true, light: true });
+    this.addFire(party, sceneRefs.tutorialRoot ?? undefined);
+  }
+
+  /** Create entities for a fire and start animating it. */
+  addFire(fire: Bonfire, parent?: Entity): Bonfire {
+    for (const object of fire.objects) {
+      this.world.createTransformEntity(object, { parent, persistent: true });
+    }
+    fires.push(fire);
+    return fire;
+  }
+
+  update(delta: number, time: number): void {
+    const dt = Math.min(delta, 0.1);
+    flameUniforms.uTime.value = time;
+    const flicker =
+      0.8 + 0.2 * Math.sin(time * 13.1) * Math.sin(time * 7.3 + 1.7) + 0.08 * Math.sin(time * 31);
+    getHeadWorld(this.world, this.head);
+    let level = 0;
+    for (const fire of fires) level = Math.max(level, fire.update(dt, time, this.head, flicker));
+    // Crackle and roar from the nearest fire.
     audio.setFire(level);
     if (level > 0.02 && Math.random() < dt * 14 * level) audio.crackle(level);
   }

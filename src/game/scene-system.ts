@@ -10,7 +10,9 @@ import {
   Color,
   createSystem,
   DirectionalLight,
+  type Entity,
   Fog,
+  Group,
   Mesh,
   MeshBasicMaterial,
   Object3D,
@@ -21,6 +23,7 @@ import {
 import { buildFarRanges } from './far-ranges.js';
 import { ClimbHold } from './game-components.js';
 import { landUniforms } from './land-material.js';
+import { currentLevel } from './level.js';
 import { getHeadWorld } from './rig.js';
 import {
   bakeSkyEnvironment,
@@ -58,6 +61,8 @@ const SHADOW_EXTENT = 45;
 /** Shared handles to scene pieces other systems need. */
 export const sceneRefs = {
   puffs: null as SnowPuffs | null,
+  /** Parent of everything that belongs only to the tutorial mountain. */
+  tutorialRoot: null as Entity | null,
   sunLight: null as DirectionalLight | null,
   clearEnvironment: null as Texture | null,
   stormEnvironment: null as Texture | null,
@@ -93,6 +98,12 @@ export class SceneSetupSystem extends createSystem({}) {
 
     const add = (object: Object3D) =>
       this.world.createTransformEntity(object, { persistent: true });
+    const tutorialGroup = new Group();
+    tutorialGroup.name = 'TutorialRoot';
+    const tutorialRoot = add(tutorialGroup);
+    sceneRefs.tutorialRoot = tutorialRoot;
+    const addTutorial = (object: Object3D) =>
+      this.world.createTransformEntity(object, { parent: tutorialRoot, persistent: true });
 
     this.sky = buildSky();
     add(this.sky);
@@ -117,21 +128,21 @@ export class SceneSetupSystem extends createSystem({}) {
     add(this.sun.target);
     sceneRefs.sunLight = this.sun;
 
-    add(buildTerrain());
-    add(buildFarRanges());
-    add(buildForest());
-    add(buildRocks());
-    add(buildCliff());
-    add(buildTrailMarkers());
-    add(buildTrailSign());
-    add(buildSummitSign());
-    add(buildCabin(-9.5, 4.5, 0.65));
-    add(buildCabin(-36, 126, 1.3));
-    add(buildCabin(22, 142, -0.9));
-    add(buildLake());
+    addTutorial(buildTerrain());
+    addTutorial(buildFarRanges());
+    addTutorial(buildForest());
+    addTutorial(buildRocks());
+    addTutorial(buildCliff());
+    addTutorial(buildTrailMarkers());
+    addTutorial(buildTrailSign());
+    addTutorial(buildSummitSign());
+    addTutorial(buildCabin(-9.5, 4.5, 0.65));
+    addTutorial(buildCabin(-36, 126, 1.3));
+    addTutorial(buildCabin(22, 142, -0.9));
+    addTutorial(buildLake());
     const flag = buildSummitFlag();
     this.flagCloth = flag.cloth;
-    add(flag.group);
+    addTutorial(flag.group);
 
     holdLayout().forEach((hold, i) => {
       const mesh = buildHoldMesh(i * 3.1);
@@ -144,7 +155,7 @@ export class SceneSetupSystem extends createSystem({}) {
         mesh.rotation.set(i * 0.7, i * 1.3, i * 0.4);
       }
       mesh.name = `ClimbHold${i}`;
-      add(mesh).addComponent(ClimbHold, { lip: hold.lip, glow: 0 });
+      addTutorial(mesh).addComponent(ClimbHold, { lip: hold.lip, glow: 0 });
     });
 
     this.puffs = new SnowPuffs();
@@ -160,8 +171,7 @@ export class SceneSetupSystem extends createSystem({}) {
 
     // Sky and cloud deck stay centred on the viewer.
     this.sky.position.copy(this.head);
-    this.cloudSea.position.x = this.head.x;
-    this.cloudSea.position.z = this.head.z;
+    this.cloudSea.position.set(this.head.x, currentLevel().cloudDeckY, this.head.z);
     cloudSeaUniforms.uTime.value = time;
 
     // Keep the shadow frustum on the player, snapped to shadow texels so

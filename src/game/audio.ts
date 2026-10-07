@@ -212,6 +212,66 @@ class SnowAudio {
     osc.stop(t + duration + 0.05);
   }
 
+  /** An ice axe pick biting into hard ice. */
+  axeBite(): void {
+    this.burst(3800, 2.5, 0.05, 0.45, 'bandpass');
+    this.tone(1400 + Math.random() * 300, 0.12, 0.12, 'triangle');
+    this.burst(420, 1.2, 0.12, 0.25);
+  }
+
+  /** Deep avalanche / serac rumble; call repeatedly while it lasts. */
+  rumble(intensity: number): void {
+    if (!this.ctx || intensity <= 0.02) return;
+    this.burst(60 + Math.random() * 40, 0.7, 0.6 + Math.random() * 0.4, 0.5 * intensity, 'lowpass');
+  }
+
+  /** A sharp crack (slab release, ice fracture). */
+  crack(): void {
+    this.burst(2200, 0.8, 0.08, 0.6, 'highpass');
+    this.burst(140, 1.5, 0.5, 0.5, 'lowpass');
+  }
+
+  /** Rock or ice impact thud, louder when close. */
+  impact(intensity: number): void {
+    this.burst(220 + Math.random() * 200, 1.2, 0.18, 0.4 * intensity, 'lowpass');
+    this.burst(1600, 1, 0.05, 0.2 * intensity, 'bandpass');
+  }
+
+  /** A distant raptor's cry: a falling, slightly rough whistle. */
+  eagleCry(volume = 0.12): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    for (let i = 0; i < 3; i++) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      const start = t + i * 0.32;
+      osc.frequency.setValueAtTime(2600 - i * 120, start);
+      osc.frequency.exponentialRampToValueAtTime(1500, start + 0.28);
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 2200;
+      filter.Q.value = 4;
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(volume, start + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.3);
+      osc.connect(filter).connect(gain).connect(this.master!);
+      osc.start(start);
+      osc.stop(start + 0.35);
+    }
+  }
+
+  /** A sip from the thermos / zip of the pack. */
+  sip(): void {
+    this.burst(700, 2, 0.25, 0.18, 'bandpass');
+    this.tone(260, 0.2, 0.05, 'sine', 0.1);
+  }
+
+  zip(): void {
+    for (let i = 0; i < 6; i++) this.burst(2600 + i * 200, 3, 0.03, 0.12, 'bandpass');
+  }
+
   chime(): void {
     [659.25, 783.99, 987.77].forEach((f, i) => this.tone(f, 0.7, 0.16, 'sine', i * 0.07));
   }

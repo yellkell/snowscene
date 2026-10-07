@@ -22,10 +22,11 @@ import {
 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { landUniforms } from './land-material.js';
+import { currentLevel } from './level.js';
 import { getHeadWorld } from './rig.js';
 import { sceneRefs } from './scene-system.js';
 import { cloudSeaUniforms, skyUniforms } from './sky.js';
-import { game, Phase } from './state.js';
+import { game } from './state.js';
 import { mulberry32, smoothstep, valueNoise } from './terrain.js';
 import { FOG_COLOR } from './world-builders.js';
 
@@ -160,32 +161,12 @@ export class WeatherSystem extends createSystem({}) {
 
   }
 
-  private targetStorm(): number {
-    const s = -this.head.z;
-    switch (game.phase.peek()) {
-      case Phase.Poling:
-        // A proper blizzard that worsens as you climb.
-        return 0.55 + 0.4 * smoothstep(5, 60, s);
-      case Phase.Climbing:
-        return 1;
-      case Phase.Building:
-        // Breaking through the top of the storm: the sky clears.
-        return 0.06;
-      case Phase.Launch:
-        return 0.03;
-      case Phase.Gliding:
-        return 0.05;
-      default:
-        return 0.12;
-    }
-  }
-
   update(delta: number, time: number): void {
     const dt = Math.min(delta, 0.1);
     getHeadWorld(this.world, this.head);
 
     if (game.stormOverride !== null) this.storm = game.stormOverride;
-    else this.storm += (this.targetStorm() - this.storm) * (1 - Math.exp(-dt / 3.2));
+    else this.storm += (currentLevel().stormTarget(this.head) - this.storm) * (1 - Math.exp(-dt / 3.2));
     const storm = this.storm;
     const gust = 0.5 + 0.5 * valueNoise(time * 0.35, 3.1);
     const windYaw = 0.6 + valueNoise(time * 0.04, 9.7) * 1.3;

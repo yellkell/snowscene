@@ -16,36 +16,17 @@ import { createSystem, InputComponent, Vector3 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { BAR_BELOW_EYES, BAR_HALF_WIDTH, BAR_Y, BAR_Z, buildGlider } from './glider-model.js';
 import { hands, HANDS } from './hand-input.js';
-import { FIRE_POS } from './campfire.js';
+import { currentLevel } from './level.js';
 import { faceYaw, getHeadWorld, placeHeadAt, rotateRigAroundHead, wrapAngle, yawForward } from './rig.js';
 import { sceneRefs } from './scene-system.js';
 import { fadeThen, game, Phase, setPhase } from './state.js';
-import {
-  CLIFF_CENTER_X,
-  CLOUD_SEA_Y,
-  clamp,
-  LAKE_CENTER_X,
-  LAKE_CENTER_Z,
-  LAKE_RADIUS_X,
-  LAKE_RADIUS_Z,
-  LAKE_Y,
-  SUMMIT_Y,
-  terrainHeight,
-  WALL_Z,
-} from './terrain.js';
+import { clamp } from './terrain.js';
 
 const BAR_REACH = 0.2;
 const MAX_TURN_RATE = 0.55; // rad/s
 const LAUNCH_HOLD_TIME = 0.35;
-/** The approach assist aims this far short of the fire (metres). */
-const LANDING_SHORT_OF_FIRE = 26;
 
-function groundAt(x: number, z: number): number {
-  const lx = (x - LAKE_CENTER_X) / (LAKE_RADIUS_X * 0.88);
-  const lz = (z - LAKE_CENTER_Z) / (LAKE_RADIUS_Z * 0.88);
-  const h = terrainHeight(x, z);
-  return lx * lx + lz * lz < 1 ? Math.max(h, LAKE_Y) : h;
-}
+const groundAt = (x: number, z: number): number => currentLevel().groundAt(x, z);
 
 export class GlideSystem extends createSystem({}) {
   private glider = buildGlider();
@@ -94,9 +75,10 @@ export class GlideSystem extends createSystem({}) {
 
   /** Runs while the screen is white: stand the player at the edge, facing out. */
   private prepareLaunch(): void {
-    faceYaw(this.world, Math.PI);
-    placeHeadAt(this.world, CLIFF_CENTER_X, WALL_Z - 0.55, SUMMIT_Y);
-    this.gliderYawOffset = Math.PI - this.player.rotation.y;
+    const site = currentLevel().launch();
+    faceYaw(this.world, site.yaw);
+    placeHeadAt(this.world, site.x, site.z, site.floorY);
+    this.gliderYawOffset = site.yaw - this.player.rotation.y;
     this.glider.root.visible = true;
     this.speed = 0;
     this.steer = 0;
@@ -206,7 +188,8 @@ export class GlideSystem extends createSystem({}) {
     this.readInputs(dt);
 
     // Push out (pitch > 0) floats slowly, pull in (pitch < 0) dives fast.
-    const targetSpeed = 9 - 2.2 * this.pitch;
+    const lvl = currentLevel();
+    const targetSpeed = lvl.glideSpeed - 2.2 * this.pitch;
     let sink = this.pitch < 0 ? 1.45 - this.pitch * 2.8 : 1.45 - this.pitch * 0.55;
     this.speed += (targetSpeed - this.speed) * Math.min(1, dt * 0.8);
     game.airspeed = this.speed;
@@ -214,15 +197,15 @@ export class GlideSystem extends createSystem({}) {
     // Gentle approach assist toward a landing spot just short of the camp
     // fire. Your own steering and pitch always take precedence.
     let autoTurn = 0;
-    const toX = FIRE_POS.x - this.head.x;
-    const toZ = FIRE_POS.z - this.head.z;
+    const toX = lvl.glideTarget.x - this.head.x;
+    const toZ = lvl.glideTarget.z - this.head.z;
     const fireDist = Math.hypot(toX, toZ);
-    const aimDist = fireDist - LANDING_SHORT_OF_FIRE;
+    const aimDist = fireDist - lvl.landingShort;
     if (aimDist > 3) {
       const err = wrapAngle(Math.atan2(-toX, -toZ) - this.gliderYaw);
       if (Math.abs(this.steer) < 0.15) autoTurn = clamp(err * 0.6, -0.4, 0.4);
       if (Math.abs(err) < 0.9) {
-        const needed = ((this.player.position.y - FIRE_POS.y) / aimDist) * this.speed;
+        const needed = ((this.player.position.y - lvl.glideTarget.y) / aimDist) * this.speed;
         const weight = 0.8 * (1 - Math.min(1, Math.abs(this.pitch)));
         sink += (clamp(needed, 0.3, 4.5) - sink) * weight;
       }
@@ -244,19 +227,20 @@ export class GlideSystem extends createSystem({}) {
       if (rig.position.y < ground) rig.position.y = ground;
       return;
     }
-    if (ground < CLOUD_SEA_Y + 5 && rig.position.y < CLOUD_SEA_Y + 18) {
-      // Flown out over the drop-off: sink through the clouds and touch down
-      // softly on the lake shore.
+    const deck = lvl.cloudDeckY;
+    if (lvl.cloudLanding && ground < deck + 5 && rig.position.y < deck + 18) {
+      // Flown out over open air: sink through the clouds and touch down
+      // softly near the landing site.
       if (!this.cloudLanding) {
         this.cloudLanding = true;
         fadeThen(() => {
           this.cloudLanding = false;
-          // Come down out of the clouds beside the camp, facing the fire.
-          faceYaw(this.world, Math.PI);
-          const x = FIRE_POS.x;
-          const z = FIRE_POS.z - LANDING_SHORT_OF_FIRE;
-          placeHeadAt(this.world, x, z, groundAt(x, z));
-          this.gliderYawOffset = Math.PI - this.player.rotation.y;
+          const spot = lvl.cloudLanding?.();
+          if (spot) {
+            faceYaw(this.world, spot.yaw);
+            placeHeadAt(this.world, spot.x, spot.z, groundAt(spot.x, spot.z));
+            this.gliderYawOffset = spot.yaw - this.player.rotation.y;
+          }
           this.speed = 0;
           setPhase(Phase.Landed);
         });

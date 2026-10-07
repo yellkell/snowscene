@@ -1,33 +1,42 @@
 /**
- * Cliff climbing.
+ * Wall climbing, for any wall the active level provides.
  *
- * Reach a glowing hold, close your hand to grab it, then pull: the world is
- * locked to the grabbing hand, so pulling down lifts your body. The most
- * recent grab drives movement, so you can go hand over hand. Let go of
- * everything and you slide gently back to the ground. Once your head is
- * over the summit lip you are hauled up onto the top.
+ * Holds mode: reach a glowing hold, close your hand to grab it, then pull:
+ * the world is locked to the grabbing hand, so pulling down lifts your body.
+ *
+ * Axes mode (ice): with ice axes in hand, swing a pick into the ice anywhere
+ * on the face. A swing that hits the ice moving fast enough bites and holds
+ * like a hold until you open your hand.
+ *
+ * The most recent grab drives movement, so you can go hand over hand. Let go
+ * of everything and you slide gently back down. Once your head is over the
+ * lip you are hauled up onto the top.
  *
  * Desktop fallback: hold W / ArrowUp to climb.
  */
 
 import { createSystem, Entity, Mesh, MeshStandardMaterial, Vector3 } from '@iwsdk/core';
 import { audio } from './audio.js';
+import { holding, stowAll } from './equipment.js';
 import { ClimbHold } from './game-components.js';
-import { HANDS, type Handedness } from './hand-input.js';
+import { HANDS, hands, type Handedness } from './hand-input.js';
+import { currentLevel, type ClimbWall } from './level.js';
 import { getHeadWorld, placeHeadAt } from './rig.js';
 import { sceneRefs } from './scene-system.js';
-import { game, Phase, setPhase, SUMMIT_STAND } from './state.js';
-import { CLIFF_BASE_Y, CLIFF_CENTER_X, clamp, SUMMIT_Y, terrainHeight, WALL_Z } from './terrain.js';
+import { game, Phase } from './state.js';
+import { clamp } from './terrain.js';
 
 const GRAB_RADIUS = 0.17;
 const HIGHLIGHT_RADIUS = 0.35;
-/** Head stays at least this far in front of the wall face. */
-const WALL_STANDOFF = 0.45;
-/** Where the approach glide parks the player's head. */
-const CLIMB_START_Z = WALL_Z + 0.85;
+/** Distance from the hand to the pick of a held ice axe. */
+const AXE_REACH = 0.42;
+/** Minimum swing speed toward the ice for a pick to bite (m/s). */
+const AXE_BITE_SPEED = 0.9;
 
 interface Grab {
+  /** The hold grabbed, or null for an axe placement. */
   hold: Entity | null;
+  active: boolean;
   readonly anchor: Vector3;
 }
 
@@ -40,60 +49,108 @@ type Tween = {
   done: () => void;
 };
 
+/** Hooks other systems can listen to (ice chips, hints). */
+export const climbEvents = {
+  onAxeBite: null as ((at: Vector3) => void) | null,
+  onNeedTool: null as ((tool: 'axes' | 'free-hands') => void) | null,
+};
+
 export class ClimbSystem extends createSystem({
   holds: { required: [ClimbHold] },
 }) {
   private grabs!: Record<Handedness, Grab>;
   private active: Handedness | null = null;
+  private wall: ClimbWall | null = null;
+  private readonly tangent = new Vector3();
   private airTime = 0;
   private fallSpeed = 0;
   private tween: Tween | null = null;
   private readonly head = new Vector3();
   private readonly delta = new Vector3();
   private readonly holdPos = new Vector3();
+  private readonly rel = new Vector3();
+  private readonly pick = new Vector3();
+  private readonly prevHand: Record<Handedness, Vector3> = {
+    left: new Vector3(),
+    right: new Vector3(),
+  };
+  private readonly handVel: Record<Handedness, Vector3> = {
+    left: new Vector3(),
+    right: new Vector3(),
+  };
+  private needToolTimer = 0;
 
   init(): void {
     this.grabs = {
-      left: { hold: null, anchor: new Vector3() },
-      right: { hold: null, anchor: new Vector3() },
+      left: { hold: null, active: false, anchor: new Vector3() },
+      right: { hold: null, active: false, anchor: new Vector3() },
     };
     this.cleanupFuncs.push(
       game.phase.subscribe((phase) => {
         this.releaseAll();
         this.tween = null;
-        if (phase === Phase.Climbing) this.startApproach();
+        if (phase === Phase.Climbing) {
+          this.wall = currentLevel().currentWall();
+          if (this.wall) {
+            this.tangent.set(0, 1, 0).cross(this.wall.normal).normalize();
+            // The tutorial puts the poles away for you.
+            if (currentLevel().id === 'tutorial') stowAll();
+            this.startApproach();
+          }
+        }
       }),
     );
   }
 
   private releaseAll(): void {
-    this.grabs.left.hold = null;
-    this.grabs.right.hold = null;
+    for (const grab of [this.grabs.left, this.grabs.right]) {
+      grab.hold = null;
+      grab.active = false;
+    }
     this.active = null;
     this.airTime = 0;
     this.fallSpeed = 0;
+    this.needToolTimer = 0;
   }
 
-  /** Glide the player up to the foot of the wall, centred on the holds. */
+  /** Distance out from the face (`out`) and offset along the lane (`along`). */
+  private wallOut(p: Vector3): number {
+    return this.rel.subVectors(p, this.wall!.base).dot(this.wall!.normal);
+  }
+
+  private wallAlong(p: Vector3): number {
+    return this.rel.subVectors(p, this.wall!.base).dot(this.tangent);
+  }
+
+  /** Glide the player up to the foot of the wall, centred on the lane. */
   private startApproach(): void {
+    const wall = this.wall!;
     const rig = this.player;
     getHeadWorld(this.world, this.head);
     const from = rig.position.clone();
     const to = from.clone();
-    to.x += CLIFF_CENTER_X - this.head.x;
-    to.z += CLIMB_START_Z - this.head.z;
-    to.y = CLIFF_BASE_Y;
+    const reach = wall.standoff + 0.4;
+    to.x += wall.base.x + wall.normal.x * reach - this.head.x;
+    to.z += wall.base.z + wall.normal.z * reach - this.head.z;
+    to.y = wall.baseY;
     this.tween = { t: 0, duration: 1.4, from, to, lift: 0, done: () => {} };
   }
 
   update(delta: number): void {
-    const dt = Math.min(delta, 0.1);
+    const dt = Math.max(1e-3, Math.min(delta, 0.1));
     const phase = game.phase.peek();
-    if (phase !== Phase.Climbing) {
+    for (const hand of HANDS) {
+      const side = hand.handedness;
+      const v = this.handVel[side];
+      this.delta.subVectors(hand.position, this.prevHand[side]).divideScalar(dt);
+      v.lerp(this.delta, 0.5);
+      this.prevHand[side].copy(hand.position);
+    }
+    if (phase !== Phase.Climbing || !this.wall) {
       if (phase === Phase.Poling) this.updateHoldGlow(dt, false);
       return;
     }
-    this.updateHoldGlow(dt, true);
+    this.updateHoldGlow(dt, this.wall.mode === 'holds');
 
     if (this.tween) {
       this.runTween(dt);
@@ -109,14 +166,17 @@ export class ClimbSystem extends createSystem({
         rig.position.y += 1.1 * dt;
         this.airTime = 0;
         this.fallSpeed = 0;
-        if (Math.random() < dt * 2.5) audio.clack();
+        if (Math.random() < dt * 2.5) {
+          if (this.wall.mode === 'axes') audio.axeBite();
+          else audio.clack();
+        }
       } else {
         this.airTime += dt;
       }
     }
 
     // Hanging on nothing: after a short grace period, slide down gently.
-    const ground = CLIFF_BASE_Y;
+    const ground = this.wall.baseY;
     if (!this.active && this.airTime > 0.45 && rig.position.y > ground) {
       this.fallSpeed = Math.min(2.2, this.fallSpeed + dt * 4);
       rig.position.y = Math.max(ground, rig.position.y - this.fallSpeed * dt);
@@ -126,44 +186,76 @@ export class ClimbSystem extends createSystem({
     this.keepOffWall();
 
     // Hauled over the lip?
+    const top = this.wall.topY;
     const lipGrabbed = this.isLipHeld();
-    if (rig.position.y >= SUMMIT_Y - 1.0 || (lipGrabbed && rig.position.y >= SUMMIT_Y - 1.45)) {
+    if (rig.position.y >= top - 1.0 || (lipGrabbed && rig.position.y >= top - 1.45)) {
       this.startMantle();
     }
   }
 
   private updateGrabs(dt: number): void {
+    const wall = this.wall!;
     for (const hand of HANDS) {
-      const grab = this.grabs[hand.handedness];
+      const side = hand.handedness;
+      const grab = this.grabs[side];
       if (!hand.grip || !hand.tracked) {
-        if (grab.hold) {
+        if (grab.active) {
+          grab.active = false;
           grab.hold = null;
-          if (this.active === hand.handedness) {
-            const other: Handedness = hand.handedness === 'left' ? 'right' : 'left';
-            this.active = this.grabs[other].hold ? other : null;
+          if (this.active === side) {
+            const other: Handedness = side === 'left' ? 'right' : 'left';
+            this.active = this.grabs[other].active ? other : null;
             // Re-anchor the remaining hand so there is no jump.
-            if (this.active) this.grabs[other].anchor.copy(this.handPos(other));
+            if (this.active) this.grabs[other].anchor.copy(hands[other].position);
           }
         }
         continue;
       }
-      if (hand.gripDown && !grab.hold) {
+      if (grab.active) continue;
+
+      if (wall.mode === 'holds') {
+        if (!hand.gripDown) continue;
         const hold = this.nearestHold(hand.position, GRAB_RADIUS);
-        if (hold) {
-          grab.hold = hold;
-          grab.anchor.copy(hand.position);
-          this.active = hand.handedness;
-          hold.setValue(ClimbHold, 'glow', 1);
-          audio.clack();
-          const mesh = hold.object3D as Mesh;
-          sceneRefs.puffs?.emit(mesh.getWorldPosition(this.holdPos), 3, 0.4);
+        if (!hold) continue;
+        grab.hold = hold;
+        grab.active = true;
+        grab.anchor.copy(hand.position);
+        this.active = side;
+        hold.setValue(ClimbHold, 'glow', 1);
+        audio.clack();
+        const mesh = hold.object3D as Mesh;
+        sceneRefs.puffs?.emit(mesh.getWorldPosition(this.holdPos), 3, 0.4);
+        continue;
+      }
+
+      // Ice axes: the pick sits above the thumb (grip -Z).
+      if (!holding(side, 'axes')) {
+        this.needToolTimer += dt;
+        if (this.needToolTimer > 4) {
+          climbEvents.onNeedTool?.('axes');
+          this.needToolTimer = -20;
         }
+        continue;
+      }
+      this.pick.set(0, 0, -AXE_REACH).applyQuaternion(hand.quaternion).add(hand.position);
+      const out = this.wallOut(this.pick);
+      const along = this.wallAlong(this.pick);
+      const towardWall = -this.handVel[side].dot(wall.normal);
+      const onFace = Math.abs(along) < wall.laneWidth / 2 + 0.5 && this.pick.y < wall.topY + 0.3;
+      if (onFace && out < 0.12 && out > -0.35 && towardWall > AXE_BITE_SPEED) {
+        grab.hold = null;
+        grab.active = true;
+        grab.anchor.copy(hand.position);
+        this.active = side;
+        audio.axeBite();
+        climbEvents.onAxeBite?.(this.pick);
+        sceneRefs.puffs?.emit(this.pick, 5, 0.5);
       }
     }
 
     if (this.active) {
       const grab = this.grabs[this.active];
-      this.delta.subVectors(grab.anchor, this.handPos(this.active));
+      this.delta.subVectors(grab.anchor, hands[this.active].position);
       this.player.position.add(this.delta);
       this.player.updateMatrixWorld(true);
       this.airTime = 0;
@@ -173,16 +265,12 @@ export class ClimbSystem extends createSystem({
     }
   }
 
-  private handPos(side: Handedness): Vector3 {
-    return HANDS[side === 'left' ? 0 : 1].position;
-  }
-
   private nearestHold(point: Vector3, radius: number): Entity | null {
     let best: Entity | null = null;
     let bestDist = radius;
     for (const entity of this.queries.holds.entities) {
       const object = entity.object3D;
-      if (!object) continue;
+      if (!object || !this.onWall(object.position)) continue;
       const d = object.position.distanceTo(point);
       if (d < bestDist) {
         bestDist = d;
@@ -192,35 +280,51 @@ export class ClimbSystem extends createSystem({
     return best;
   }
 
+  /** Holds belong to the current wall when they sit on its lane. */
+  private onWall(p: Vector3): boolean {
+    const wall = this.wall;
+    if (!wall) return false;
+    return (
+      Math.abs(this.wallOut(p)) < 1.2 &&
+      Math.abs(this.wallAlong(p)) < wall.laneWidth / 2 + 1.5 &&
+      p.y > wall.baseY - 1 &&
+      p.y < wall.topY + 1
+    );
+  }
+
   private isLipHeld(): boolean {
     for (const grab of [this.grabs.left, this.grabs.right]) {
-      if (grab.hold && grab.hold.getValue(ClimbHold, 'lip')) return true;
+      if (grab.active && grab.hold && grab.hold.getValue(ClimbHold, 'lip')) return true;
     }
     return false;
   }
 
   private keepOffWall(): void {
+    const wall = this.wall!;
     const rig = this.player;
     rig.updateMatrixWorld(true);
     getHeadWorld(this.world, this.head);
-    const minZ = WALL_Z + WALL_STANDOFF;
-    if (this.head.z < minZ) rig.position.z += minZ - this.head.z;
-    const lateral = this.head.x - CLIFF_CENTER_X;
-    const clamped = clamp(lateral, -2.4, 2.4);
-    if (clamped !== lateral) rig.position.x += clamped - lateral;
-    const floor = Math.max(CLIFF_BASE_Y, terrainHeight(this.head.x, Math.max(this.head.z, minZ)));
-    if (rig.position.y < floor) rig.position.y = floor;
+    const out = this.wallOut(this.head);
+    if (out < wall.standoff) {
+      rig.position.addScaledVector(wall.normal, wall.standoff - out);
+    }
+    const along = this.wallAlong(this.head);
+    const half = wall.laneWidth / 2;
+    const clamped = clamp(along, -half, half);
+    if (clamped !== along) rig.position.addScaledVector(this.tangent, clamped - along);
+    if (rig.position.y < wall.baseY) rig.position.y = wall.baseY;
   }
 
   private startMantle(): void {
+    const wall = this.wall!;
     this.releaseAll();
     const rig = this.player;
     getHeadWorld(this.world, this.head);
     const from = rig.position.clone();
     const to = from.clone();
-    to.x += SUMMIT_STAND.x - this.head.x;
-    to.z += SUMMIT_STAND.z - this.head.z;
-    to.y = SUMMIT_Y;
+    to.x += wall.topStand.x - this.head.x;
+    to.z += wall.topStand.z - this.head.z;
+    to.y = wall.topStand.y;
     audio.whoosh();
     this.tween = {
       t: 0,
@@ -229,9 +333,8 @@ export class ClimbSystem extends createSystem({
       to,
       lift: 0.35,
       done: () => {
-        placeHeadAt(this.world, SUMMIT_STAND.x, SUMMIT_STAND.z, SUMMIT_Y);
-        audio.fanfare();
-        setPhase(Phase.Building);
+        placeHeadAt(this.world, wall.topStand.x, wall.topStand.z, wall.topStand.y);
+        wall.onTop();
       },
     };
   }
@@ -254,10 +357,12 @@ export class ClimbSystem extends createSystem({
     const time = performance.now() / 1000;
     for (const entity of this.queries.holds.entities) {
       const mesh = entity.object3D as Mesh | undefined;
-      if (!mesh) continue;
+      if (!mesh || !mesh.visible) continue;
       let glow = entity.getValue(ClimbHold, 'glow') ?? 0;
-      glow = Math.max(0, glow - dt * 1.5);
-      entity.setValue(ClimbHold, 'glow', glow);
+      if (glow > 0) {
+        glow = Math.max(0, glow - dt * 1.5);
+        entity.setValue(ClimbHold, 'glow', glow);
+      }
       let near = 0;
       if (climbing) {
         for (const hand of HANDS) {

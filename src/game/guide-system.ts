@@ -15,6 +15,7 @@ import { audio } from './audio.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt, yawForward } from './rig.js';
 import { fadeThen, game, PART_COUNT, Phase, requestRestart, setPhase } from './state.js';
 import { WALL_Z } from './terrain.js';
+import { startTutorialKit } from './tutorial-kit.js';
 
 const PANEL_NODE_ID = 'guide-panel';
 /** Panel world scale when it floats at REFERENCE_DISTANCE. */
@@ -111,6 +112,7 @@ export class GuideSystem extends createSystem({}) {
       game.distanceToCliff.subscribe(() => this.refresh()),
       game.partsPlaced.subscribe(() => this.refresh()),
       game.barHeld.subscribe(() => this.refresh()),
+      game.toast.subscribe(() => this.refresh()),
       this.world.visibilityState.subscribe((state) => {
         if (state !== VisibilityState.NonImmersive) audio.unlock();
         this.anchored = false;
@@ -131,6 +133,7 @@ export class GuideSystem extends createSystem({}) {
       game.velocity.set(0, 0, 0);
       game.distanceToCliff.value = Math.round(-WALL_Z);
       requestRestart();
+      startTutorialKit();
       setPhase(Phase.Poling);
     });
   }
@@ -191,7 +194,9 @@ export class GuideSystem extends createSystem({}) {
     this.stepText.setProperties({ text: copy.step });
     this.titleText.setProperties({ text: copy.title });
     this.bodyText.setProperties({ text: copy.body });
-    this.hintText.setProperties({ text: copy.hint, display: copy.hint ? 'flex' : 'none' });
+    const toastNow = game.toast.peek();
+    const hint = toastNow && toastNow.until > performance.now() / 1000 ? toastNow.text : copy.hint;
+    this.hintText.setProperties({ text: hint, display: hint ? 'flex' : 'none' });
     this.xrButton.setProperties({
       display: !immersive && this.world.xrEnabled ? 'flex' : 'none',
     });
@@ -201,6 +206,8 @@ export class GuideSystem extends createSystem({}) {
   update(delta: number): void {
     if (!this.tryBindPanel()) return;
     this.phaseTime += delta;
+    const toastNow = game.toast.peek();
+    if (toastNow && toastNow.until <= performance.now() / 1000) game.toast.value = null;
     if (!this.world.renderer.xr.isPresenting || !this.panelObject) return;
     this.placeInFront();
   }

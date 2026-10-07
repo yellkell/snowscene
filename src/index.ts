@@ -7,6 +7,7 @@
 import { World } from '@iwsdk/core';
 import projectOptions from 'virtual:iwsdk-project';
 import { audio } from './game/audio.js';
+import { BackpackSystem } from './game/backpack-system.js';
 import { CampfireSystem } from './game/campfire.js';
 import { ClimbSystem } from './game/climb-system.js';
 import { DesktopLookSystem } from './game/desktop-look-system.js';
@@ -18,6 +19,13 @@ import { PoleSystem } from './game/pole-system.js';
 import { SceneSetupSystem } from './game/scene-system.js';
 import { WeatherSystem } from './game/weather-system.js';
 import { game, Phase, setPhase } from './game/state.js';
+import { level } from './game/level.js';
+import { startTutorialKit } from './game/tutorial-kit.js';
+import { tutorialLevel } from './game/tutorial-level.js';
+
+// The tutorial is the starting level; the expedition follows it.
+level.value = tutorialLevel;
+startTutorialKit();
 
 World.create(
   document.getElementById('scene-container') as HTMLDivElement,
@@ -29,6 +37,7 @@ World.create(
     .registerSystem(CampfireSystem, { priority: 22 })
     .registerSystem(HandInputSystem, { priority: 0 })
     .registerSystem(DesktopLookSystem, { priority: 1 })
+    .registerSystem(BackpackSystem, { priority: 2 })
     .registerSystem(PoleSystem, { priority: 10 })
     .registerSystem(ClimbSystem, { priority: 11 })
     .registerSystem(GliderBuildSystem, { priority: 12 })

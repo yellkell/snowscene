@@ -12,6 +12,7 @@
 import {
   createSystem,
   InputComponent,
+  Matrix4,
   Quaternion,
   Vector3,
   XRHandVisualAdapter,
@@ -36,6 +37,10 @@ export interface HandState {
   /** World-space grip pose (palm centre for hands). */
   readonly position: Vector3;
   readonly quaternion: Quaternion;
+  /** World-space unit vector pointing out of the palm. */
+  readonly palmNormal: Vector3;
+  /** World-space index fingertip (falls back to just ahead of the grip). */
+  readonly indexTip: Vector3;
 }
 
 function createHandState(handedness: Handedness): HandState {
@@ -49,6 +54,8 @@ function createHandState(handedness: Handedness): HandState {
     closure: 0,
     position: new Vector3(),
     quaternion: new Quaternion(),
+    palmNormal: new Vector3(0, -1, 0),
+    indexTip: new Vector3(),
   };
 }
 
@@ -70,6 +77,7 @@ const CURL_FINGERS = ['index-finger', 'middle-finger', 'ring-finger'] as const;
 interface JointLookup {
   adapter: XRHandVisualAdapter;
   wrist: number;
+  indexTip: number;
   proximal: number[];
   tips: number[];
 }
@@ -111,8 +119,14 @@ export class HandInputSystem extends createSystem({}) {
     if (adapter instanceof XRHandVisualAdapter) {
       state.isHand = true;
       closure = Math.max(this.fingerCurl(side, adapter), adapter.getPinchStrength());
+      this.updatePalm(state, adapter, grip.matrixWorld);
     } else {
       state.isHand = false;
+      // Controllers: the grip's X axis is perpendicular to the palm; it points
+      // out of the back of the right hand and out of the palm of the left.
+      tmpVec.set(side === 'left' ? 1 : -1, 0, 0).applyQuaternion(state.quaternion);
+      state.palmNormal.copy(tmpVec);
+      state.indexTip.set(0, 0, -0.08).applyQuaternion(state.quaternion).add(state.position);
       const pad = this.input.xr.gamepads[side];
       if (pad) {
         closure = Math.max(
@@ -133,6 +147,26 @@ export class HandInputSystem extends createSystem({}) {
     }
     state.gripDown = state.grip && !wasGrip;
     state.gripUp = !state.grip && wasGrip;
+  }
+
+  /** Palm normal (wrist joint -Y) and index fingertip, in world space. */
+  private updatePalm(state: HandState, adapter: XRHandVisualAdapter, gripWorld: Matrix4): void {
+    const transforms = adapter.jointTransforms;
+    if (!transforms || adapter.jointSpaces.length === 0) return;
+    let lookup = this.lookups[state.handedness];
+    if (!lookup || lookup.adapter !== adapter) {
+      lookup = this.buildLookup(adapter);
+      this.lookups[state.handedness] = lookup;
+    }
+    if (lookup.wrist < 0) return;
+    // Joint transforms are relative to the grip space.
+    tmpMat.fromArray(transforms, lookup.wrist * 16).premultiply(gripWorld);
+    const e = tmpMat.elements;
+    state.palmNormal.set(-e[4], -e[5], -e[6]).normalize();
+    if (lookup.indexTip >= 0) {
+      const k = lookup.indexTip * 16 + 12;
+      state.indexTip.set(transforms[k], transforms[k + 1], transforms[k + 2]).applyMatrix4(gripWorld);
+    }
   }
 
   private fingerCurl(side: Handedness, adapter: XRHandVisualAdapter): number {
@@ -167,6 +201,7 @@ export class HandInputSystem extends createSystem({}) {
     return {
       adapter,
       wrist: indexOf('wrist'),
+      indexTip: indexOf('index-finger-tip'),
       proximal: CURL_FINGERS.map((f) => indexOf(`${f}-phalanx-proximal`)),
       tips: CURL_FINGERS.map((f) => indexOf(`${f}-tip`)),
     };
@@ -174,6 +209,8 @@ export class HandInputSystem extends createSystem({}) {
 }
 
 const tmpScale = new Vector3();
+const tmpVec = new Vector3();
+const tmpMat = new Matrix4();
 
 function jointDistance(transforms: Float32Array, a: number, b: number): number {
   const ia = a * 16 + 12;
