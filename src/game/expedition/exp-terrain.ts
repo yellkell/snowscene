@@ -70,7 +70,9 @@ function reliefMask(r: number, routeDist: number): number {
     smoothstep(BAND_HALF_WIDTH + 1, BAND_HALF_WIDTH + 14, Math.abs(r - ICE_WALL_R)) *
     smoothstep(BAND_HALF_WIDTH + 1, BAND_HALF_WIDTH + 14, Math.abs(r - ROCK_BAND_R));
   const route = smoothstep(BENCH_HALF_WIDTH + 4, 170, routeDist);
-  return band * route;
+  // Calm the summit dome so nothing nearby outclimbs the summit itself.
+  const dome = smoothstep(160, 520, r);
+  return band * route * dome;
 }
 
 /** Natural mountain surface (no route bench). `routeDist` from `project`. */
