@@ -12,6 +12,11 @@ import {
   VisibilityState,
 } from '@iwsdk/core';
 import { audio } from './audio.js';
+import { expControl } from './expedition/director/exp-control.js';
+import { SECTION_ORDER } from './expedition/exp-route.js';
+import { SECTION_NAMES } from './expedition/exp-layout.js';
+import { exp } from './expedition/exp-state.js';
+import { currentLevel } from './level.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt, yawForward } from './rig.js';
 import { fadeThen, game, PART_COUNT, Phase, requestRestart, setPhase } from './state.js';
 import { WALL_Z } from './terrain.js';
@@ -38,6 +43,10 @@ export class GuideSystem extends createSystem({}) {
   private hintText!: UIKit.Text;
   private xrButton!: UIKit.Component;
   private restartButton!: UIKit.Component;
+  private expeditionButton!: UIKit.Component;
+  private skipButton!: UIKit.Component;
+  private expRestartButton!: UIKit.Component;
+  private tutorialButton!: UIKit.Component;
 
   private readonly head = new Vector3();
   private readonly fwd = new Vector3();
@@ -53,6 +62,7 @@ export class GuideSystem extends createSystem({}) {
     const updateMusic = () => {
       const phase = game.phase.peek();
       const built =
+        exp.summited.peek() ||
         game.partsPlaced.peek() >= PART_COUNT ||
         phase === Phase.Launch ||
         phase === Phase.Gliding ||
@@ -62,6 +72,7 @@ export class GuideSystem extends createSystem({}) {
     this.cleanupFuncs.push(
       game.phase.subscribe(updateMusic),
       game.partsPlaced.subscribe(updateMusic),
+      exp.summited.subscribe(updateMusic),
     );
     // Browsers only start audio from a user gesture, so try on every kind
     // we can see: page input, entering XR, and XR pinches / squeezes (which
@@ -105,6 +116,28 @@ export class GuideSystem extends createSystem({}) {
     this.bodyText.name = 'guide-body';
     this.xrButton.name = 'xr-button';
     this.restartButton.name = 'restart-button';
+    this.expeditionButton = panel.requireElementById('expedition-button');
+    this.skipButton = panel.requireElementById('skip-button');
+    this.expRestartButton = panel.requireElementById('exp-restart-button');
+    this.tutorialButton = panel.requireElementById('tutorial-button');
+    this.expeditionButton.name = 'expedition-button';
+    this.skipButton.name = 'skip-button';
+    this.expRestartButton.name = 'exp-restart-button';
+    this.tutorialButton.name = 'tutorial-button';
+    const expButtons: Array<[UIKit.Component, () => void]> = [
+      [this.expeditionButton, () => expControl.start()],
+      [this.skipButton, () => expControl.skipAhead()],
+      [this.expRestartButton, () => expControl.restart()],
+      [this.tutorialButton, () => expControl.toTutorial()],
+    ];
+    for (const [button, action] of expButtons) {
+      const onClick = () => {
+        audio.unlock();
+        action();
+      };
+      button.addEventListener('click', onClick);
+      this.cleanupFuncs.push(() => button.removeEventListener('click', onClick));
+    }
 
     const enterXR = () => {
       audio.unlock();
@@ -128,6 +161,13 @@ export class GuideSystem extends createSystem({}) {
       game.partsPlaced.subscribe(() => this.refresh()),
       game.barHeld.subscribe(() => this.refresh()),
       game.toast.subscribe(() => this.refresh()),
+      exp.active.subscribe(() => this.refresh()),
+      exp.section.subscribe(() => this.refresh()),
+      exp.summited.subscribe(() => this.refresh()),
+      exp.finished.subscribe(() => this.refresh()),
+      expControl.hint.subscribe(() => this.refresh()),
+      expControl.camp.subscribe(() => this.refresh()),
+      expControl.wall.subscribe(() => this.refresh()),
       this.world.visibilityState.subscribe((state) => {
         if (state !== VisibilityState.NonImmersive) audio.unlock();
         this.anchored = false;
@@ -154,6 +194,7 @@ export class GuideSystem extends createSystem({}) {
   }
 
   private copyFor(phase: Phase, immersive: boolean): Copy {
+    if (exp.active.peek()) return this.expeditionCopy(phase, immersive);
     switch (phase) {
       case Phase.Poling:
         return {
@@ -195,8 +236,69 @@ export class GuideSystem extends createSystem({}) {
         return {
           step: 'COMPLETE',
           title: 'Thanks for playing!',
-          body: 'Warm up by the fire. Well flown.',
+          body: immersive ? 'Well flown. Ready for the real mountain?' : 'Well flown. Press E for the real mountain.',
           hint: '',
+        };
+    }
+  }
+
+  /** Short copy for the expedition (the status line comes from the director). */
+  private expeditionCopy(phase: Phase, immersive: boolean): Copy {
+    const section = exp.section.peek();
+    const step = `EXPEDITION · ${SECTION_ORDER.indexOf(section) + 1} OF ${SECTION_ORDER.length}`;
+    const hint = expControl.hint.peek();
+    switch (phase) {
+      case Phase.Climbing:
+        if (expControl.wall.peek() === 'ice') {
+          return {
+            step,
+            title: 'The Ice Wall',
+            body: immersive ? 'Swing the axes into the ice. Pull down.' : 'Hold W to climb.',
+            hint,
+          };
+        }
+        return {
+          step,
+          title: 'The Rock Band',
+          body: immersive ? 'Grab a glowing hold. Pull down.' : 'Hold W to climb.',
+          hint,
+        };
+      case Phase.Launch:
+        return {
+          step: 'THE SUMMIT',
+          title: 'Fly home',
+          body: immersive ? 'Grab the bar. Glide to Base Camp.' : 'Space to launch.',
+          hint: game.barHeld.peek() ? 'Hold on...' : '',
+        };
+      case Phase.Gliding:
+        return {
+          step: 'THE DESCENT',
+          title: 'Fly to Base Camp',
+          body: immersive ? 'Tilt the bar to turn. Pull in to dive.' : 'A / D steer. W dive, S float.',
+          hint: '',
+        };
+      case Phase.Landed:
+        return exp.finished.peek()
+          ? { step: 'EXPEDITION COMPLETE', title: 'Thanks for playing!', body: 'You climbed the mountain.', hint: '' }
+          : { step: 'THE DESCENT', title: 'Touchdown', body: 'Hold on...', hint: '' };
+      case Phase.Poling:
+      default:
+        if (exp.summited.peek()) {
+          return { step: 'THE SUMMIT', title: 'You made it!', body: 'Unpack the glider to fly home.', hint };
+        }
+        if (expControl.camp.peek() > 0) {
+          return {
+            step,
+            title: SECTION_NAMES[section],
+            body: immersive ? 'Hold your hands to the fire.' : 'Stand by the fire to warm up.',
+            hint,
+          };
+        }
+        return {
+          step,
+          title: SECTION_NAMES[section],
+          body: immersive ? 'Plant your poles and push.' : 'Hold W to walk. T: watch.',
+          hint,
         };
     }
   }
@@ -215,7 +317,15 @@ export class GuideSystem extends createSystem({}) {
     this.xrButton.setProperties({
       display: !immersive && this.world.xrEnabled ? 'flex' : 'none',
     });
-    this.restartButton.setProperties({ display: phase === Phase.Landed ? 'flex' : 'none' });
+    const expedition = exp.active.peek();
+    const finished = expedition && exp.finished.peek();
+    this.restartButton.setProperties({ display: phase === Phase.Landed && !expedition ? 'flex' : 'none' });
+    this.expeditionButton.setProperties({ display: phase === Phase.Landed && !expedition ? 'flex' : 'none' });
+    this.skipButton.setProperties({
+      display: expedition && phase === Phase.Poling && expControl.camp.peek() >= 0 && !exp.summited.peek() ? 'flex' : 'none',
+    });
+    this.expRestartButton.setProperties({ display: finished ? 'flex' : 'none' });
+    this.tutorialButton.setProperties({ display: finished ? 'flex' : 'none' });
   }
 
   update(delta: number): void {
@@ -250,6 +360,15 @@ export class GuideSystem extends createSystem({}) {
       // Float above and in front of the glider kit so it never cuts through.
       distance = 0.95;
       drop = -0.22;
+    } else if (phase === Phase.Climbing && exp.active.peek()) {
+      // Expedition walls face any direction: keep the panel out of the face.
+      const wall = currentLevel().currentWall();
+      const into = wall ? -this.fwd.dot(wall.normal) : 0;
+      if (wall && into > 0.2) {
+        const out = this.toPanel.subVectors(this.head, wall.base).dot(wall.normal);
+        distance = clampRange((out - 0.4) / into, 0.45, REFERENCE_DISTANCE);
+        drop = 0.12;
+      }
     } else if (phase === Phase.Climbing && this.fwd.z < -0.2) {
       // Don't bury the panel inside the rock face.
       const room = (this.head.z - (WALL_Z + 0.4)) / -this.fwd.z;

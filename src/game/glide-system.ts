@@ -206,9 +206,11 @@ export class GlideSystem extends createSystem({}) {
       if (Math.abs(this.steer) < 0.15) autoTurn = clamp(err * 0.6, -0.4, 0.4);
       if (Math.abs(err) < 0.9) {
         const needed = ((this.player.position.y - lvl.glideTarget.y) / aimDist) * this.speed;
-        const weight = 0.8 * (1 - Math.min(1, Math.abs(this.pitch)));
-        sink += (clamp(needed, 0.3, 4.5) - sink) * weight;
+        const weight = (lvl.glideAssist?.weight ?? 0.8) * (1 - Math.min(1, Math.abs(this.pitch)));
+        sink += (clamp(needed, 0.3, lvl.glideAssist?.maxSink ?? 4.5) - sink) * weight;
       }
+      const clearance = lvl.glideAssist?.clearance ?? 0;
+      if (clearance > 0) sink = this.terrainLift(sink, clearance, aimDist);
     }
 
     const rig = this.player;
@@ -251,6 +253,26 @@ export class GlideSystem extends createSystem({}) {
       rig.position.y = ground;
       setPhase(Phase.Landed);
     }
+  }
+
+  /**
+   * Lift over rising ground (levels with `glideAssist.clearance`): keep about
+   * `clearance` metres of air under the glider, looking 1.5 s and 3 s ahead,
+   * easing to a few metres on the final approach so you can still land.
+   */
+  private terrainLift(sink: number, clearance: number, aimDist: number): number {
+    const t = clamp((aimDist - 60) / 160, 0, 1);
+    const want = clearance * (0.12 + 0.88 * t * t * (3 - 2 * t));
+    const reach = this.speed;
+    const ground = Math.max(
+      groundAt(this.head.x, this.head.z),
+      groundAt(this.head.x + this.fwd.x * reach * 1.5, this.head.z + this.fwd.z * reach * 1.5),
+      groundAt(this.head.x + this.fwd.x * reach * 3, this.head.z + this.fwd.z * reach * 3),
+    );
+    const agl = this.player.position.y - ground;
+    if (agl >= want) return sink;
+    const k = clamp(agl / want, 0, 1);
+    return Math.min(sink, -3 + (sink + 3) * k);
   }
 
   private updateLanded(dt: number): void {
