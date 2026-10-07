@@ -12,14 +12,15 @@ import {
   VisibilityState,
 } from '@iwsdk/core';
 import { audio } from './audio.js';
+import { packRefs } from './backpack-system.js';
 import { expControl } from './expedition/director/exp-control.js';
-import { SECTION_ORDER } from './expedition/exp-route.js';
+import { SECTION_ORDER, type SectionId, SUMMIT_ELEV } from './expedition/exp-route.js';
 import { SECTION_NAMES } from './expedition/exp-layout.js';
 import { exp } from './expedition/exp-state.js';
 import { currentLevel } from './level.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt, yawForward } from './rig.js';
 import { fadeThen, game, PART_COUNT, Phase, requestRestart, setPhase } from './state.js';
-import { WALL_Z } from './terrain.js';
+import { CLIFF_HEIGHT, WALL_S, WALL_Z } from './terrain.js';
 import { startTutorialKit } from './tutorial-kit.js';
 
 const PANEL_NODE_ID = 'guide-panel';
@@ -32,6 +33,8 @@ interface Copy {
   title: string;
   body: string;
   hint: string;
+  /** Big distance line ("48 m to the summit"); empty hides it. */
+  metric?: string;
 }
 
 export class GuideSystem extends createSystem({}) {
@@ -41,6 +44,7 @@ export class GuideSystem extends createSystem({}) {
   private titleText!: UIKit.Text;
   private bodyText!: UIKit.Text;
   private hintText!: UIKit.Text;
+  private metricText!: UIKit.Text;
   private xrButton!: UIKit.Component;
   private restartButton!: UIKit.Component;
   private expeditionButton!: UIKit.Component;
@@ -55,6 +59,7 @@ export class GuideSystem extends createSystem({}) {
   private readonly localTarget = new Vector3();
   private readonly toPanel = new Vector3();
   private anchored = false;
+
   private phaseTime = 0;
 
   init(): void {
@@ -111,6 +116,7 @@ export class GuideSystem extends createSystem({}) {
     this.titleText = panel.requireElementById<UIKit.Text>('guide-title');
     this.bodyText = panel.requireElementById<UIKit.Text>('guide-body');
     this.hintText = panel.requireElementById<UIKit.Text>('guide-hint');
+    this.metricText = panel.requireElementById<UIKit.Text>('guide-metric');
     this.xrButton = panel.requireElementById('xr-button');
     this.restartButton = panel.requireElementById('restart-button');
     this.stepText.name = 'guide-step';
@@ -163,6 +169,7 @@ export class GuideSystem extends createSystem({}) {
       game.partsPlaced.subscribe(() => this.refresh()),
       game.barHeld.subscribe(() => this.refresh()),
       game.toast.subscribe(() => this.refresh()),
+
       exp.active.subscribe(() => this.refresh()),
       exp.section.subscribe(() => this.refresh()),
       exp.summited.subscribe(() => this.refresh()),
@@ -203,7 +210,8 @@ export class GuideSystem extends createSystem({}) {
           step: 'STEP 1 OF 4',
           title: 'Pole up the trail',
           body: immersive ? 'Fist to grip. Plant, then pull back.' : 'Hold W to pole. Drag to look.',
-          hint: `${game.distanceToCliff.peek()} m to the cliff`,
+          hint: '',
+          metric: `${game.distanceToCliff.peek() + Math.round(CLIFF_HEIGHT)} m to the summit`,
         };
       case Phase.Climbing:
         return {
@@ -249,6 +257,23 @@ export class GuideSystem extends createSystem({}) {
     const section = exp.section.peek();
     const step = `EXPEDITION · ${SECTION_ORDER.indexOf(section) + 1} OF ${SECTION_ORDER.length}`;
     const hint = expControl.hint.peek();
+    const toSummit = Math.max(0, Math.round((SUMMIT_ELEV - this.player.position.y) / 10) * 10);
+    const metric =
+      !exp.summited.peek() && (phase === Phase.Poling || phase === Phase.Climbing)
+        ? `${toSummit.toLocaleString('en-GB')} m to the summit`
+        : '';
+    const copy = this.expeditionPhaseCopy(phase, immersive, step, section, hint);
+    copy.metric = metric;
+    return copy;
+  }
+
+  private expeditionPhaseCopy(
+    phase: Phase,
+    immersive: boolean,
+    step: string,
+    section: SectionId,
+    hint: string,
+  ): Copy {
     switch (phase) {
       case Phase.Climbing:
         if (expControl.wall.peek() === 'ice') {
@@ -314,8 +339,15 @@ export class GuideSystem extends createSystem({}) {
     this.titleText.setProperties({ text: copy.title });
     this.bodyText.setProperties({ text: copy.body });
     const toastNow = game.toast.peek();
-    const hint = toastNow && toastNow.until > performance.now() / 1000 ? toastNow.text : copy.hint;
+    let hint = toastNow && toastNow.until > performance.now() / 1000 ? toastNow.text : copy.hint;
+    // While the panel still floats with you, teach the pack gesture: a
+    // third of the way up the first slope the panel moves into the pack.
+    if (immersive && !this.panelInPack() && phase === Phase.Poling) {
+      hint = hint || 'Soon these notes go in your pack: turn your left palm up to open it';
+    }
     this.hintText.setProperties({ text: hint, display: hint ? 'flex' : 'none' });
+    const metric = copy.metric ?? '';
+    this.metricText.setProperties({ text: metric, display: metric ? 'flex' : 'none' });
     this.xrButton.setProperties({
       display: !immersive && this.world.xrEnabled ? 'flex' : 'none',
     });
@@ -343,6 +375,12 @@ export class GuideSystem extends createSystem({}) {
   private placeInFront(): void {
     const object = this.panelObject!;
     const phase = game.phase.peek();
+    // A third of the way up the first slope, the notes move into the pack
+    // (except for the end-of-run screen and its buttons).
+    if (this.panelInPack()) {
+      this.placeInPack(object);
+      return;
+    }
     // While gliding, show the tips briefly and then get out of the way.
     object.visible = !(phase === Phase.Gliding && this.phaseTime > 9);
     if (!object.visible) return;
@@ -402,7 +440,35 @@ export class GuideSystem extends createSystem({}) {
     object.scale.setScalar((BASE_SCALE * d) / REFERENCE_DISTANCE);
     object.lookAt(this.head);
   }
+
+  /** In XR, does the panel live in the backpack (shown only while it's open)? */
+  private panelInPack(): boolean {
+    const phase = game.phase.peek();
+    if (phase === Phase.Landed) return false;
+    if (exp.active.peek()) return true;
+    if (phase !== Phase.Poling) return true;
+    // Tutorial trail: float with you for the first third of the slope.
+    return game.distanceToCliff.peek() <= (WALL_S * 2) / 3;
+  }
+
+  /** Ride just above the open pack, facing you; hidden while it's closed. */
+  private placeInPack(object: Object3D): void {
+    const pack = packRefs.root;
+    const open = game.packOpen.peek() && !!pack && pack.scale.x > 0.15;
+    object.visible = open;
+    this.anchored = false;
+    if (!open || !pack) return;
+    getHeadWorld(this.world, this.head);
+    pack.updateMatrixWorld(true);
+    object.position.copy(PANEL_IN_PACK);
+    pack.localToWorld(object.position);
+    const d = object.position.distanceTo(this.head);
+    object.scale.setScalar(((BASE_SCALE * d) / REFERENCE_DISTANCE) * 0.8 * Math.min(1, pack.scale.x));
+    object.lookAt(this.head);
+  }
 }
+
+const PANEL_IN_PACK = new Vector3(0, 0.27, -0.05);
 
 function clampRange(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;

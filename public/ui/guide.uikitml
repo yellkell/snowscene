@@ -61,6 +61,20 @@
     color: rgba(255, 255, 255, 0.88);
   }
 
+  .metric {
+    color: #1f2a37;
+    font-size: 30px;
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.5px;
+    width: 100%;
+    margin-bottom: 8px;
+  }
+
+  .metric:dark {
+    color: rgba(255, 255, 255, 0.95);
+  }
+
   .hint {
     color: #5c6b7c;
     font-size: 12px;
@@ -91,7 +105,8 @@
     <span id="guide-title" class="heading">Pole up the trail</span>
     <Divider></Divider>
     <span id="guide-body" class="body">Fist to grip. Plant, then pull back.</span>
-    <span id="guide-hint" class="hint">72 m to the cliff</span>
+    <span id="guide-metric" class="metric" style="display: none">79 m to the summit</span>
+    <span id="guide-hint" class="hint"></span>
   </div>
   <Button id="xr-button" class="button">
     <ButtonIcon>

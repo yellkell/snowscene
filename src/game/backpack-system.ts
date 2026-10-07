@@ -84,6 +84,11 @@ interface Slot {
 const tmpA = new Vector3();
 const tmpB = new Vector3();
 
+/** The pack's root while it's open (the guide panel rides on it in XR). */
+export const packRefs = {
+  root: null as Group | null,
+};
+
 export class BackpackSystem extends createSystem({}) {
   private root = new Group();
   private pack!: Group;
@@ -112,6 +117,7 @@ export class BackpackSystem extends createSystem({}) {
   private readonly quat = new Quaternion();
 
   init(): void {
+    packRefs.root = this.root;
     this.root.name = 'BackpackUI';
     this.pack = buildBackpack();
     this.root.add(this.pack);
