@@ -26,6 +26,12 @@ class SnowAudio {
   private music = new Map<MusicTrack, { element: HTMLAudioElement; gain: GainNode }>();
   private wantedTrack: MusicTrack = 'river';
   private currentTrack: MusicTrack | null = null;
+  /** Whole-score level (expedition hands over to its generative pad). */
+  private musicBus: GainNode | null = null;
+  private musicLevel = 1;
+  /** Expedition scaling of the weather wind bed and storm howl. */
+  private bedWind = 1;
+  private bedHowl = 1;
 
   /** Create/resume the audio context; call from a user gesture or XR start. */
   unlock(): void {
@@ -38,6 +44,9 @@ class SnowAudio {
       this.master = this.ctx.createGain();
       this.master.gain.value = 0.8;
       this.master.connect(this.ctx.destination);
+      this.musicBus = this.ctx.createGain();
+      this.musicBus.gain.value = this.musicLevel;
+      this.musicBus.connect(this.master);
       const length = this.ctx.sampleRate * 2;
       this.noise = this.ctx.createBuffer(1, length, this.ctx.sampleRate);
       const data = this.noise.getChannelData(0);
@@ -78,7 +87,7 @@ class SnowAudio {
       element.crossOrigin = 'anonymous';
       const gain = this.ctx.createGain();
       gain.gain.value = 0;
-      this.ctx.createMediaElementSource(element).connect(gain).connect(this.master);
+      this.ctx.createMediaElementSource(element).connect(gain).connect(this.musicBus ?? this.master);
       entry = { element, gain };
       this.music.set(track, entry);
     }
@@ -86,7 +95,7 @@ class SnowAudio {
   }
 
   private applyMusic(): void {
-    if (!this.ctx || this.currentTrack === this.wantedTrack) return;
+    if (!this.ctx || this.musicLevel <= 0 || this.currentTrack === this.wantedTrack) return;
     const t = this.ctx.currentTime;
     const previous = this.currentTrack ? this.music.get(this.currentTrack) : undefined;
     if (previous) {
@@ -113,6 +122,43 @@ class SnowAudio {
     next.gain.gain.cancelScheduledValues(t);
     next.gain.gain.setValueAtTime(next.gain.gain.value, t);
     next.gain.gain.linearRampToValueAtTime(MUSIC_VOLUME, t + (previous ? CROSSFADE_SECONDS : 2));
+  }
+
+  /**
+   * Scale the whole score 0..1 over `seconds`. At 0 the playing track pauses
+   * once faded (so it stops decoding), and raising the level restarts the
+   * wanted track (By the River from the top). Used by the expedition.
+   */
+  setMusicLevel(level: number, seconds = 6): void {
+    const target = Math.max(0, Math.min(1, level));
+    if (target === this.musicLevel) return;
+    this.musicLevel = target;
+    if (!this.ctx || !this.musicBus) return;
+    const t = this.ctx.currentTime;
+    const bus = this.musicBus.gain;
+    bus.cancelScheduledValues(t);
+    bus.setValueAtTime(bus.value, t);
+    bus.linearRampToValueAtTime(target, t + Math.max(0.05, seconds));
+    if (target > 0) {
+      this.applyMusic();
+      return;
+    }
+    window.setTimeout(() => {
+      if (this.musicLevel > 0 || !this.currentTrack || !this.ctx) return;
+      const entry = this.music.get(this.currentTrack);
+      if (entry) {
+        entry.element.pause();
+        entry.gain.gain.cancelScheduledValues(this.ctx.currentTime);
+        entry.gain.gain.setValueAtTime(0, this.ctx.currentTime);
+      }
+      this.currentTrack = null;
+    }, Math.max(0.05, seconds) * 1000 + 150);
+  }
+
+  /** Scale the weather wind bed and storm howl (1 = unchanged). Used by the expedition. */
+  setWeatherBedScale(wind: number, howl = 1): void {
+    this.bedWind = wind;
+    this.bedHowl = howl;
   }
 
   private startWind(): void {
@@ -159,7 +205,7 @@ class SnowAudio {
   setStorm(level: number, gust: number): void {
     if (!this.ctx || !this.howlGain || !this.howlFilter) return;
     const t = this.ctx.currentTime;
-    this.howlGain.gain.setTargetAtTime(level * level * (0.35 + 0.65 * gust) * 0.55, t, 0.4);
+    this.howlGain.gain.setTargetAtTime(level * level * (0.35 + 0.65 * gust) * 0.55 * this.bedHowl, t, 0.4);
     this.howlFilter.frequency.setTargetAtTime(320 + gust * 520 + level * 120, t, 0.6);
   }
 
@@ -178,7 +224,7 @@ class SnowAudio {
   setWind(level: number): void {
     if (!this.ctx || !this.windGain || !this.windFilter) return;
     const t = this.ctx.currentTime;
-    this.windGain.gain.setTargetAtTime(0.04 + level * 0.32, t, 0.3);
+    this.windGain.gain.setTargetAtTime((0.04 + level * 0.32) * this.bedWind, t, 0.3);
     this.windFilter.frequency.setTargetAtTime(380 + level * 1400, t, 0.3);
   }
 
