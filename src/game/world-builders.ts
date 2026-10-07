@@ -36,7 +36,7 @@ import {
   Uint32BufferAttribute,
   Vector3,
 } from '@iwsdk/core';
-import { createLandMaterial } from './land-material.js';
+import { applyFireGlow, createLandMaterial } from './land-material.js';
 import { GeometryBuilder, placed } from './mesh-utils.js';
 import {
   CLIFF_BASE_Y,
@@ -556,14 +556,13 @@ export function buildCabin(x: number, z: number, rotY: number): Group {
 // ---------------------------------------------------------------- lake -----
 
 export function buildLake(): Mesh {
-  const lake = new Mesh(
-    new CircleGeometry(1, 72),
-    new MeshStandardMaterial({
-      color: new Color(0.62, 0.78, 0.9),
-      roughness: 0.12,
-      metalness: 0.15,
-    }),
-  );
+  const iceMaterial = new MeshStandardMaterial({
+    color: new Color(0.62, 0.78, 0.9),
+    roughness: 0.12,
+    metalness: 0.15,
+  });
+  applyFireGlow(iceMaterial);
+  const lake = new Mesh(new CircleGeometry(1, 72), iceMaterial);
   lake.rotation.x = -Math.PI / 2;
   lake.scale.set(LAKE_RADIUS_X * 0.88, LAKE_RADIUS_Z * 0.88, 1);
   lake.position.set(LAKE_CENTER_X, LAKE_Y, LAKE_CENTER_Z);

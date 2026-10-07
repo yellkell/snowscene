@@ -31,8 +31,13 @@ import {
   pathX,
   terrainHeight,
   terrainSlope,
+  TUTORIAL_CENTER_X,
+  TUTORIAL_CENTER_Z,
+  TUTORIAL_TERRAIN_RADIUS,
   valueNoise,
+  CLIFF_CENTER_X,
   WALL_S,
+  WALL_Z,
 } from './terrain.js';
 import { buildBarkTexture, buildBranchTexture } from './textures.js';
 
@@ -146,10 +151,18 @@ function canGrow(x: number, z: number): boolean {
   if (lx * lx + lz * lz < 1.3) return false;
   if (s > 60 && s < 95 && d < 14) return false; // cliff + summit
   if (s > 40 && s < WALL_S && d < 16) return false; // keep the launch vista open
+  // Stay inside the playable terrain (the great ranges draw behind it).
+  if (Math.hypot(x - TUTORIAL_CENTER_X, z - TUTORIAL_CENTER_Z) > TUTORIAL_TERRAIN_RADIUS - 6) return false;
+  // Keep the glide corridor from the summit to the lake party clear of trees.
+  if (z > WALL_Z - 10 && z < LAKE_CENTER_Z + 40) {
+    const t = (z - WALL_Z) / (LAKE_CENTER_Z - WALL_Z);
+    const cx = CLIFF_CENTER_X + (LAKE_CENTER_X - CLIFF_CENTER_X) * Math.min(1, Math.max(0, t));
+    if (Math.abs(x - cx) < 36 + 14 * Math.min(1, Math.max(0, t))) return false;
+  }
   return true;
 }
 
-export function buildForest(count = 640): Group {
+export function buildForest(count = 520): Group {
   const rand = mulberry32(42);
   const matrices: Matrix4[] = [];
   const tints: Color[] = [];
@@ -162,7 +175,7 @@ export function buildForest(count = 640): Group {
     attempts++;
     const nearTrail = rand() < 0.4;
     const x = nearTrail ? (rand() * 2 - 1) * 50 : (rand() * 2 - 1) * 260;
-    const z = nearTrail ? 35 - rand() * 100 : 230 - rand() * 440;
+    const z = nearTrail ? 35 - rand() * 100 : 300 - rand() * 510;
     if (!canGrow(x, z)) continue;
     // Clumped distribution reads more natural than uniform scatter.
     if (valueNoise(x * 0.03, z * 0.03) < -0.25 && rand() < 0.7) continue;

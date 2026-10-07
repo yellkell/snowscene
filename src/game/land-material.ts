@@ -9,7 +9,7 @@
  *  - view-dependent glints on sunlit snow.
  */
 
-import { MeshStandardMaterial, type Texture, Vector3 } from '@iwsdk/core';
+import { MeshStandardMaterial, type Texture, Vector3, Vector4 } from '@iwsdk/core';
 import { FAR_DEPTH_GLSL, FAR_VERTEX_DEPTH } from './far-layer.js';
 import { CLOUD_SEA_Y } from './terrain.js';
 import { landTextures } from './textures.js';
@@ -36,7 +36,35 @@ export interface LandMaterialOptions {
 export const landUniforms = {
   uSunDir: { value: new Vector3(0, 1, 0) },
   uSparkle: { value: 3.0 },
+  /** Warm light pool from a bonfire: xyz = position, w = strength (0 = off). */
+  uFireGlow: { value: new Vector4(0, 0, 0, 0) },
 };
+
+/** GLSL: warm bonfire light on a surface (cheap stand-in for a PointLight). */
+const FIRE_GLOW_GLSL = `
+  {
+    float fireD = distance(FIRE_GLOW_POS.xz, uFireGlow.xz);
+    totalEmissiveRadiance += diffuseColor.rgb * vec3(1.0, 0.42, 0.13) * uFireGlow.w
+      * smoothstep(52.0, 6.0, fireD) / (1.0 + fireD * fireD * 0.012);
+  }
+`;
+
+/** Add the bonfire glow to any MeshStandardMaterial (e.g. the frozen lake). */
+export function applyFireGlow(material: MeshStandardMaterial): void {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uFireGlow = landUniforms.uFireGlow;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vGlowWorld;')
+      .replace(
+        '#include <project_vertex>',
+        '#include <project_vertex>\nvGlowWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;',
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vGlowWorld;\nuniform vec4 uFireGlow;\n#define FIRE_GLOW_POS vGlowWorld')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${FIRE_GLOW_GLSL}`);
+  };
+  material.customProgramCacheKey = () => 'fireglow';
+}
 
 export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandardMaterial {
   const tex = landTextures();
@@ -55,6 +83,8 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
     #define LAND_SNOW_CLING ${(opts.snowCling ?? 0).toFixed(3)}
     ${opts.sparkle ? '#define LAND_SPARKLE' : ''}
     ${opts.cloudMist ? '#define LAND_MIST' : ''}
+    ${opts.farLayer ? '#define LAND_FAR' : ''}
+    #define FIRE_GLOW_POS vLandWorld
     #define LAND_CLOUD_Y ${CLOUD_SEA_Y.toFixed(1)}
   `;
   material.onBeforeCompile = (shader) => {
@@ -64,6 +94,7 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
     shader.uniforms.uLandNoise = { value: tex.noise };
     shader.uniforms.uSunDir = landUniforms.uSunDir;
     shader.uniforms.uSparkle = landUniforms.uSparkle;
+    shader.uniforms.uFireGlow = landUniforms.uFireGlow;
 
     shader.vertexShader = shader.vertexShader
       .replace(
@@ -100,7 +131,8 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
         uniform sampler2D uRockNormal;
         uniform sampler2D uLandNoise;
         uniform vec3 uSunDir;
-        uniform float uSparkle;`,
+        uniform float uSparkle;
+        uniform vec4 uFireGlow;`,
       )
       .replace(
         '#include <map_fragment>',
@@ -165,6 +197,9 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
           glint *= (1.0 - landRock) * (1.0 - smoothstep(5.0, 22.0, dist)) * step(0.0, uSunDir.y);
           totalEmissiveRadiance += vec3(1.0, 0.95, 0.85) * glint * uSparkle;
         }
+        #endif
+        #ifndef LAND_FAR
+        ${FIRE_GLOW_GLSL}
         #endif`,
       )
       .replace(
