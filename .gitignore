@@ -43,3 +43,6 @@ pids/
 .cursor/mcp.json
 .vscode/mcp.json
 .codex/config.toml
+
+# Local verification output (screenshots, browser scripts)
+artifacts/
