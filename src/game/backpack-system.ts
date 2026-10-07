@@ -15,7 +15,12 @@
  *   flare     raise it above your head and squeeze to fire it
  *   glider    drop it on the summit to unpack it
  *
- * Desktop: B toggles the pack, 1-9 take items, U uses, Q stows.
+ * RECENTRE: a brass button on the front of the open pack. Poke it with your
+ * right index finger to re-centre yourself: back to the middle of the deck
+ * you're on in the cave, your lean on the flume, facing up the trail, back
+ * at the workbench, or facing the fire once you've landed.
+ *
+ * Desktop: B toggles the pack, 1-9 take items, U uses, Q stows, R recentres.
  */
 
 import {
@@ -50,9 +55,11 @@ import {
 import { HANDS, hands, type Handedness } from './hand-input.js';
 import { buildBackpack, buildHeldItem, buildSlotIcon } from './items.js';
 import { currentLevel } from './level.js';
-import { getHeadWorld, getHeadYaw } from './rig.js';
 import { sceneRefs } from './scene-system.js';
-import { addWarmth, game, toast } from './state.js';
+import { FIRE_POS } from './campfire.js';
+import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt } from './rig.js';
+import { addWarmth, game, Phase, requestRecentre, SUMMIT_STAND, toast } from './state.js';
+import { SUMMIT_Y } from './terrain.js';
 
 /** Gesture thresholds (from FLUX): palm-normal·up and gaze cone, open/stay. */
 const OPEN_UP = 0.65;
@@ -68,6 +75,10 @@ const SLOT_RADIUS = 0.24;
 const ICON_SIZE = 0.07;
 const SLOT_REACH = 0.075;
 const STOW_REACH = 0.13;
+/** The recentre button: where it sits on the pack's front, and poke radii. */
+const BUTTON_POS = new Vector3(0, -0.055, 0.1);
+const BUTTON_PRESS = 0.028;
+const BUTTON_REARM = 0.06;
 
 type SlotId = ItemId | 'headlamp-worn';
 
@@ -107,6 +118,10 @@ export class BackpackSystem extends createSystem({}) {
   private sipCooldown = 0;
   private squeezeTime = 0;
   private builtVersion = -1;
+  private button!: Group;
+  private buttonCap!: Mesh;
+  private buttonArmed = true;
+  private buttonPush = 0;
   private readonly head = new Vector3();
   private readonly gaze = new Vector3();
   private readonly want = new Vector3();
@@ -116,6 +131,8 @@ export class BackpackSystem extends createSystem({}) {
     this.root.name = 'BackpackUI';
     this.pack = buildBackpack();
     this.root.add(this.pack);
+    this.button = this.buildButton();
+    this.root.add(this.button);
     this.root.visible = false;
     this.world.createTransformEntity(this.root, { persistent: true });
 
@@ -147,7 +164,101 @@ export class BackpackSystem extends createSystem({}) {
       equipment.headlampOn.subscribe((on) => {
         this.headlamp.visible = on;
       }),
+      game.recentre.subscribe((n) => {
+        if (n > 0) this.recentreGeneric();
+      }),
     );
+  }
+
+  /** A round brass button with a circling-arrow face. */
+  private buildButton(): Group {
+    const group = new Group();
+    group.name = 'RecentreButton';
+    group.position.copy(BUTTON_POS);
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 128;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#d8b23a';
+    ctx.beginPath();
+    ctx.arc(64, 64, 62, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#2b2116';
+    ctx.lineWidth = 11;
+    ctx.beginPath();
+    ctx.arc(64, 60, 30, -0.4, Math.PI * 1.55);
+    ctx.stroke();
+    ctx.fillStyle = '#2b2116';
+    ctx.beginPath();
+    ctx.moveTo(98, 34);
+    ctx.lineTo(98, 66);
+    ctx.lineTo(70, 50);
+    ctx.closePath();
+    ctx.fill();
+    ctx.font = '700 17px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('RECENTRE', 64, 118);
+    const texture = new CanvasTexture(canvas);
+    texture.colorSpace = SRGBColorSpace;
+    this.buttonCap = new Mesh(
+      new PlaneGeometry(0.056, 0.056),
+      new MeshBasicMaterial({ map: texture, transparent: true, alphaTest: 0.5 }),
+    );
+    group.add(this.buttonCap);
+    return group;
+  }
+
+  /** Right index fingertip poking the recentre button. */
+  private updateButton(dt: number, presenting: boolean): void {
+    this.buttonPush = Math.max(0, this.buttonPush - dt * 4);
+    this.buttonCap.position.z = -0.008 * this.buttonPush;
+    if (!presenting || this.scale < 1) return;
+    const tip = hands.right.indexTip;
+    if (!hands.right.tracked) return;
+    this.buttonCap.getWorldPosition(tmpA);
+    const d = tmpA.distanceTo(tip);
+    if (this.buttonArmed && d < BUTTON_PRESS) {
+      this.buttonArmed = false;
+      this.pressButton();
+    } else if (!this.buttonArmed && d > BUTTON_REARM) {
+      this.buttonArmed = true;
+    }
+  }
+
+  private pressButton(): void {
+    this.buttonPush = 1;
+    audio.clack();
+    requestRecentre();
+  }
+
+  /** Re-centring outside the cave and the flume (they handle their own). */
+  private recentreGeneric(): void {
+    const world = this.world;
+    switch (game.phase.peek()) {
+      case Phase.Poling: {
+        getHeadWorld(world, this.head);
+        currentLevel().walkDirection(this.head.x, this.head.z, tmpA);
+        faceYaw(world, Math.atan2(-tmpA.x, -tmpA.z));
+        toast('Facing up the trail.', 2);
+        break;
+      }
+      case Phase.Building:
+        faceYaw(world, 0);
+        placeHeadAt(world, SUMMIT_STAND.x, SUMMIT_STAND.z, SUMMIT_Y);
+        toast('Back at the workbench.', 2);
+        break;
+      case Phase.Landed:
+        getHeadWorld(world, this.head);
+        faceYaw(world, Math.atan2(-(FIRE_POS.x - this.head.x), -(FIRE_POS.z - this.head.z)));
+        toast('Facing the fire.', 2);
+        break;
+      case Phase.Climbing:
+      case Phase.Launch:
+      case Phase.Gliding:
+        toast("Can't recentre right now. Hold on!", 2);
+        break;
+      default:
+        break;
+    }
   }
 
   // ------------------------------------------------------------- slots -----
@@ -251,6 +362,7 @@ export class BackpackSystem extends createSystem({}) {
       this.placePack(dt, presenting);
       this.layoutSlots();
       if (presenting && this.scale >= 1) this.updateReach(dt);
+      this.updateButton(dt, presenting);
     }
 
     this.updateHeldModels();
@@ -311,6 +423,7 @@ export class BackpackSystem extends createSystem({}) {
     }
     if (kb.getKeyDown('KeyQ')) this.stowHand('right');
     if (kb.getKeyDown('KeyU')) this.useRightItemDesktop();
+    if (kb.getKeyDown('KeyR')) this.pressButton();
   }
 
   private placePack(dt: number, presenting: boolean): void {

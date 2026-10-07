@@ -75,6 +75,9 @@ export class FlumeSystem extends createSystem({}) {
         else this.halt();
       }),
       game.resetCount.subscribe(() => this.halt()),
+      game.recentre.subscribe((n) => {
+        if (n > 0 && game.phase.peek() === Phase.Sliding) this.recentre();
+      }),
     );
   }
 
@@ -110,6 +113,16 @@ export class FlumeSystem extends createSystem({}) {
     this.player.worldToLocal(this.local);
     this.calib.set(this.local.x, 0, this.local.z);
     this.place();
+  }
+
+  /** Take wherever you're standing now as the middle lane. */
+  private recentre(): void {
+    getHeadWorld(this.world, this.head);
+    this.local.copy(this.head);
+    this.player.worldToLocal(this.local);
+    this.calib.set(this.local.x, 0, this.local.z);
+    this.place();
+    toast('Recentred: you are in the middle lane.', 2);
   }
 
   /** Put the rig on the flume at the current arc length. */

@@ -77,7 +77,14 @@ export const game = {
   toast: signal<{ text: string; until: number } | null>(null),
   /** The backpack is open (palm up). */
   packOpen: signal(false),
+  /** Bumped by the backpack's recentre button; systems re-centre the player. */
+  recentre: signal(0),
 };
+
+/** Ask the active part of the journey to re-centre the player. */
+export function requestRecentre(): void {
+  game.recentre.value = game.recentre.peek() + 1;
+}
 
 /** Show a brief message on the guide panel. */
 export function toast(text: string, seconds = 3.5): void {
