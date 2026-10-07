@@ -49,10 +49,12 @@ export class GuideSystem extends createSystem({}) {
   private phaseTime = 0;
 
   init(): void {
-    // Score: "By the River" for the ascent, "Night Catch" once the glider is built.
+    // Score: "By the River" for the ascent, "Night Catch" from the moment
+    // the beacon is lit, down the flume and on through the glide.
     const updateMusic = () => {
       const phase = game.phase.peek();
       const built =
+        game.beaconLit.peek() ||
         game.partsPlaced.peek() >= PART_COUNT ||
         phase === Phase.Launch ||
         phase === Phase.Gliding ||
@@ -62,6 +64,7 @@ export class GuideSystem extends createSystem({}) {
     this.cleanupFuncs.push(
       game.phase.subscribe(updateMusic),
       game.partsPlaced.subscribe(updateMusic),
+      game.beaconLit.subscribe(updateMusic),
     );
     const unlock = () => audio.unlock();
     window.addEventListener('pointerdown', unlock);
@@ -111,6 +114,8 @@ export class GuideSystem extends createSystem({}) {
       }),
       game.distanceToCliff.subscribe(() => this.refresh()),
       game.partsPlaced.subscribe(() => this.refresh()),
+      game.partsFound.subscribe(() => this.refresh()),
+      game.beaconLit.subscribe(() => this.refresh()),
       game.barHeld.subscribe(() => this.refresh()),
       game.toast.subscribe(() => this.refresh()),
       this.world.visibilityState.subscribe((state) => {
@@ -142,35 +147,62 @@ export class GuideSystem extends createSystem({}) {
     switch (phase) {
       case Phase.Poling:
         return {
-          step: 'STEP 1 OF 4',
+          step: 'STEP 1 OF 7',
           title: 'Pole up the trail',
           body: immersive ? 'Fist to grip. Plant, then pull back.' : 'Hold W to pole. Drag to look.',
           hint: `${game.distanceToCliff.peek()} m to the cliff`,
         };
       case Phase.Climbing:
         return {
-          step: 'STEP 2 OF 4',
+          step: 'STEP 2 OF 7',
           title: 'Climb',
           body: immersive ? 'Grab a glowing hold. Pull down.' : 'Hold W to climb.',
           hint: '',
         };
+      case Phase.Cave:
+        return {
+          step: 'STEP 3 OF 7',
+          title: 'The timber works',
+          body: immersive
+            ? 'Step onto decks with green lamps. Amber: leaving. Red: moving.'
+            : 'W steps across on green lamps. E takes a part.',
+          hint: `${game.partsFound.peek()} of 3 parts found`,
+        };
+      case Phase.Beacon:
+        return {
+          step: 'STEP 4 OF 7',
+          title: game.beaconLit.peek() ? 'The beacon is lit' : 'Light the beacon',
+          body: game.beaconLit.peek()
+            ? 'The party below has seen you. To the flume!'
+            : immersive
+              ? 'Grab the torch. Hold it to the brazier.'
+              : 'Press E to light the beacon.',
+          hint: '',
+        };
+      case Phase.Sliding:
+        return {
+          step: 'STEP 5 OF 7',
+          title: 'Ride the flume',
+          body: immersive ? 'Lean or duck past the hazards.' : 'A / D to lean past the hazards.',
+          hint: '',
+        };
       case Phase.Building:
         return {
-          step: 'STEP 3 OF 4',
+          step: 'STEP 6 OF 7',
           title: 'Build your glider',
           body: immersive ? 'Carry each part to its outline.' : 'Press E to fit a part.',
           hint: `${game.partsPlaced.peek()} of 3 fitted`,
         };
       case Phase.Launch:
         return {
-          step: 'STEP 3 OF 4',
+          step: 'STEP 6 OF 7',
           title: 'Take off',
           body: immersive ? 'Grab the bar. Fly to the fire.' : 'Space to launch. Fly to the fire.',
           hint: game.barHeld.peek() ? 'Hold on...' : '',
         };
       case Phase.Gliding:
         return {
-          step: 'STEP 4 OF 4',
+          step: 'STEP 7 OF 7',
           title: 'Fly to the campfire',
           body: immersive ? 'Tilt the bar to turn. Pull in to dive.' : 'A / D steer. W dive, S float.',
           hint: '',
@@ -216,8 +248,11 @@ export class GuideSystem extends createSystem({}) {
   private placeInFront(): void {
     const object = this.panelObject!;
     const phase = game.phase.peek();
-    // While gliding, show the tips briefly and then get out of the way.
-    object.visible = !(phase === Phase.Gliding && this.phaseTime > 9);
+    // While gliding or sliding, show the tips briefly and then get out of the way.
+    object.visible = !(
+      (phase === Phase.Gliding && this.phaseTime > 9) ||
+      (phase === Phase.Sliding && this.phaseTime > 6)
+    );
     if (!object.visible) return;
 
     getHeadWorld(this.world, this.head);

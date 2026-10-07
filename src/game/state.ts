@@ -11,6 +11,12 @@ export const Phase = {
   Poling: 'Poling',
   /** Grab rock holds with closed hands and pull to climb the cliff. */
   Climbing: 'Climbing',
+  /** Ride the timber works up the ice cave, recovering the glider parts. */
+  Cave: 'Cave',
+  /** At the top of the works: light the signal beacon. */
+  Beacon: 'Beacon',
+  /** Down the log flume around the Needle, leaning past the hazards. */
+  Sliding: 'Sliding',
   /** Assemble the hang glider kit on the summit workbench. */
   Building: 'Building',
   /** Glider is assembled; grab the control bar with both hands to launch. */
@@ -37,6 +43,12 @@ export const game = {
   distanceToCliff: signal(Math.round(-WALL_Z)),
   /** How many glider parts have been fitted. */
   partsPlaced: signal(0),
+  /** How many glider parts have been recovered from the cave. */
+  partsFound: signal(0),
+  /** The signal beacon on top of the Needle is burning. */
+  beaconLit: signal(false),
+  /** 0 outdoors .. 1 inside the cave (weather and sky stand down). */
+  indoors: 0,
   /** Increments whenever the experience restarts so systems can reset. */
   resetCount: signal(0),
   /** True while the player is holding the control bar with both hands. */

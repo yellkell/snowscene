@@ -1,13 +1,17 @@
 /**
- * Snow Scene: pole up a mountain trail, climb the final cliff, build a hang
- * glider on the summit and glide back down to the valley. Designed for
- * WebXR hand tracking, with controller and desktop fallbacks.
+ * Snow Scene: pole up a mountain trail, climb the final cliff, ride the old
+ * timber works up the ice cave inside the Needle to recover the glider parts
+ * and light the beacon, slide down the log flume, build the hang glider and
+ * glide back down to the valley. Designed for WebXR hand tracking, with
+ * controller and desktop fallbacks.
  */
 
 import { World } from '@iwsdk/core';
 import projectOptions from 'virtual:iwsdk-project';
 import { audio } from './game/audio.js';
 import { BackpackSystem } from './game/backpack-system.js';
+import { CaveSystem } from './game/cave/cave-system.js';
+import { FlumeSystem } from './game/flume/flume-system.js';
 import { CampfireSystem } from './game/campfire.js';
 import { ClimbSystem } from './game/climb-system.js';
 import { DesktopLookSystem } from './game/desktop-look-system.js';
@@ -42,10 +46,21 @@ World.create(
     .registerSystem(ClimbSystem, { priority: 11 })
     .registerSystem(GliderBuildSystem, { priority: 12 })
     .registerSystem(GlideSystem, { priority: 13 })
+    .registerSystem(CaveSystem, { priority: 14 })
+    .registerSystem(FlumeSystem, { priority: 15 })
     .registerSystem(GuideSystem, { priority: 30 });
 
   // Dev-only handle for automated checks and quick phase skipping.
   if (import.meta.env.DEV) {
-    (window as unknown as Record<string, unknown>).__snow = { world, game, hands, audio, Phase, setPhase };
+    (window as unknown as Record<string, unknown>).__snow = {
+      world,
+      game,
+      hands,
+      audio,
+      Phase,
+      setPhase,
+      cave: world.getSystem(CaveSystem),
+      flume: world.getSystem(FlumeSystem),
+    };
   }
 });

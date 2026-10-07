@@ -184,7 +184,9 @@ export class WeatherSystem extends createSystem({}) {
     (snow.uCenter.value as Vector3).copy(this.head);
     (snow.uOffset.value as Vector3).copy(this.snowOffset);
     (snow.uVelocity.value as Vector3).set(wx, -fall, wz);
-    snow.uIntensity.value = 0.18 + storm * 0.82;
+    // Indoors (the ice cave) the weather stands down entirely.
+    const outdoors = 1 - game.indoors;
+    snow.uIntensity.value = (0.18 + storm * 0.82) * outdoors;
 
     // Spindrift: snow blown along the ground in strong wind.
     this.driftOffset.x += wx * 1.8 * dt;
@@ -195,7 +197,7 @@ export class WeatherSystem extends createSystem({}) {
     (drift.uCenter.value as Vector3).set(this.head.x, this.player.position.y + 0.9, this.head.z);
     (drift.uOffset.value as Vector3).copy(this.driftOffset);
     (drift.uVelocity.value as Vector3).set(wx * 1.8, 0, wz * 1.8);
-    drift.uOpacity.value = smoothstep(1.8, 5.5, windSpeed) * 0.75;
+    drift.uOpacity.value = smoothstep(1.8, 5.5, windSpeed) * 0.75 * outdoors;
 
     // Visibility closes in during the storm; in clear air only the far
     // ranges pick up aerial haze.
@@ -221,16 +223,16 @@ export class WeatherSystem extends createSystem({}) {
       const env = stormLighting ? sceneRefs.stormEnvironment : sceneRefs.clearEnvironment;
       if (env) this.scene.environment = env;
     }
-    this.scene.environmentIntensity = stormLighting ? 1.25 : 1 + storm * 0.3;
+    this.scene.environmentIntensity = (stormLighting ? 1.25 : 1 + storm * 0.3) * (1 - 0.7 * game.indoors);
     const sun = sceneRefs.sunLight;
     if (sun) sun.intensity = SUN_BASE * (1 - 0.8 * smoothstep(0.1, 0.8, storm));
     landUniforms.uSparkle.value = 3 * (1 - smoothstep(0.15, 0.6, storm));
 
     // Wind audio follows both the weather and the glide speed.
     const weatherWind = storm * (0.3 + 0.7 * gust);
-    audio.setWind(Math.max(weatherWind, Math.min(1, game.airspeed / 12)));
-    audio.setStorm(storm, gust);
-    const gustHigh = gust > 0.78 && storm > 0.45;
+    audio.setWind(Math.max(weatherWind * outdoors, Math.min(1, game.airspeed / 12)));
+    audio.setStorm(storm * outdoors, gust);
+    const gustHigh = gust > 0.78 && storm > 0.45 && outdoors > 0.5;
     if (gustHigh && !this.gustWasHigh) audio.whoosh();
     this.gustWasHigh = gustHigh;
   }

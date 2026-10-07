@@ -283,6 +283,46 @@ class SnowAudio {
   whoosh(): void {
     this.burst(600, 0.5, 1.2, 0.3, 'lowpass');
   }
+
+  /** A deck counting out its dwell: a wood-block tock, higher as it runs out. */
+  tock(beatsLeft: number): void {
+    const urgency = 1 - Math.min(3, Math.max(0, beatsLeft - 1)) / 3;
+    this.burst(1500 + urgency * 900, 6, 0.04, 0.12 + 0.18 * urgency, 'bandpass');
+    this.tone(520 + (4 - Math.min(4, beatsLeft)) * 130, 0.08, 0.06 + 0.06 * urgency, 'triangle');
+  }
+
+  /** A clean step onto a deck: a marimba note climbing a pentatonic scale. */
+  marimba(step: number): void {
+    const penta = [0, 2, 4, 7, 9];
+    const f = 330 * Math.pow(2, (penta[step % 5] + 12 * (Math.floor(step / 5) % 2)) / 12);
+    this.tone(f, 0.45, 0.16, 'sine');
+    this.tone(f * 4, 0.08, 0.04, 'sine');
+  }
+
+  /** The ground went without you. */
+  thud(): void {
+    this.burst(160, 1.4, 0.32, 0.55, 'lowpass');
+    this.burst(900, 2, 0.06, 0.15, 'bandpass');
+  }
+
+  /** A machine taking up its rope: ratchet clunk and creak. */
+  clunk(volume = 1): void {
+    this.burst(300, 3, 0.09, 0.2 * volume, 'bandpass');
+    this.burst(120, 2, 0.18, 0.18 * volume, 'lowpass');
+    this.tone(95, 0.25, 0.05 * volume, 'sawtooth', 0.04);
+  }
+
+  /** The beacon catches: a rush of flame. */
+  ignite(): void {
+    this.burst(400, 0.4, 1.6, 0.45, 'lowpass');
+    this.burst(2400, 0.8, 0.5, 0.2, 'highpass');
+  }
+
+  /** Sliding along the iced flume: a continuous rumble while it lasts. */
+  slideRumble(speed: number): void {
+    if (speed <= 0.05) return;
+    this.burst(260 + speed * 30, 0.9, 0.12, 0.05 + 0.02 * speed, 'lowpass');
+  }
 }
 
 export const audio = new SnowAudio();
