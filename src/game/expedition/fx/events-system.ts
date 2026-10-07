@@ -19,6 +19,7 @@
  * a whiteout before `expHooks.respawn(reason)`.
  */
 
+import { expSound } from '../audio/expedition-sound-system.js';
 import {
   BackSide,
   Color,
@@ -291,9 +292,19 @@ export class ExpeditionEventsSystem extends createSystem({}) {
       this.teleported = true;
       this.rearmFrom(s);
     } else if (walking && !Number.isNaN(prev) && this.engulfPhase === 'none') {
-      if (this.avalanche.state === 'armed' && crossed(prev, s, AVALANCHE.triggerS)) this.avalanche.trigger(ctx);
-      if (this.serac.state === 'armed' && crossed(prev, s, SERAC.triggerS)) this.serac.trigger(ctx);
-      if (this.rockfall.state === 'armed' && crossed(prev, s, ROCKFALL.triggerS)) this.rockfall.trigger(ctx);
+      if (this.avalanche.state === 'armed' && crossed(prev, s, AVALANCHE.triggerS)) {
+        this.avalanche.trigger(ctx);
+        expSound.setDanger(0.85, 20);
+        expSound.sting('danger');
+      }
+      if (this.serac.state === 'armed' && crossed(prev, s, SERAC.triggerS)) {
+        this.serac.trigger(ctx);
+        expSound.setDanger(0.55, 14);
+      }
+      if (this.rockfall.state === 'armed' && crossed(prev, s, ROCKFALL.triggerS)) {
+        this.rockfall.trigger(ctx);
+        expSound.setDanger(0.45, 18);
+      }
     }
     this.prevS = walking ? s : Number.NaN;
 

@@ -14,6 +14,7 @@ import { DesktopLookSystem } from './game/desktop-look-system.js';
 import { ExpeditionDirectorSystem } from './game/expedition/director/director-system.js';
 import { ExpeditionSoundSystem } from './game/expedition/audio/expedition-sound-system.js';
 import { WristHudSystem } from './game/expedition/director/wrist-hud.js';
+import { ExpeditionEventsSystem } from './game/expedition/fx/events-system.js';
 import { CrossingGuardSystem } from './game/expedition/mechanics/crossing-guard-system.js';
 import { LadderSystem } from './game/expedition/mechanics/ladder-system.js';
 import { RopeSystem } from './game/expedition/mechanics/rope-system.js';
@@ -57,7 +58,8 @@ World.create(
     .registerSystem(RopeSystem, { priority: 9 })
     .registerSystem(LadderSystem, { priority: 9.5 })
     .registerSystem(CrossingGuardSystem, { priority: 10.5 })
-    .registerSystem(ExpeditionSoundSystem, { priority: 32 });
+    .registerSystem(ExpeditionSoundSystem, { priority: 32 })
+    .registerSystem(ExpeditionEventsSystem, { priority: 27 });
 
   // Dev-only handle for automated checks and quick phase skipping.
   if (import.meta.env.DEV) {
