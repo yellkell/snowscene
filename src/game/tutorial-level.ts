@@ -7,6 +7,7 @@
 import { Object3D, Vector3 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { FIRE_POS } from './campfire.js';
+import { NEEDLE } from './flume/flume-path.js';
 import type { ClimbWall, Level } from './level.js';
 import { CLIMB_TRIGGER_S, game, Phase, setPhase, SUMMIT_STAND } from './state.js';
 import {
@@ -49,7 +50,8 @@ const wall: ClimbWall = {
   standoff: 0.45,
   onTop: () => {
     audio.fanfare();
-    setPhase(Phase.Building);
+    // The kit on the summit is empty: its parts are up in the cave.
+    setPhase(Phase.Cave);
   },
 };
 
@@ -102,6 +104,9 @@ export const tutorialLevel: Level = {
         return 0.55 + 0.4 * smoothstep(5, 60, s);
       case Phase.Climbing:
         return 1;
+      case Phase.Cave:
+      case Phase.Beacon:
+      case Phase.Sliding:
       case Phase.Building:
         // Breaking through the top of the storm: the sky clears.
         return 0.06;
@@ -155,6 +160,14 @@ export const tutorialLevel: Level = {
     ctx.fillStyle = '#2b2b2b';
     ctx.font = '600 22px Georgia, serif';
     ctx.fillText('Summit', px(CLIFF_CENTER_X + 10), pz(WALL_Z - 6));
+    // The Needle, with the cave and the flume.
+    ctx.fillStyle = '#5b5550';
+    ctx.beginPath();
+    ctx.arc(px(NEEDLE.x), pz(NEEDLE.z), 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = game.beaconLit.peek() ? '#e8822c' : '#2b2b2b';
+    ctx.fillText('Needle', px(NEEDLE.x + 12), pz(NEEDLE.z - 4));
+    ctx.fillStyle = '#2b2b2b';
     ctx.fillText('Party', px(FIRE_POS.x + 12), pz(FIRE_POS.z));
     // You: a dot with a heading tick.
     ctx.fillStyle = '#1d5fd1';

@@ -159,6 +159,16 @@ export class GliderBuildSystem extends createSystem({
       game.resetCount.subscribe(() => this.reset()),
       game.phase.subscribe((phase) => {
         if (phase === Phase.Building) this.completeTimer = -1;
+        // The parts only reach the bench once you bring them down from the cave.
+        const away =
+          phase === Phase.Poling ||
+          phase === Phase.Climbing ||
+          phase === Phase.Cave ||
+          phase === Phase.Beacon ||
+          phase === Phase.Sliding;
+        for (const part of this.parts.values()) {
+          if (!part.entity.getValue(GliderPart, 'placed')) part.group.visible = !away;
+        }
       }),
     );
   }

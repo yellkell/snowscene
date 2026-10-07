@@ -10,6 +10,9 @@ import { game, Phase } from './state.js';
 /** Comfortable default pitch for each phase when viewing on a flat screen. */
 const PHASE_PITCH: Partial<Record<Phase, number>> = {
   [Phase.Climbing]: 0.45,
+  [Phase.Cave]: -0.12,
+  [Phase.Beacon]: -0.15,
+  [Phase.Sliding]: -0.12,
   [Phase.Building]: -0.42,
   [Phase.Launch]: -0.32,
   [Phase.Gliding]: -0.28,
@@ -53,7 +56,7 @@ export class DesktopLookSystem extends createSystem({}) {
     this.cleanupFuncs.push(
       game.phase.subscribe((phase) => {
         this.pitch = PHASE_PITCH[phase] ?? initialPitch;
-        if (phase === Phase.Poling) this.yaw = 0;
+        if (phase === Phase.Poling || phase === Phase.Cave || phase === Phase.Sliding || phase === Phase.Building) this.yaw = 0;
       }),
       () => canvas.removeEventListener('pointerdown', down),
       () => window.removeEventListener('pointermove', move),
