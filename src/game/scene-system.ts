@@ -136,7 +136,13 @@ export class SceneSetupSystem extends createSystem({}) {
     holdLayout().forEach((hold, i) => {
       const mesh = buildHoldMesh(i * 3.1);
       mesh.position.copy(hold.position);
-      mesh.rotation.set(i * 0.7, i * 1.3, i * 0.4);
+      if (hold.lip) {
+        // Bigger, level jugs for the final pull over the top.
+        mesh.scale.setScalar(1.6);
+        mesh.rotation.set(0, i * 1.3, 0);
+      } else {
+        mesh.rotation.set(i * 0.7, i * 1.3, i * 0.4);
+      }
       mesh.name = `ClimbHold${i}`;
       add(mesh).addComponent(ClimbHold, { lip: hold.lip, glow: 0 });
     });

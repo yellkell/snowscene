@@ -336,9 +336,10 @@ export function holdLayout(): HoldPlacement[] {
       lip: false,
     });
   }
+  // The two final jugs sit on top of the snow cornice so they're easy to see.
   for (const side of [-1, 1]) {
     holds.push({
-      position: new Vector3(CLIFF_CENTER_X + side * 0.38, SUMMIT_Y + 0.08, WALL_Z - 0.12),
+      position: new Vector3(CLIFF_CENTER_X + side * 0.38, SUMMIT_Y + 0.22, WALL_Z + 0.06),
       lip: true,
     });
   }
