@@ -33,6 +33,21 @@ import { FOG_COLOR } from './world-builders.js';
 const STORM_FOG = new Color(0.7, 0.72, 0.77);
 const SUN_BASE = 3.2;
 
+/**
+ * Live weather values for other systems, and optional fog colours that
+ * replace the tutorial's (the expedition sky retints them by time of day;
+ * null keeps FOG_COLOR / STORM_FOG).
+ */
+export const weatherHooks = {
+  /** Current (smoothed) storm level 0..1. */
+  storm: 0,
+  clearFog: null as Color | null,
+  stormFog: null as Color | null,
+  /** Falling-snow colour (display space; null = white). Dimmed at night. */
+  snowTint: null as Color | null,
+};
+const SNOW_WHITE = new Color(1, 1, 1);
+
 interface SnowLayerOptions {
   count: number;
   box: Vector3;
@@ -66,6 +81,7 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
       uMaxSize: { value: opts.maxSize },
       uIntensity: { value: 1 },
       uOpacity: { value: 1 },
+      uTint: { value: new Color(1, 1, 1) },
     },
     vertexShader: /* glsl */ `
       uniform float uTime;
@@ -103,6 +119,7 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
       }
     `,
     fragmentShader: /* glsl */ `
+      uniform vec3 uTint;
       varying float vAlpha;
       varying vec2 vDir;
       varying float vStretch;
@@ -113,7 +130,7 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
         float across = dot(pc, vec2(-vDir.y, vDir.x)) * vStretch;
         float a = smoothstep(0.5, 0.1, length(vec2(along, across))) * vAlpha;
         if (a < 0.02) discard;
-        gl_FragColor = vec4(1.0, 1.0, 1.0, a);
+        gl_FragColor = vec4(uTint, a);
       }
     `,
     transparent: true,
@@ -168,6 +185,7 @@ export class WeatherSystem extends createSystem({}) {
     if (game.stormOverride !== null) this.storm = game.stormOverride;
     else this.storm += (currentLevel().stormTarget(this.head) - this.storm) * (1 - Math.exp(-dt / 3.2));
     const storm = this.storm;
+    weatherHooks.storm = storm;
     const gust = 0.5 + 0.5 * valueNoise(time * 0.35, 3.1);
     const windYaw = 0.6 + valueNoise(time * 0.04, 9.7) * 1.3;
     const windSpeed = 0.6 + storm * (3.5 + 8.5 * gust * gust);
@@ -185,6 +203,7 @@ export class WeatherSystem extends createSystem({}) {
     (snow.uOffset.value as Vector3).copy(this.snowOffset);
     (snow.uVelocity.value as Vector3).set(wx, -fall, wz);
     snow.uIntensity.value = 0.18 + storm * 0.82;
+    (snow.uTint.value as Color).copy(weatherHooks.snowTint ?? SNOW_WHITE);
 
     // Spindrift: snow blown along the ground in strong wind.
     this.driftOffset.x += wx * 1.8 * dt;
@@ -196,11 +215,12 @@ export class WeatherSystem extends createSystem({}) {
     (drift.uOffset.value as Vector3).copy(this.driftOffset);
     (drift.uVelocity.value as Vector3).set(wx * 1.8, 0, wz * 1.8);
     drift.uOpacity.value = smoothstep(1.8, 5.5, windSpeed) * 0.75;
+    (drift.uTint.value as Color).copy(weatherHooks.snowTint ?? SNOW_WHITE);
 
     // Visibility closes in during the storm; in clear air only the far
     // ranges pick up aerial haze.
     const fog = this.scene.fog as Fog | null;
-    this.fogColor.copy(FOG_COLOR).lerp(STORM_FOG, storm);
+    this.fogColor.copy(weatherHooks.clearFog ?? FOG_COLOR).lerp(weatherHooks.stormFog ?? STORM_FOG, storm);
     const near = 400 + (6 - 400) * storm;
     const far = 24000 + (80 - 24000) * Math.pow(storm, 0.6);
     if (fog) {

@@ -29,7 +29,6 @@ import {
   PlaneGeometry,
   PointLight,
   Quaternion,
-  SpotLight,
   Sprite,
   SpriteMaterial,
   SRGBColorSpace,
@@ -47,6 +46,7 @@ import {
   stow,
   take,
 } from './equipment.js';
+import { headlamp } from './expedition/sky/headlamp.js';
 import { HANDS, hands, type Handedness } from './hand-input.js';
 import { buildBackpack, buildHeldItem, buildSlotIcon } from './items.js';
 import { currentLevel } from './level.js';
@@ -96,7 +96,6 @@ export class BackpackSystem extends createSystem({}) {
   private mapCanvas!: HTMLCanvasElement;
   private mapTexture!: CanvasTexture;
   private mapTimer = 0;
-  private headlamp!: SpotLight;
   private flareLight!: PointLight;
   private flareTime = -1;
   private poseFor = 0;
@@ -132,12 +131,9 @@ export class BackpackSystem extends createSystem({}) {
     this.mapBoard.visible = false;
     this.world.createTransformEntity(this.mapBoard, { persistent: true });
 
-    // Headlamp: a spotlight that follows your gaze once you put it on.
-    this.headlamp = new SpotLight(0xfff2d8, 0, 45, 0.42, 0.45, 1.6);
-    this.headlamp.name = 'Headlamp';
-    this.headlamp.visible = false;
-    this.world.createTransformEntity(this.headlamp, { persistent: true });
-    this.world.createTransformEntity(this.headlamp.target, { persistent: true });
+    // Headlamp: a spotlight that follows your gaze once you put it on. It is
+    // created once and toggled by intensity (see expedition/sky/headlamp.ts).
+    headlamp.attach(this.world);
 
     this.flareLight = new PointLight(0xff3b1f, 0, 60, 2);
     this.flareLight.name = 'FlareLight';
@@ -145,7 +141,7 @@ export class BackpackSystem extends createSystem({}) {
 
     this.cleanupFuncs.push(
       equipment.headlampOn.subscribe((on) => {
-        this.headlamp.visible = on;
+        headlamp.setOn(on);
       }),
     );
   }
@@ -575,14 +571,11 @@ export class BackpackSystem extends createSystem({}) {
   }
 
   private updateHeadlamp(): void {
-    if (!this.headlamp.visible) return;
+    if (!headlamp.isOn()) return;
     const yaw = getHeadYaw(this.world);
-    this.headlamp.position.copy(this.head);
     this.viewDirection(tmpA);
     if (!Number.isFinite(tmpA.x)) tmpA.set(-Math.sin(yaw), -0.2, -Math.cos(yaw));
-    this.headlamp.target.position.copy(this.head).addScaledVector(tmpA, 10);
-    this.headlamp.target.updateMatrixWorld();
-    this.headlamp.intensity = 260;
+    headlamp.aim(this.head, tmpA);
   }
 
   private updateFlare(dt: number, time: number): void {
