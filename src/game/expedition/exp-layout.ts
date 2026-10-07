@@ -17,6 +17,7 @@
 import {
   BAND_HALF_WIDTH,
   clamp,
+  profile,
   ICE_WALL_R,
   ROCK_BAND_R,
   route,
@@ -175,8 +176,8 @@ function crossing(radius: number): BandCrossing {
     baseZ: SUMMIT_Z + nz * outer,
     nx,
     nz,
-    baseY: routePoint(s - 12).elev,
-    topY: routePoint(s + 12).elev,
+    baseY: profile(outer),
+    topY: profile(inner),
     topX: SUMMIT_X + nx * inner,
     topZ: SUMMIT_Z + nz * inner,
   };
@@ -268,6 +269,24 @@ export const SECTION_NAMES: Record<SectionId, string> = {
 
 // ------------------------------------------------- walkable overrides -----
 
+/** Half length of the log bridge's walkable deck. */
+export const BRIDGE_HALF_LENGTH = RIVER_HALF_WIDTH + 4;
+const bridgeEnds = {
+  near: routePoint(RIVER_S - BRIDGE_HALF_LENGTH).elev,
+  far: routePoint(RIVER_S + BRIDGE_HALF_LENGTH).elev,
+};
+
+/**
+ * Deck height at along-route offset a (-BRIDGE_HALF_LENGTH..+): it follows
+ * the path's slope so each end meets the bank without a step (deck ends sit
+ * 12 cm above the path), and sags a little in the middle.
+ */
+export function bridgeDeckAt(a: number): number {
+  const t = clamp(a / BRIDGE_HALF_LENGTH, -1, 1);
+  const base = bridgeEnds.near + (bridgeEnds.far - bridgeEnds.near) * (t * 0.5 + 0.5);
+  return base + 0.12 - 0.18 * (1 - t * t);
+}
+
 /** Height of the log bridge over the river, or null off the bridge. */
 export function bridgeHeight(x: number, z: number): number | null {
   const f = routeFrame(RIVER_S);
@@ -275,10 +294,8 @@ export function bridgeHeight(x: number, z: number): number | null {
   const dz = z - f.z;
   const along = dx * f.tx + dz * f.tz;
   const across = dx * f.nx + dz * f.nz;
-  if (Math.abs(along) > RIVER_HALF_WIDTH + 4 || Math.abs(across) > 1.6) return null;
-  // Slight sag in the middle of the span.
-  const sag = 0.18 * (1 - (along / (RIVER_HALF_WIDTH + 4)) ** 2);
-  return f.elev + 0.35 - sag;
+  if (Math.abs(along) > BRIDGE_HALF_LENGTH || Math.abs(across) > 1.6) return null;
+  return bridgeDeckAt(along);
 }
 
 /** Height of the ladder across the crevasse, or null off it. */

@@ -5,6 +5,7 @@
  * Three.js) so decks, rungs, faces and holds can be node-checked.
  */
 
+import { BRIDGE_HALF_LENGTH as LAYOUT_BRIDGE_HALF_LENGTH, bridgeDeckAt } from '../exp-layout.js';
 import { fbm, valueNoise } from '../../terrain.js';
 import {
   type BandCrossing,
@@ -28,7 +29,7 @@ import { type Gen, groundAt, groundMin } from './layout-util.js';
 
 export const BRIDGE_FRAME = routeFrame(RIVER_S);
 /** Half length of the walkable deck (matches `bridgeHeight`). */
-export const BRIDGE_HALF_LENGTH = RIVER_HALF_WIDTH + 4;
+export const BRIDGE_HALF_LENGTH = LAYOUT_BRIDGE_HALF_LENGTH;
 /** The deck: three lashed logs, their tops flush with `bridgeHeight`. */
 export const BRIDGE_LOGS: ReadonlyArray<{ across: number; radius: number }> = [
   { across: -0.43, radius: 0.22 },
@@ -42,8 +43,7 @@ export const BRIDGE_LOG_OVERHANG = 1.4;
 
 /** Deck height at along-offset a (same formula as `bridgeHeight`). */
 export function bridgeDeckY(a: number): number {
-  const t = Math.min(1, Math.abs(a) / BRIDGE_HALF_LENGTH);
-  return BRIDGE_FRAME.elev + 0.35 - 0.18 * (1 - t * t);
+  return bridgeDeckAt(a);
 }
 
 /** World position of a bridge-local point (a along the route, l to the left). */

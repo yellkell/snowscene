@@ -21,6 +21,8 @@ import { WristHudSystem } from './game/expedition/director/wrist-hud.js';
 import { ExpeditionEventsSystem } from './game/expedition/fx/events-system.js';
 import { ExpeditionSkySystem } from './game/expedition/sky/expedition-sky-system.js';
 import { ExpeditionTerrainSystem } from './game/expedition/terrain/expedition-terrain-system.js';
+import { fxHooks } from './game/expedition/fx/fx-context.js';
+import { ExpeditionWorldSystem, setCollapsingSeracVisible } from './game/expedition/world/expedition-world-system.js';
 import { CrossingGuardSystem } from './game/expedition/mechanics/crossing-guard-system.js';
 import { LadderSystem } from './game/expedition/mechanics/ladder-system.js';
 import { RopeSystem } from './game/expedition/mechanics/rope-system.js';
@@ -69,7 +71,11 @@ World.create(
     .registerSystem(ExpeditionSoundSystem, { priority: 32 })
     .registerSystem(ExpeditionEventsSystem, { priority: 27 })
     .registerSystem(ExpeditionSkySystem, { priority: 23 })
-    .registerSystem(ExpeditionTerrainSystem, { priority: 24 });
+    .registerSystem(ExpeditionTerrainSystem, { priority: 24 })
+    .registerSystem(ExpeditionWorldSystem, { priority: 25 });
+
+  // The world builds the collapsing serac; the events system topples it.
+  fxHooks.setSeracVisible = setCollapsingSeracVisible;
 
   // Dev-only handle for automated checks and quick phase skipping.
   if (import.meta.env.DEV) {

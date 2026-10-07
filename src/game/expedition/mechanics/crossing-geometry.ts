@@ -9,6 +9,7 @@
  * of the centre line.
  */
 
+import { bridgeDeckAt } from '../exp-layout.js';
 import {
   CREVASSE_HALF_GAP,
   CREVASSE_HALF_LENGTH,
@@ -194,6 +195,5 @@ export function nearestHandLine(
 
 /** Floor height of the log bridge at along-offset a (matches `bridgeHeight`). */
 export function logFloorY(a: number): number {
-  const half = RIVER_HALF_WIDTH + 4;
-  return LOG.elev + 0.35 - 0.18 * (1 - (a / half) ** 2);
+  return bridgeDeckAt(a);
 }

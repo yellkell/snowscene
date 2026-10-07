@@ -104,7 +104,14 @@ export function expeditionHeight(x: number, z: number): number {
   const natural = naturalHeight(x, z, p.dist);
   let h = natural;
   if (p.dist !== Infinity) {
-    const w = 1 - smoothstep(BENCH_HALF_WIDTH, BENCH_HALF_WIDTH + BENCH_BLEND, p.dist);
+    // The bench fades out right at the cliff bands, so the foot of each
+    // climbing wall sits on the natural (radial) profile, not on a ramp the
+    // route cuts obliquely across the band.
+    const rS = Math.hypot(x - SUMMIT_X, z - SUMMIT_Z);
+    const band = Math.min(Math.abs(rS - ICE_WALL_R), Math.abs(rS - ROCK_BAND_R));
+    const w =
+      (1 - smoothstep(BENCH_HALF_WIDTH, BENCH_HALF_WIDTH + BENCH_BLEND, p.dist)) *
+      smoothstep(BAND_HALF_WIDTH + 1, BAND_HALF_WIDTH + 9, band);
     if (w > 0) {
       // Wind ripples on the bench (a few centimetres) so it isn't a flat ribbon.
       const bench = p.elev + valueNoise(x * 0.5, z * 0.5) * 0.04;
@@ -138,7 +145,10 @@ export function expeditionHeight(x: number, z: number): number {
     if (across < RIVER_HALF_WIDTH + 14 && Math.abs(along) < 900) {
       const taper = smoothstep(900, 700, Math.abs(along));
       h -= RIVER_DEPTH * (1 - smoothstep(RIVER_HALF_WIDTH - 1.5, RIVER_HALF_WIDTH + 2.5, across)) * taper;
-      h -= 1.2 * (1 - smoothstep(RIVER_HALF_WIDTH + 2.5, RIVER_HALF_WIDTH + 14, across)) * taper;
+      // Low banks either side, but not on the path, which meets the bridge
+      // deck at its ends without a step.
+      const offPath = smoothstep(3, 9, Math.abs(along));
+      h -= 1.2 * (1 - smoothstep(RIVER_HALF_WIDTH + 2.5, RIVER_HALF_WIDTH + 14, across)) * taper * offPath;
     }
   }
   // The crevasse: a deep slot across the glacier route.
