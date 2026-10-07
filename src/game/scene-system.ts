@@ -20,6 +20,7 @@ import {
   type Texture,
   Vector3,
 } from '@iwsdk/core';
+import { buildDepthClear } from './far-layer.js';
 import { buildFarRanges } from './far-ranges.js';
 import { ClimbHold } from './game-components.js';
 import { landUniforms } from './land-material.js';
@@ -34,6 +35,7 @@ import {
 } from './sky.js';
 import { SnowPuffs } from './snow-puffs.js';
 import { game } from './state.js';
+import { LAKE_CENTER_Z } from './terrain.js';
 import { buildForest } from './trees.js';
 import {
   buildCabin,
@@ -54,7 +56,7 @@ import {
 } from './world-builders.js';
 
 /** Render resolution multiplier for the headset (crisper detail). */
-const XR_RESOLUTION_SCALE = 1.2;
+const XR_RESOLUTION_SCALE = 1.0;
 /** Half-size of the sun's shadow frustum that follows the player (metres). */
 const SHADOW_EXTENT = 45;
 
@@ -77,6 +79,7 @@ export class SceneSetupSystem extends createSystem({}) {
   private sun!: DirectionalLight;
   private readonly head = new Vector3();
   private flagFrame = 0;
+  private shadowFrame = 0;
 
   init(): void {
     const { renderer, scene } = this.world;
@@ -84,6 +87,9 @@ export class SceneSetupSystem extends createSystem({}) {
     renderer.toneMappingExposure = 0.62;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = PCFShadowMap;
+    // Shadows are refreshed every other frame (see update).
+    renderer.shadowMap.autoUpdate = false;
+    renderer.shadowMap.needsUpdate = true;
     renderer.xr.setFramebufferScaleFactor(XR_RESOLUTION_SCALE);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio * 1.25, 2.5));
     scene.fog = new Fog(FOG_COLOR, 400, 24000);
@@ -109,6 +115,8 @@ export class SceneSetupSystem extends createSystem({}) {
     add(this.sky);
     this.cloudSea = buildCloudSea();
     add(this.cloudSea);
+    // Distant scenery draws first in its own depth range; then depth clears.
+    add(buildDepthClear());
 
     // Low golden sun with a shadow frustum that follows the player.
     this.sun = new DirectionalLight(new Color(1.0, 0.8, 0.6), 3.2);
@@ -137,8 +145,8 @@ export class SceneSetupSystem extends createSystem({}) {
     addTutorial(buildTrailSign());
     addTutorial(buildSummitSign());
     addTutorial(buildCabin(-9.5, 4.5, 0.65));
-    addTutorial(buildCabin(-36, 126, 1.3));
-    addTutorial(buildCabin(22, 142, -0.9));
+    addTutorial(buildCabin(-36, LAKE_CENTER_Z + 14, 1.3));
+    addTutorial(buildCabin(22, LAKE_CENTER_Z + 30, -0.9));
     addTutorial(buildLake());
     const flag = buildSummitFlag();
     this.flagCloth = flag.cloth;
@@ -182,6 +190,7 @@ export class SceneSetupSystem extends createSystem({}) {
     this.sun.target.position.set(sx, this.head.y - 1, sz);
     this.sun.position.copy(this.sun.target.position).addScaledVector(SUN_DIRECTION, 200);
     this.sun.target.updateMatrixWorld();
+    if ((this.shadowFrame++ & 1) === 0) this.world.renderer.shadowMap.needsUpdate = true;
 
     // The flag only needs a refresh every other frame.
     if ((this.flagFrame++ & 1) === 0) waveFlag(this.flagCloth, time);

@@ -7,12 +7,21 @@
  */
 
 import { BufferAttribute, BufferGeometry, Mesh, Uint32BufferAttribute } from '@iwsdk/core';
+import { FAR_LAYER_ORDER } from './far-layer.js';
 import { createLandMaterial } from './land-material.js';
-import { clamp, CLOUD_SEA_Y, smoothstep, valueNoise } from './terrain.js';
+import {
+  clamp,
+  CLOUD_SEA_Y,
+  RANGES_INNER_RADIUS,
+  smoothstep,
+  TUTORIAL_CENTER_X,
+  TUTORIAL_CENTER_Z,
+  valueNoise,
+} from './terrain.js';
 
-const CENTER_X = 0;
-const CENTER_Z = -10;
-const INNER_RADIUS = 380;
+const CENTER_X = TUTORIAL_CENTER_X;
+const CENTER_Z = TUTORIAL_CENTER_Z;
+const INNER_RADIUS = RANGES_INNER_RADIUS;
 const OUTER_RADIUS = 17000;
 
 /** Ridged multifractal: sharp aretes with eroded detail in the valleys. */
@@ -86,24 +95,28 @@ export function farHeight(x: number, z: number): number {
 export function buildFarRanges(): Mesh {
   const rings = 170;
   const segments = 480;
-  const positions = new Float32Array((rings + 1) * segments * 3);
+  // Row 0 is a skirt just inside the inner ring that drops far below the
+  // clouds, so no gap shows between the playable terrain and the ranges.
+  const rows = rings + 2;
+  const positions = new Float32Array(rows * segments * 3);
   // Geometric ring spacing: dense near the play area, sparse at the horizon.
   const ratio = Math.pow(OUTER_RADIUS / INNER_RADIUS, 1 / rings);
-  for (let i = 0; i <= rings; i++) {
-    const r = INNER_RADIUS * Math.pow(ratio, i);
+  for (let row = 0; row < rows; row++) {
+    const skirt = row === 0;
+    const r = skirt ? INNER_RADIUS - 6 : INNER_RADIUS * Math.pow(ratio, row - 1);
     for (let j = 0; j < segments; j++) {
       const a = (j / segments) * Math.PI * 2;
       const x = CENTER_X + Math.sin(a) * r;
       const z = CENTER_Z + Math.cos(a) * r;
-      const k = (i * segments + j) * 3;
+      const k = (row * segments + j) * 3;
       positions[k] = x;
-      positions[k + 1] = farHeight(x, z);
+      positions[k + 1] = skirt ? CLOUD_SEA_Y - 300 : farHeight(x, z);
       positions[k + 2] = z;
     }
   }
-  const indices = new Uint32Array(rings * segments * 6);
+  const indices = new Uint32Array((rows - 1) * segments * 6);
   let t = 0;
-  for (let i = 0; i < rings; i++) {
+  for (let i = 0; i < rows - 1; i++) {
     for (let j = 0; j < segments; j++) {
       const a = i * segments + j;
       const b = i * segments + ((j + 1) % segments);
@@ -123,8 +136,13 @@ export function buildFarRanges(): Mesh {
   geometry.setIndex(new Uint32BufferAttribute(indices, 1));
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
-  const mesh = new Mesh(geometry, createLandMaterial({ rockScale: 60, snowScale: 40, snowCling: 0.28, cloudMist: true }));
+  const mesh = new Mesh(
+    geometry,
+    createLandMaterial({ rockScale: 60, snowScale: 40, snowCling: 0.28, cloudMist: true, farLayer: true }),
+  );
   mesh.name = 'GreatRanges';
   mesh.receiveShadow = false;
+  mesh.frustumCulled = false;
+  mesh.renderOrder = FAR_LAYER_ORDER;
   return mesh;
 }

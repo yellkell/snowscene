@@ -2,7 +2,8 @@
  * Analytic mountain terrain shared by the mesh builder and gameplay systems.
  *
  * Layout (metres, player starts at the origin facing -Z):
- *   z > 12        valley that drops away behind the start (glide landing area)
+ *   z > 12        long valley behind the start; the party lake sits near its
+ *                 far end (z ~ 232) before it drops into the sea of clouds
  *   0 .. -68      the pole trail, climbing ~19.5 m up a gentle couloir
  *   -68 .. -72    flat landing below the cliff
  *   -72           the rock wall (climbing section)
@@ -24,10 +25,16 @@ export const VALLEY_FLOOR_Y = -14;
 /** Height of the sea of clouds that fills the lowlands beyond the valley. */
 export const CLOUD_SEA_Y = -120;
 export const LAKE_CENTER_X = -6;
-export const LAKE_CENTER_Z = 112;
+export const LAKE_CENTER_Z = 232;
 export const LAKE_RADIUS_X = 26;
 export const LAKE_RADIUS_Z = 34;
 export const LAKE_Y = VALLEY_FLOOR_Y - 0.05;
+/** The great ranges ring starts at this radius around the tutorial centre... */
+export const TUTORIAL_CENTER_X = 0;
+export const TUTORIAL_CENTER_Z = -10;
+export const RANGES_INNER_RADIUS = 380;
+/** ...and the playable terrain stops just inside it. */
+export const TUTORIAL_TERRAIN_RADIUS = RANGES_INNER_RADIUS - 8;
 /** Half width of the walkable trail corridor around the path centre line. */
 export const TRAIL_HALF_WIDTH = 5.5;
 
@@ -111,7 +118,7 @@ function baseProfile(z: number): number {
   if (z > 0) {
     // valley falling away behind the start, rising again far beyond the lake
     // The valley ends in a drop-off into the sea of clouds.
-    return VALLEY_FLOOR_Y * smoothstep(12, 55, z) - 260 * smoothstep(195, 330, z);
+    return VALLEY_FLOOR_Y * smoothstep(12, 55, z) - 260 * smoothstep(300, 395, z);
   }
   if (s < WALL_S) return trailHeight(s);
   // cliff step then the summit shoulder, then the rise toward the main peak

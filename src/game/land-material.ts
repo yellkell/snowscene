@@ -10,6 +10,7 @@
  */
 
 import { MeshStandardMaterial, type Texture, Vector3 } from '@iwsdk/core';
+import { FAR_DEPTH_GLSL, FAR_VERTEX_DEPTH } from './far-layer.js';
 import { CLOUD_SEA_Y } from './terrain.js';
 import { landTextures } from './textures.js';
 
@@ -27,6 +28,8 @@ export interface LandMaterialOptions {
   /** Enable snow glints (near-field only). */
   sparkle?: boolean;
   vertexColors?: boolean;
+  /** Draw in the far depth layer (see far-layer.ts). */
+  farLayer?: boolean;
 }
 
 /** Uniforms shared by every land material so weather can drive them. */
@@ -67,11 +70,13 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
         '#include <common>',
         `#include <common>
         varying vec3 vLandWorld;
-        varying vec3 vLandNormal;`,
+        varying vec3 vLandNormal;
+        ${opts.farLayer ? FAR_DEPTH_GLSL : ''}`,
       )
       .replace(
         '#include <project_vertex>',
         `#include <project_vertex>
+        ${opts.farLayer ? FAR_VERTEX_DEPTH : ''}
         vec4 landWorld = vec4(transformed, 1.0);
         vec3 landN = objectNormal;
         #ifdef USE_INSTANCING
@@ -175,6 +180,6 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
       );
   };
   material.customProgramCacheKey = () =>
-    `land:${rockScale}:${snowScale}:${opts.rockBias ?? 0}:${opts.snowCling ?? 0}:${opts.cloudMist ? 1 : 0}:${opts.sparkle ? 1 : 0}:${opts.vertexColors ? 1 : 0}`;
+    `land:${rockScale}:${snowScale}:${opts.rockBias ?? 0}:${opts.snowCling ?? 0}:${opts.cloudMist ? 1 : 0}:${opts.sparkle ? 1 : 0}:${opts.vertexColors ? 1 : 0}:${opts.farLayer ? 1 : 0}`;
   return material;
 }
