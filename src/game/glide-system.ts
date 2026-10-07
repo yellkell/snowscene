@@ -80,7 +80,6 @@ export class GlideSystem extends createSystem({}) {
         this.speed = 0;
         game.airspeed = 0;
         game.barHeld.value = false;
-        audio.setWind(0);
       }),
     );
   }
@@ -210,8 +209,6 @@ export class GlideSystem extends createSystem({}) {
     const turn = -this.steer * MAX_TURN_RATE * dt;
     if (turn !== 0) rotateRigAroundHead(this.world, turn, this.head);
     rig.updateMatrixWorld(true);
-
-    audio.setWind(clamp(this.speed / 12, 0, 1));
     this.poseGlider();
 
     getHeadWorld(this.world, this.head);
@@ -241,12 +238,10 @@ export class GlideSystem extends createSystem({}) {
     getHeadWorld(this.world, this.head);
     rig.position.y = groundAt(this.head.x, this.head.z);
     game.airspeed = this.speed;
-    audio.setWind(clamp(this.speed / 12, 0, 1));
     this.poseGlider();
     if (this.speed < 0.15) {
       this.landedStopped = true;
       game.airspeed = 0;
-      audio.setWind(0);
       // Unclip: the glider ends up resting in the snow beside the player.
       fadeThen(() => this.parkGlider());
     }

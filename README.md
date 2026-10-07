@@ -15,6 +15,10 @@ A golden-hour alpine experience for WebXR hand tracking, built with the
    like a steering wheel to turn; pull it in to dive, push it out to float.
    Land in the valley. Thanks for playing!
 
+The weather follows the journey: light snow at the trailhead thickens into a
+gusty blizzard with blowing ground snow on the cliff, then the sky clears at
+the summit for a golden glide home.
+
 ## Input
 
 | Mode            | Grip                          | Glide                      |
@@ -48,6 +52,7 @@ and press **Enter VR**.
 - `src/game/climb-system.ts`: hold grabbing, pulling and mantling
 - `src/game/glider-build-system.ts`: summit kit assembly
 - `src/game/glide-system.ts`: launch, flight and landing
+- `src/game/weather-system.ts`: snowfall, spindrift, fog, clouds and wind
 - `src/game/guide-system.ts`: guide panel (`public/ui/guide.uikitml`)
 - Tuning constants (pole gain, grab radii, glide speeds) sit at the top of
   each system file.

@@ -220,6 +220,10 @@ export class GuideSystem extends createSystem({}) {
     } else if (phase === Phase.Landed) {
       distance = 1.2;
       drop = 0.05;
+    } else if (phase === Phase.Building) {
+      // Float above and in front of the glider kit so it never cuts through.
+      distance = 0.95;
+      drop = -0.22;
     } else if (phase === Phase.Climbing && this.fwd.z < -0.2) {
       // Don't bury the panel inside the rock face.
       const room = (this.head.z - (WALL_Z + 0.4)) / -this.fwd.z;

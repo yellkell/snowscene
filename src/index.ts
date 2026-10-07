@@ -14,6 +14,7 @@ import { GuideSystem } from './game/guide-system.js';
 import { HandInputSystem, hands } from './game/hand-input.js';
 import { PoleSystem } from './game/pole-system.js';
 import { SceneSetupSystem } from './game/scene-system.js';
+import { WeatherSystem } from './game/weather-system.js';
 import { game, Phase, setPhase } from './game/state.js';
 
 World.create(
@@ -22,6 +23,7 @@ World.create(
 ).then((world) => {
   world
     .registerSystem(SceneSetupSystem, { priority: 20 })
+    .registerSystem(WeatherSystem, { priority: 21 })
     .registerSystem(HandInputSystem, { priority: 0 })
     .registerSystem(DesktopLookSystem, { priority: 1 })
     .registerSystem(PoleSystem, { priority: 10 })

@@ -26,7 +26,6 @@ import {
   MeshStandardMaterial,
   Object3D,
   PlaneGeometry,
-  Points,
   Quaternion,
   ShaderMaterial,
   SphereGeometry,
@@ -537,24 +536,46 @@ function makeTextTexture(lines: string[], width: number, height: number, bg: str
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = 'rgba(0,0,0,0.25)';
-  for (let y = 0; y < height; y += height / 4) {
+  // wood grain
+  ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+  ctx.lineWidth = 3;
+  for (let y = height / 6; y < height; y += height / 6) {
     ctx.beginPath();
     ctx.moveTo(0, y);
-    ctx.lineTo(width, y);
+    ctx.bezierCurveTo(width * 0.3, y + 6, width * 0.6, y - 6, width, y + 2);
     ctx.stroke();
   }
+  ctx.strokeStyle = 'rgba(40,24,10,0.6)';
+  ctx.lineWidth = 10;
+  ctx.strokeRect(5, 5, width - 10, height - 10);
   ctx.fillStyle = fg;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const size = Math.floor(height / (lines.length + 0.8));
-  ctx.font = `700 ${size}px Georgia, serif`;
+  const rowHeight = height / lines.length;
   lines.forEach((line, i) => {
-    ctx.fillText(line, width / 2, (height * (i + 1)) / (lines.length + 1));
+    // Shrink each line until it fits inside the board with a margin.
+    let size = Math.floor(rowHeight * (i === 0 ? 0.62 : 0.48));
+    ctx.font = `700 ${size}px Georgia, 'Times New Roman', serif`;
+    while (ctx.measureText(line).width > width * 0.86 && size > 10) {
+      size -= 2;
+      ctx.font = `700 ${size}px Georgia, 'Times New Roman', serif`;
+    }
+    ctx.fillText(line, width / 2, rowHeight * (i + 0.55));
   });
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
+  texture.anisotropy = 4;
   return texture;
+}
+
+function buildSignBoard(lines: string[], width: number, height: number): Mesh {
+  const wood = new MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.9 });
+  const face = new MeshStandardMaterial({
+    map: makeTextTexture(lines, 1024, Math.round((1024 * height) / width), '#7a5534', '#fff4dc'),
+    roughness: 0.8,
+  });
+  // BoxGeometry material order: +x, -x, +y, -y, +z (front), -z
+  return new Mesh(new BoxGeometry(width, height, 0.05), [wood, wood, wood, wood, face, wood]);
 }
 
 export function buildTrailSign(): Group {
@@ -562,27 +583,32 @@ export function buildTrailSign(): Group {
   group.name = 'TrailSign';
   const x = pathX(-6) + 3.1;
   const z = -6;
-  const y = terrainHeight(x, z);
+  group.position.set(x, terrainHeight(x, z), z);
+  group.rotation.y = -0.35;
   const wood = new MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.9 });
-  const post = new Mesh(new BoxGeometry(0.1, 1.7, 0.1), wood);
-  post.position.set(x, y + 0.85, z);
+  const post = new Mesh(new BoxGeometry(0.1, 1.8, 0.1), wood);
+  post.position.y = 0.9;
   group.add(post);
-  const board = new Mesh(
-    new BoxGeometry(0.95, 0.42, 0.04),
-    [
-      wood,
-      wood,
-      new MeshStandardMaterial({ color: 0xf4f6fb, roughness: 0.6 }),
-      wood,
-      new MeshStandardMaterial({
-        map: makeTextTexture(['SUMMIT TRAIL', '72 m  ^'], 512, 224, '#7a5534', '#fff4dc'),
-        roughness: 0.8,
-      }),
-      wood,
-    ],
-  );
-  board.position.set(x, y + 1.45, z + 0.06);
-  board.rotation.y = -0.35;
+  const board = buildSignBoard(['SUMMIT TRAIL', 'Cliff 70 m  /  Glider launch'], 1.2, 0.5);
+  board.position.set(0, 1.5, 0.08);
+  group.add(board);
+  return group;
+}
+
+/** Wooden marker on the summit shoulder, facing the top of the climb. */
+export function buildSummitSign(): Group {
+  const group = new Group();
+  group.name = 'SummitSign';
+  const x = CLIFF_CENTER_X - 2.9;
+  const z = WALL_Z - 3.7;
+  group.position.set(x, terrainHeight(x, z), z);
+  group.rotation.y = 0.9; // faces the player standing at the top of the climb
+  const wood = new MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.9 });
+  const post = new Mesh(new BoxGeometry(0.1, 1.6, 0.1), wood);
+  post.position.y = 0.8;
+  group.add(post);
+  const board = buildSignBoard(['SUMMIT', 'Elevation 2,640 m'], 1.0, 0.42);
+  board.position.set(0, 1.35, 0.08);
   group.add(board);
   return group;
 }
@@ -605,27 +631,25 @@ export function buildCabin(x: number, z: number, rotY: number): Group {
     const c = i % 2 === 0 ? log : logDark;
     builder.add(new BoxGeometry(4.2, 0.26, 3.2), placed(0, 0.13 + i * 0.26, 0), c);
   }
-  // roof: two slabs with snow on top
+  // roof: two slabs, each with a snow layer offset along the slab normal
   const roofPitch = 0.62;
   for (const side of [-1, 1]) {
     const m = new Matrix4()
       .makeRotationZ(side * -roofPitch)
       .setPosition(side * 1.15, 2.95, 0);
     builder.add(new BoxGeometry(2.75, 0.18, 3.9), m, logDark);
-    const ms = new Matrix4()
-      .makeRotationZ(side * -roofPitch)
-      .setPosition(side * 1.12, 3.06, 0);
-    builder.add(new BoxGeometry(2.8, 0.14, 3.95), ms, snow);
+    const ms = m.clone().multiply(new Matrix4().makeTranslation(-side * 0.02, 0.15, 0));
+    builder.add(new BoxGeometry(2.85, 0.12, 4.0), ms, snow);
   }
   // gable fill
   builder.add(new BoxGeometry(3.4, 0.9, 3.0), placed(0, 2.6, 0), log);
   // chimney
   builder.add(new BoxGeometry(0.5, 1.6, 0.5), placed(1.2, 3.4, -0.6), stone);
-  builder.add(new BoxGeometry(0.58, 0.12, 0.58), placed(1.2, 4.24, -0.6), snow);
+  builder.add(new BoxGeometry(0.6, 0.12, 0.6), placed(1.2, 4.26, -0.6), snow);
   // door
-  builder.add(new BoxGeometry(0.8, 1.6, 0.06), placed(-0.9, 0.8, 1.62), logDark);
+  builder.add(new BoxGeometry(0.8, 1.6, 0.08), placed(-0.9, 0.95, 1.64), logDark);
   // snow drift around the base
-  builder.add(new BoxGeometry(4.6, 0.3, 3.6), placed(0, 0.08, 0), snow);
+  builder.add(new BoxGeometry(4.7, 0.2, 3.7), placed(0, 0.03, 0), snow);
   const body = new Mesh(
     builder.build(),
     new MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true }),
@@ -635,11 +659,11 @@ export function buildCabin(x: number, z: number, rotY: number): Group {
   const glow = new MeshBasicMaterial({ color: new Color(1.0, 0.72, 0.36) });
   for (const wx of [0.7, 1.55]) {
     const win = new Mesh(new PlaneGeometry(0.55, 0.6), glow);
-    win.position.set(wx, 1.35, 1.62);
+    win.position.set(wx, 1.35, 1.65);
     group.add(win);
   }
   const sideWin = new Mesh(new PlaneGeometry(0.6, 0.6), glow);
-  sideWin.position.set(2.11, 1.35, 0);
+  sideWin.position.set(2.14, 1.35, 0);
   sideWin.rotation.y = Math.PI / 2;
   group.add(sideWin);
   return group;
@@ -698,6 +722,7 @@ export function waveFlag(cloth: Mesh, time: number): void {
   pos.needsUpdate = true;
 }
 
+/** Summit assembly area, positioned at the kit root (floor level). */
 export function buildWorkbench(position: Vector3): Group {
   const group = new Group();
   group.name = 'Workbench';
@@ -706,17 +731,22 @@ export function buildWorkbench(position: Vector3): Group {
   const wood = new Color(0.55, 0.37, 0.21);
   const woodDark = new Color(0.38, 0.25, 0.14);
   const snow = new Color(0.95, 0.97, 1);
-  // two crates as legs, a plank top
-  for (const side of [-1, 1]) {
-    builder.add(new BoxGeometry(0.55, 0.78, 0.55), placed(side * 0.55, 0.39, 0), side > 0 ? wood : woodDark);
-  }
-  builder.add(new BoxGeometry(1.7, 0.08, 0.72), placed(0, 0.82, 0), wood);
-  builder.add(new BoxGeometry(1.72, 0.03, 0.2), placed(0, 0.875, -0.26), snow);
-  // side crates where loose parts wait
-  builder.add(new BoxGeometry(0.6, 0.62, 0.6), placed(-1.35, 0.31, 0.25), woodDark);
-  builder.add(new BoxGeometry(0.6, 0.62, 0.6), placed(1.35, 0.31, 0.25), wood);
-  // a little stand that supports the glider keel
-  builder.add(new CylinderGeometry(0.03, 0.04, 0.42, 6), placed(0, 1.05, 0), woodDark);
+  const crate = (x: number, z: number, size: number, color: Color) => {
+    builder.add(new BoxGeometry(size, size, size), placed(x, size / 2, z), color);
+    // slats
+    builder.add(new BoxGeometry(size + 0.02, 0.05, size + 0.02), placed(x, size * 0.3, z), woodDark);
+    builder.add(new BoxGeometry(size + 0.02, 0.05, size + 0.02), placed(x, size * 0.75, z), woodDark);
+    builder.add(new BoxGeometry(size * 0.9, 0.04, size * 0.9), placed(x, size + 0.02, z), snow);
+  };
+  // crates either side of the player hold the wings, a small one the bar
+  crate(-WING_CRATE_X, WING_CRATE_Z, 0.66, wood);
+  crate(WING_CRATE_X, WING_CRATE_Z, 0.66, wood);
+  crate(BAR_CRATE_X, BAR_CRATE_Z, 0.42, woodDark);
+  // a sturdy stand that supports the glider keel
+  builder.add(new CylinderGeometry(0.04, 0.05, KIT_KEEL_HEIGHT, 8), placed(0, KIT_KEEL_HEIGHT / 2, 0), woodDark);
+  builder.add(new BoxGeometry(0.6, 0.06, 0.08), placed(0, 0.03, 0), woodDark);
+  builder.add(new BoxGeometry(0.08, 0.06, 0.6), placed(0, 0.03, 0), woodDark);
+  builder.add(new BoxGeometry(0.22, 0.05, 0.12), placed(0, KIT_KEEL_HEIGHT, 0), wood);
   const mesh = new Mesh(
     builder.build(),
     new MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true }),
@@ -724,6 +754,13 @@ export function buildWorkbench(position: Vector3): Group {
   group.add(mesh);
   return group;
 }
+
+/** Layout of the summit assembly area relative to the kit root. */
+export const KIT_KEEL_HEIGHT = 1.2;
+export const WING_CRATE_X = 1.6;
+export const WING_CRATE_Z = 1.05;
+export const BAR_CRATE_X = -0.85;
+export const BAR_CRATE_Z = 0.75;
 
 // ----------------------------------------------------------- walking pole --
 
@@ -784,66 +821,6 @@ export function buildSun(): Sprite {
   sprite.position.copy(SUN_DIRECTION).multiplyScalar(900);
   sprite.name = 'Sun';
   return sprite;
-}
-
-export const SNOW_BOX = 34;
-
-export function buildSnowfall(count = 2600): Points {
-  const rand = mulberry32(12);
-  const positions = new Float32Array(count * 3);
-  const seeds = new Float32Array(count);
-  for (let i = 0; i < count; i++) {
-    positions[i * 3] = rand() * SNOW_BOX;
-    positions[i * 3 + 1] = rand() * SNOW_BOX;
-    positions[i * 3 + 2] = rand() * SNOW_BOX;
-    seeds[i] = rand();
-  }
-  const geometry = new BufferGeometry();
-  geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
-  geometry.setAttribute('aSeed', new Float32BufferAttribute(seeds, 1));
-  const material = new ShaderMaterial({
-    uniforms: {
-      uTime: { value: 0 },
-      uCenter: { value: new Vector3() },
-      uBox: { value: SNOW_BOX },
-      uSize: { value: 16 },
-    },
-    vertexShader: /* glsl */ `
-      uniform float uTime;
-      uniform vec3 uCenter;
-      uniform float uBox;
-      uniform float uSize;
-      attribute float aSeed;
-      varying float vAlpha;
-      void main() {
-        vec3 p = position;
-        p.y -= uTime * (0.55 + aSeed * 0.5);
-        p.x += sin(uTime * 0.6 + aSeed * 30.0) * 0.5 + uTime * 0.35;
-        p.z += cos(uTime * 0.45 + aSeed * 17.0) * 0.4 + uTime * 0.12;
-        p = mod(p - uCenter + 0.5 * uBox, uBox) + uCenter - 0.5 * uBox;
-        vec4 mv = modelViewMatrix * vec4(p, 1.0);
-        gl_Position = projectionMatrix * mv;
-        gl_PointSize = min(uSize * (0.45 + aSeed * 0.7) / max(-mv.z, 0.1), 9.0);
-        float r = length(p - uCenter) / (0.5 * uBox);
-        vAlpha = 1.0 - smoothstep(0.55, 1.0, r);
-      }
-    `,
-    fragmentShader: /* glsl */ `
-      varying float vAlpha;
-      void main() {
-        vec2 c = gl_PointCoord - 0.5;
-        float a = smoothstep(0.5, 0.1, length(c)) * vAlpha * 0.9;
-        if (a < 0.02) discard;
-        gl_FragColor = vec4(1.0, 1.0, 1.0, a);
-      }
-    `,
-    transparent: true,
-    depthWrite: false,
-  });
-  const points = new Points(geometry, material);
-  points.frustumCulled = false;
-  points.name = 'Snowfall';
-  return points;
 }
 
 /** White sphere around the head used for comfortable scene transitions. */

@@ -26,8 +26,8 @@ export const PART_COUNT = 3;
 
 /** Where the player stands once they have hauled themselves over the lip. */
 export const SUMMIT_STAND = new Vector3(CLIFF_CENTER_X, 0, WALL_Z - 1.4);
-/** Position of the summit workbench (floor level), in front of the player. */
-export const WORKBENCH_POS = new Vector3(CLIFF_CENTER_X, 0, WALL_Z - 2.45);
+/** Root of the glider kit on the summit (floor level), in front of the player. */
+export const WORKBENCH_POS = new Vector3(CLIFF_CENTER_X, 0, WALL_Z - 2.75);
 /** Distance up the trail at which the cliff section begins. */
 export const CLIMB_TRIGGER_S = TRAIL_END_S + 1.5;
 
@@ -41,6 +41,8 @@ export const game = {
   resetCount: signal(0),
   /** True while the player is holding the control bar with both hands. */
   barHeld: signal(false),
+  /** Debug: force the storm level (0..1); null lets the weather follow the journey. */
+  stormOverride: null as number | null,
   /** Glide speed in m/s, for the HUD and wind audio. */
   airspeed: 0,
   /** 0..1 white-out used to hide comfort-sensitive transitions. */

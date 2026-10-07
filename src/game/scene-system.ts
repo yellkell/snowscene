@@ -13,8 +13,7 @@ import {
   MeshBasicMaterial,
   NeutralToneMapping,
   Object3D,
-  Points,
-  ShaderMaterial,
+  Sprite,
   Vector3,
 } from '@iwsdk/core';
 import { ClimbHold } from './game-components.js';
@@ -30,8 +29,8 @@ import {
   buildHoldMesh,
   buildLake,
   buildRocks,
-  buildSnowfall,
   buildSummitFlag,
+  buildSummitSign,
   buildSun,
   buildTerrain,
   buildTrailMarkers,
@@ -45,10 +44,11 @@ import {
 /** Shared handles to scene pieces other systems need. */
 export const sceneRefs = {
   puffs: null as SnowPuffs | null,
+  sunLight: null as DirectionalLight | null,
+  sunSprite: null as Sprite | null,
 };
 
 export class SceneSetupSystem extends createSystem({}) {
-  private snowfall!: Points;
   private flagCloth!: Mesh;
   private fadeSphere!: Mesh;
   private puffs!: SnowPuffs;
@@ -68,6 +68,7 @@ export class SceneSetupSystem extends createSystem({}) {
     sun.position.copy(SUN_DIRECTION).multiplyScalar(100);
     sun.name = 'Sun Light';
     add(sun);
+    sceneRefs.sunLight = sun;
     // Cool sky bounce from the opposite side keeps shaded slopes blue.
     const fill = new DirectionalLight(new Color(0.5, 0.64, 1.0), 0.55);
     fill.position.set(40, 60, -80);
@@ -81,11 +82,14 @@ export class SceneSetupSystem extends createSystem({}) {
     add(buildCliff());
     add(buildTrailMarkers());
     add(buildTrailSign());
+    add(buildSummitSign());
     add(buildCabin(-9.5, 4.5, 0.65));
     add(buildCabin(-36, 126, 1.3));
     add(buildCabin(22, 142, -0.9));
     add(buildLake());
-    add(buildSun());
+    const sunSprite = buildSun();
+    sceneRefs.sunSprite = sunSprite;
+    add(sunSprite);
     const flag = buildSummitFlag();
     this.flagCloth = flag.cloth;
     add(flag.group);
@@ -98,8 +102,6 @@ export class SceneSetupSystem extends createSystem({}) {
       add(mesh).addComponent(ClimbHold, { lip: hold.lip, glow: 0 });
     });
 
-    this.snowfall = buildSnowfall();
-    add(this.snowfall);
     this.puffs = new SnowPuffs();
     sceneRefs.puffs = this.puffs;
     add(this.puffs.points);
@@ -110,10 +112,6 @@ export class SceneSetupSystem extends createSystem({}) {
   update(delta: number, time: number): void {
     const dt = Math.min(delta, 0.1);
     getHeadWorld(this.world, this.head);
-
-    const snow = this.snowfall.material as ShaderMaterial;
-    snow.uniforms.uTime.value = time;
-    (snow.uniforms.uCenter.value as Vector3).copy(this.head);
 
     // The flag only needs a refresh every other frame.
     if ((this.flagFrame++ & 1) === 0) waveFlag(this.flagCloth, time);

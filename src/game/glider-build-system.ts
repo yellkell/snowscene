@@ -1,20 +1,24 @@
 /**
- * Summit workbench: assemble a scale-model hang glider kit.
+ * Summit assembly: put together a half-size hang glider kit.
  *
- * Close a hand on a loose part to pick it up, carry it to its glowing ghost
- * on the frame and open your hand to fit it. Parts that are dropped away
- * from their slot float back to where they were resting. When every part is
- * fitted the kit "becomes" a full-size glider for the launch.
+ * Close a hand anywhere on a loose part to pick it up (parts glow when your
+ * hand is close enough), carry it to its glowing outline on the frame and
+ * open your hand to fit it. Parts dropped away from their outline float back
+ * to where they were resting. When every part is fitted the kit "becomes" a
+ * full-size glider for the launch.
  *
  * Desktop fallback: press E to fit the next part.
  */
 
 import {
+  Box3,
+  Color,
   createSystem,
   Entity,
   Group,
-  MeshBasicMaterial,
   Mesh,
+  MeshBasicMaterial,
+  MeshStandardMaterial,
   Quaternion,
   Vector3,
 } from '@iwsdk/core';
@@ -25,23 +29,40 @@ import { HANDS, type Handedness } from './hand-input.js';
 import { sceneRefs } from './scene-system.js';
 import { fadeThen, game, PART_COUNT, Phase, setPhase, WORKBENCH_POS } from './state.js';
 import { SUMMIT_Y } from './terrain.js';
-import { buildWorkbench } from './world-builders.js';
+import {
+  BAR_CRATE_X,
+  BAR_CRATE_Z,
+  buildWorkbench,
+  KIT_KEEL_HEIGHT,
+  WING_CRATE_X,
+  WING_CRATE_Z,
+} from './world-builders.js';
 
-const KIT_SCALE = 0.32;
-const GRAB_RADIUS = 0.32;
-const SNAP_RADIUS = 0.3;
+const KIT_SCALE = 0.5;
+/** Grab when the hand is within this distance of a part's bounding box. */
+const GRAB_MARGIN = 0.1;
+/** Parts glow when a hand is within this distance of them. */
+const HOVER_MARGIN = 0.22;
+/** Fit when the part's centre is this close to its outline. */
+const SNAP_RADIUS = 0.45;
+const KEEL_Y = 2.3; // keel height in glider model space
 
 interface PartInfo {
   entity: Entity;
   group: Group;
   ghost: Group;
+  materials: MeshStandardMaterial[];
+  bounds: Box3;
   restPos: Vector3;
   restQuat: Quaternion;
   slotPos: Vector3;
   slotQuat: Quaternion;
+  glow: number;
   /** Active animation toward a target pose. */
   anim: { t: number; fromPos: Vector3; fromQuat: Quaternion; toPos: Vector3; toQuat: Quaternion } | null;
 }
+
+const HOVER_COLOR = new Color(1, 0.86, 0.55);
 
 export class GliderBuildSystem extends createSystem({
   parts: { required: [GliderPart] },
@@ -57,35 +78,35 @@ export class GliderBuildSystem extends createSystem({
   private readonly tmp = new Vector3();
 
   init(): void {
-    const bench = buildWorkbench(new Vector3(WORKBENCH_POS.x, SUMMIT_Y, WORKBENCH_POS.z));
-    this.world.createTransformEntity(bench, { persistent: true });
+    const base = new Vector3(WORKBENCH_POS.x, SUMMIT_Y, WORKBENCH_POS.z);
+    this.world.createTransformEntity(buildWorkbench(base), { persistent: true });
 
     const kit = buildGlider();
     this.kitRoot = kit.root;
     this.kitRoot.name = 'GliderKit';
     this.kitRoot.scale.setScalar(KIT_SCALE);
-    // Keel rests on the bench stand, nose pointing back toward the player.
-    this.kitRoot.position.set(WORKBENCH_POS.x, SUMMIT_Y + 0.58, WORKBENCH_POS.z);
+    // Keel rests on the stand, nose pointing back toward the player.
+    this.kitRoot.position.set(base.x, base.y + KIT_KEEL_HEIGHT - KEEL_Y * KIT_SCALE + 0.03, base.z);
     this.kitRoot.rotation.y = Math.PI;
     this.world.createTransformEntity(this.kitRoot, { persistent: true });
     this.kitRoot.updateMatrixWorld(true);
     const kitQuat = this.kitRoot.getWorldQuaternion(new Quaternion());
+    const yawed = (angle: number) =>
+      kitQuat.clone().multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), angle));
 
+    // The kit is turned 180 degrees, so its left wing slots on the player's right.
     const rest: Record<GliderPartId, { pos: Vector3; quat: Quaternion }> = {
-      // the kit is rotated 180 degrees, so its left wing slots on the player's right
       LeftWing: {
-        pos: new Vector3(WORKBENCH_POS.x + 1.35, SUMMIT_Y + 0.82, WORKBENCH_POS.z + 0.3),
-        quat: kitQuat.clone().multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), 0.5)),
+        pos: new Vector3(base.x + WING_CRATE_X + 0.15, base.y + 0.8, base.z + WING_CRATE_Z),
+        quat: yawed(0.35),
       },
       RightWing: {
-        pos: new Vector3(WORKBENCH_POS.x - 1.35, SUMMIT_Y + 0.82, WORKBENCH_POS.z + 0.3),
-        quat: kitQuat.clone().multiply(new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), -0.5)),
+        pos: new Vector3(base.x - WING_CRATE_X - 0.15, base.y + 0.8, base.z + WING_CRATE_Z),
+        quat: yawed(-0.35),
       },
       ControlBar: {
-        pos: new Vector3(WORKBENCH_POS.x - 0.45, SUMMIT_Y + 0.96, WORKBENCH_POS.z + 0.18),
-        quat: kitQuat
-          .clone()
-          .multiply(new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -1.25)),
+        pos: new Vector3(base.x + BAR_CRATE_X, base.y + 0.62, base.z + BAR_CRATE_Z),
+        quat: kitQuat.clone().multiply(new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), -1.2)),
       },
     };
 
@@ -96,6 +117,18 @@ export class GliderBuildSystem extends createSystem({
       ghost.position.copy(kit.slots[id]);
       this.kitRoot.add(ghost);
       const slotPos = this.kitRoot.localToWorld(kit.slots[id].clone());
+
+      // Loose parts get their own materials so they can glow individually.
+      const materials: MeshStandardMaterial[] = [];
+      group.traverse((child) => {
+        const mesh = child as Mesh;
+        if (!mesh.isMesh) return;
+        const material = (mesh.material as MeshStandardMaterial).clone();
+        material.emissive.copy(HOVER_COLOR);
+        material.emissiveIntensity = 0;
+        mesh.material = material;
+        materials.push(material);
+      });
 
       // Loose parts live in world space as their own entities.
       this.kitRoot.remove(group);
@@ -108,10 +141,13 @@ export class GliderBuildSystem extends createSystem({
         entity,
         group,
         ghost,
+        materials,
+        bounds: new Box3(),
         restPos: rest[id].pos.clone(),
         restQuat: rest[id].quat.clone(),
         slotPos,
         slotQuat: kitQuat.clone(),
+        glow: 0,
         anim: null,
       });
     }
@@ -148,15 +184,7 @@ export class GliderBuildSystem extends createSystem({
     if (this.world.renderer.xr.isPresenting) this.updateHands();
     else if (this.input.keyboard.getKeyDown('KeyE')) this.placeNext();
 
-    // ghosts breathe; the one matching a carried part shines brighter
-    for (const part of this.parts.values()) {
-      if (!part.ghost.visible) continue;
-      const carried = this.carrying.left === part || this.carrying.right === part;
-      const mat = (part.ghost.children[0] as Mesh | undefined)?.material as
-        | MeshBasicMaterial
-        | undefined;
-      if (mat) mat.opacity = (carried ? 0.42 : 0.2) + 0.1 * Math.sin(time * 4);
-    }
+    for (const part of this.parts.values()) this.updateFeedback(part, dt, time);
 
     if (this.completeTimer >= 0) {
       this.completeTimer += dt;
@@ -172,6 +200,20 @@ export class GliderBuildSystem extends createSystem({
     }
   }
 
+  private isCarried(part: PartInfo): boolean {
+    return this.carrying.left === part || this.carrying.right === part;
+  }
+
+  private isFree(part: PartInfo): boolean {
+    return !part.entity.getValue(GliderPart, 'placed') && !this.isCarried(part);
+  }
+
+  /** Distance from a point to the part's current world bounding box. */
+  private distanceToPart(part: PartInfo, point: Vector3): number {
+    part.bounds.setFromObject(part.group);
+    return part.bounds.distanceToPoint(point);
+  }
+
   private updateHands(): void {
     for (const hand of HANDS) {
       const side = hand.handedness;
@@ -185,18 +227,17 @@ export class GliderBuildSystem extends createSystem({
         carried.group.position.copy(hand.position).add(this.offsets[side]);
         // Ease the part into its slot orientation as it nears the frame.
         const d = carried.group.position.distanceTo(carried.slotPos);
-        const t = 1 - Math.min(1, Math.max(0, (d - 0.12) / 0.6));
+        const t = 1 - Math.min(1, Math.max(0, (d - 0.15) / 0.8));
         carried.group.quaternion.slerpQuaternions(carried.restQuat, carried.slotQuat, t);
         continue;
       }
       if (!hand.gripDown) continue;
       let best: PartInfo | null = null;
-      let bestDist = GRAB_RADIUS;
+      let bestDist = GRAB_MARGIN;
       for (const part of this.parts.values()) {
-        if (part.entity.getValue(GliderPart, 'placed')) continue;
-        if (this.carrying.left === part || this.carrying.right === part) continue;
-        const dist = part.group.position.distanceTo(hand.position);
-        if (dist < bestDist) {
+        if (!this.isFree(part)) continue;
+        const dist = this.distanceToPart(part, hand.position);
+        if (dist <= bestDist) {
           bestDist = dist;
           best = part;
         }
@@ -207,6 +248,28 @@ export class GliderBuildSystem extends createSystem({
         this.offsets[side].subVectors(best.group.position, hand.position);
         audio.clack();
       }
+    }
+  }
+
+  /** Glow parts within reach, and pulse the outline of a carried part. */
+  private updateFeedback(part: PartInfo, dt: number, time: number): void {
+    let target = 0;
+    if (this.isCarried(part)) {
+      target = 0.25;
+    } else if (this.isFree(part) && this.world.renderer.xr.isPresenting) {
+      for (const hand of HANDS) {
+        if (!hand.tracked) continue;
+        if (this.distanceToPart(part, hand.position) < HOVER_MARGIN) target = 0.45;
+      }
+    }
+    part.glow += (target - part.glow) * (1 - Math.exp(-12 * dt));
+    for (const material of part.materials) material.emissiveIntensity = part.glow;
+
+    if (part.ghost.visible) {
+      const mat = (part.ghost.children[0] as Mesh | undefined)?.material as
+        | MeshBasicMaterial
+        | undefined;
+      if (mat) mat.opacity = (this.isCarried(part) ? 0.45 : 0.22) + 0.1 * Math.sin(time * 4);
     }
   }
 

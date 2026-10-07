@@ -58,8 +58,12 @@ export const hands: Record<Handedness, HandState> = {
 };
 export const HANDS: readonly HandState[] = [hands.left, hands.right];
 
-const GRIP_ON = 0.62;
-const GRIP_OFF = 0.38;
+const GRIP_ON = 0.6;
+const GRIP_OFF = 0.35;
+/** A grip must stay open this long before it counts as released. */
+const RELEASE_GRACE = 0.12;
+/** Low-pass rate for the raw closure signal (per second). */
+const CLOSURE_SMOOTHING = 30;
 
 const CURL_FINGERS = ['index-finger', 'middle-finger', 'ring-finger'] as const;
 
@@ -75,12 +79,14 @@ export class HandInputSystem extends createSystem({}) {
     left: null,
     right: null,
   };
+  private openTime: Record<Handedness, number> = { left: 0, right: 0 };
 
-  update(): void {
-    for (const state of HANDS) this.updateHand(state);
+  update(delta: number): void {
+    const dt = Math.min(delta, 0.1);
+    for (const state of HANDS) this.updateHand(state, dt);
   }
 
-  private updateHand(state: HandState): void {
+  private updateHand(state: HandState, dt: number): void {
     const side = state.handedness;
     const adapter = this.input.xr.visualAdapters[side].peek();
     const wasGrip = state.grip;
@@ -115,8 +121,16 @@ export class HandInputSystem extends createSystem({}) {
         );
       }
     }
-    state.closure = closure;
-    state.grip = wasGrip ? closure > GRIP_OFF : closure > GRIP_ON;
+    // Tracking noise makes raw finger curl twitchy; smooth it, then apply
+    // hysteresis plus a short grace period before a grip counts as released.
+    state.closure += (closure - state.closure) * (1 - Math.exp(-CLOSURE_SMOOTHING * dt));
+    if (wasGrip) {
+      this.openTime[side] = state.closure < GRIP_OFF ? this.openTime[side] + dt : 0;
+      state.grip = this.openTime[side] < RELEASE_GRACE;
+    } else {
+      state.grip = state.closure > GRIP_ON;
+      this.openTime[side] = 0;
+    }
     state.gripDown = state.grip && !wasGrip;
     state.gripUp = !state.grip && wasGrip;
   }
