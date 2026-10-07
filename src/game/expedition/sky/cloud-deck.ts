@@ -37,9 +37,13 @@ import { FAR_DEPTH_GLSL, FAR_LAYER_ORDER } from '../../far-layer.js';
 import { cloudSeaUniforms } from '../../sky.js';
 import { landTextures } from '../../textures.js';
 import { EXP_CLOUD_DECK_Y } from '../exp-layout.js';
+import { LEVEL_COUNT } from '../terrain/terrain-config.js';
+import { nearTerrainRects } from '../terrain/terrain-meshes.js';
 
 /** Radius of the near-layer deck: match the streamed near-terrain disc. */
-export const NEAR_DECK_RADIUS = 1500;
+// Big enough to cover the near terrain's largest extent; the shader clips the
+// deck to the rectangles the near terrain actually shows.
+export const NEAR_DECK_RADIUS = 3200;
 
 /** Underside colours (the far top's uniforms live in cloudSeaUniforms). */
 export const deckUniforms = {
@@ -150,7 +154,7 @@ function buildNearDeck(): Mesh {
   const geometry = new CircleGeometry(1, 96);
   geometry.rotateX(-Math.PI / 2); // faces up
   const material = new ShaderMaterial({
-    uniforms: deckMaterialUniforms(),
+    uniforms: { ...deckMaterialUniforms(), uNearRects: { value: nearTerrainRects } },
     vertexShader: /* glsl */ `
       varying vec3 vWorld;
       void main() {
@@ -162,7 +166,16 @@ function buildNearDeck(): Mesh {
     fragmentShader: /* glsl */ `
       ${DECK_GLSL}
       varying vec3 vWorld;
+      uniform vec4 uNearRects[${LEVEL_COUNT}];
       void main() {
+        // Only where near terrain is shown: elsewhere the far deck (in the
+        // far depth layer) is correctly occluded by the far mountains.
+        float inside = -1.0e9;
+        for (int k = 0; k < ${LEVEL_COUNT}; k++) {
+          vec4 R = uNearRects[k];
+          inside = max(inside, min(min(vWorld.x - R.x, R.z - vWorld.x), min(vWorld.z - R.y, R.w - vWorld.z)));
+        }
+        if (inside < 0.0) discard;
         vec3 view = vWorld - cameraPosition;
         vec3 col = gl_FrontFacing ? deckTop(vWorld.xz) : deckUnder(vWorld.xz, view);
         gl_FragColor = vec4(deckHaze(col, length(view)), 1.0);
@@ -206,6 +219,8 @@ export class CloudDeck {
     this.underside.visible = show && dy < 5;
     this.near.position.set(head.x, EXP_CLOUD_DECK_Y, head.z);
     this.underside.position.set(head.x, EXP_CLOUD_DECK_Y, head.z);
-    cloudSeaUniforms.uInnerRadius.value = this.near.visible ? Math.max(0, this.radius - 40) : 0;
+    // The far surfaces draw everywhere; the near deck (same shading) covers
+    // them wherever near terrain is shown.
+    cloudSeaUniforms.uInnerRadius.value = 0;
   }
 }

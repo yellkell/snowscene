@@ -35,7 +35,8 @@ import type { TileSink } from './tile-scheduler.js';
 export const terrainUniforms = {
   /** Haze where land meets the cloud deck (follows the scene fog colour). */
   uExpMistColor: { value: new Color(0.88, 0.9, 0.94) },
-  uExpMistStrength: { value: 0.7 },
+  // Off: the sky system's deck mist in land-material.ts already covers this.
+  uExpMistStrength: { value: 0 },
   uExpMistY: { value: EXP_CLOUD_DECK_Y },
 };
 
@@ -290,6 +291,13 @@ export class TileBatch implements TileSink {
 const farRects: Vector4[] = [];
 for (let k = 0; k < LEVEL_COUNT; k++) farRects.push(new Vector4(EMPTY_RECT, EMPTY_RECT, -EMPTY_RECT, -EMPTY_RECT));
 const farSink = { value: new Vector3(FAR_SINK.margin, FAR_SINK.ramp, FAR_SINK.depth) };
+
+/**
+ * The rectangles (minX, minZ, maxX, maxZ per LOD level) the near tiles
+ * currently cover. Other near-layer things that must match the near
+ * terrain's extent (the near cloud deck) read these.
+ */
+export const nearTerrainRects: readonly Vector4[] = farRects;
 
 /** Mirror the scheduler's shown rectangles into the far-mesh sink. */
 export function setFarRects(rects: Float64Array): void {
