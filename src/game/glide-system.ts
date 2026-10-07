@@ -21,6 +21,7 @@ import { sceneRefs } from './scene-system.js';
 import { fadeThen, game, Phase, setPhase } from './state.js';
 import {
   CLIFF_CENTER_X,
+  CLOUD_SEA_Y,
   clamp,
   LAKE_CENTER_X,
   LAKE_CENTER_Z,
@@ -53,6 +54,7 @@ export class GlideSystem extends createSystem({}) {
   private barTimer = 0;
   /** Seconds of take-off run during which the feet skim the snow instead of landing. */
   private runOff = 0;
+  private cloudLanding = false;
   private landedStopped = false;
   private readonly head = new Vector3();
   private readonly fwd = new Vector3();
@@ -63,6 +65,9 @@ export class GlideSystem extends createSystem({}) {
 
   init(): void {
     this.glider.root.visible = false;
+    this.glider.root.traverse((child) => {
+      child.castShadow = true;
+    });
     this.world.createTransformEntity(this.glider.root, { persistent: true });
     game.flyingGlider = this.glider.root;
     this.cleanupFuncs.push(
@@ -217,6 +222,24 @@ export class GlideSystem extends createSystem({}) {
       // Running off the edge: stay on the snow until it drops away beneath us.
       this.runOff -= dt;
       if (rig.position.y < ground) rig.position.y = ground;
+      return;
+    }
+    if (ground < CLOUD_SEA_Y + 5 && rig.position.y < CLOUD_SEA_Y + 18) {
+      // Flown out over the drop-off: sink through the clouds and touch down
+      // softly on the lake shore.
+      if (!this.cloudLanding) {
+        this.cloudLanding = true;
+        fadeThen(() => {
+          this.cloudLanding = false;
+          faceYaw(this.world, Math.PI);
+          const x = LAKE_CENTER_X + LAKE_RADIUS_X * 0.6;
+          const z = LAKE_CENTER_Z + LAKE_RADIUS_Z * 0.95;
+          placeHeadAt(this.world, x, z, groundAt(x, z));
+          this.gliderYawOffset = Math.PI - this.player.rotation.y;
+          this.speed = 0;
+          setPhase(Phase.Landed);
+        });
+      }
       return;
     }
     if (rig.position.y <= ground + 0.05) {

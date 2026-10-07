@@ -11,8 +11,8 @@ import { game, Phase } from './state.js';
 const PHASE_PITCH: Partial<Record<Phase, number>> = {
   [Phase.Climbing]: 0.45,
   [Phase.Building]: -0.42,
-  [Phase.Launch]: -0.12,
-  [Phase.Gliding]: -0.15,
+  [Phase.Launch]: -0.32,
+  [Phase.Gliding]: -0.28,
   [Phase.Landed]: 0.05,
 };
 

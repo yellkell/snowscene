@@ -22,9 +22,9 @@ import { CLIFF_BASE_Y, CLIFF_CENTER_X, clamp, SUMMIT_Y, terrainHeight, WALL_Z } 
 const GRAB_RADIUS = 0.17;
 const HIGHLIGHT_RADIUS = 0.35;
 /** Head stays at least this far in front of the wall face. */
-const WALL_STANDOFF = 0.32;
+const WALL_STANDOFF = 0.45;
 /** Where the approach glide parks the player's head. */
-const CLIMB_START_Z = WALL_Z + 0.72;
+const CLIMB_START_Z = WALL_Z + 0.85;
 
 interface Grab {
   hold: Entity | null;

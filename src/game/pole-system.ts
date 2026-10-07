@@ -73,6 +73,7 @@ export class PoleSystem extends createSystem({}) {
     const makePole = (): PoleState => {
       const mesh = buildPole();
       mesh.visible = false;
+      mesh.castShadow = true;
       this.world.createTransformEntity(mesh, { persistent: true });
       return {
         mesh,

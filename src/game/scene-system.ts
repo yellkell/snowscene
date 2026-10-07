@@ -1,37 +1,46 @@
 /**
- * Builds the procedural mountain once and drives the ambient effects:
- * snowfall around the viewer, the summit flag, snow puffs and the white
- * fade used to hide phase transitions.
+ * Builds the mountain world once and drives the ambient pieces: the sky and
+ * sea of clouds that follow the viewer, the sun's shadow frustum that
+ * tracks the player, the summit flag, snow puffs and the white fade used to
+ * hide phase transitions.
  */
 
 import {
+  ACESFilmicToneMapping,
   Color,
   createSystem,
   DirectionalLight,
   Fog,
   Mesh,
   MeshBasicMaterial,
-  NeutralToneMapping,
   Object3D,
-  Sprite,
+  PCFShadowMap,
+  type Texture,
   Vector3,
 } from '@iwsdk/core';
+import { buildFarRanges } from './far-ranges.js';
 import { ClimbHold } from './game-components.js';
+import { landUniforms } from './land-material.js';
 import { getHeadWorld } from './rig.js';
+import {
+  bakeSkyEnvironment,
+  buildCloudSea,
+  buildSky,
+  cloudSeaUniforms,
+  setSunDirection,
+} from './sky.js';
 import { SnowPuffs } from './snow-puffs.js';
 import { game } from './state.js';
+import { buildForest } from './trees.js';
 import {
   buildCabin,
   buildCliff,
-  buildDistantPeaks,
   buildFadeSphere,
-  buildForest,
   buildHoldMesh,
   buildLake,
   buildRocks,
   buildSummitFlag,
   buildSummitSign,
-  buildSun,
   buildTerrain,
   buildTrailMarkers,
   buildTrailSign,
@@ -41,42 +50,75 @@ import {
   waveFlag,
 } from './world-builders.js';
 
+/** Render resolution multiplier for the headset (crisper detail). */
+const XR_RESOLUTION_SCALE = 1.2;
+/** Half-size of the sun's shadow frustum that follows the player (metres). */
+const SHADOW_EXTENT = 45;
+
 /** Shared handles to scene pieces other systems need. */
 export const sceneRefs = {
   puffs: null as SnowPuffs | null,
   sunLight: null as DirectionalLight | null,
-  sunSprite: null as Sprite | null,
+  clearEnvironment: null as Texture | null,
+  stormEnvironment: null as Texture | null,
 };
 
 export class SceneSetupSystem extends createSystem({}) {
   private flagCloth!: Mesh;
   private fadeSphere!: Mesh;
   private puffs!: SnowPuffs;
+  private sky!: Mesh;
+  private cloudSea!: Mesh;
+  private sun!: DirectionalLight;
   private readonly head = new Vector3();
   private flagFrame = 0;
 
   init(): void {
     const { renderer, scene } = this.world;
-    renderer.toneMapping = NeutralToneMapping;
-    renderer.toneMappingExposure = 0.95;
-    scene.fog = new Fog(FOG_COLOR, 140, 1500);
+    renderer.toneMapping = ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.62;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = PCFShadowMap;
+    renderer.xr.setFramebufferScaleFactor(XR_RESOLUTION_SCALE);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio * 1.25, 2.5));
+    scene.fog = new Fog(FOG_COLOR, 400, 24000);
+
+    setSunDirection(SUN_DIRECTION);
+    landUniforms.uSunDir.value.copy(SUN_DIRECTION);
+    cloudSeaUniforms.uSunDir.value.copy(SUN_DIRECTION);
+    // Image-based lighting baked from the sky itself, clear and overcast.
+    sceneRefs.clearEnvironment = bakeSkyEnvironment(renderer, 0);
+    sceneRefs.stormEnvironment = bakeSkyEnvironment(renderer, 1);
+    scene.environment = sceneRefs.clearEnvironment;
 
     const add = (object: Object3D) =>
       this.world.createTransformEntity(object, { persistent: true });
 
-    const sun = new DirectionalLight(new Color(1.0, 0.85, 0.68), 1.9);
-    sun.position.copy(SUN_DIRECTION).multiplyScalar(100);
-    sun.name = 'Sun Light';
-    add(sun);
-    sceneRefs.sunLight = sun;
-    // Cool sky bounce from the opposite side keeps shaded slopes blue.
-    const fill = new DirectionalLight(new Color(0.5, 0.64, 1.0), 0.55);
-    fill.position.set(40, 60, -80);
-    fill.name = 'Sky Fill';
-    add(fill);
+    this.sky = buildSky();
+    add(this.sky);
+    this.cloudSea = buildCloudSea();
+    add(this.cloudSea);
+
+    // Low golden sun with a shadow frustum that follows the player.
+    this.sun = new DirectionalLight(new Color(1.0, 0.8, 0.6), 3.2);
+    this.sun.name = 'Sun Light';
+    this.sun.castShadow = true;
+    this.sun.shadow.mapSize.set(2048, 2048);
+    const cam = this.sun.shadow.camera;
+    cam.left = -SHADOW_EXTENT;
+    cam.right = SHADOW_EXTENT;
+    cam.top = SHADOW_EXTENT;
+    cam.bottom = -SHADOW_EXTENT;
+    cam.near = 1;
+    cam.far = 400;
+    this.sun.shadow.bias = -0.0004;
+    this.sun.shadow.normalBias = 0.05;
+    add(this.sun);
+    add(this.sun.target);
+    sceneRefs.sunLight = this.sun;
 
     add(buildTerrain());
-    add(buildDistantPeaks());
+    add(buildFarRanges());
     add(buildForest());
     add(buildRocks());
     add(buildCliff());
@@ -87,9 +129,6 @@ export class SceneSetupSystem extends createSystem({}) {
     add(buildCabin(-36, 126, 1.3));
     add(buildCabin(22, 142, -0.9));
     add(buildLake());
-    const sunSprite = buildSun();
-    sceneRefs.sunSprite = sunSprite;
-    add(sunSprite);
     const flag = buildSummitFlag();
     this.flagCloth = flag.cloth;
     add(flag.group);
@@ -112,6 +151,21 @@ export class SceneSetupSystem extends createSystem({}) {
   update(delta: number, time: number): void {
     const dt = Math.min(delta, 0.1);
     getHeadWorld(this.world, this.head);
+
+    // Sky and cloud deck stay centred on the viewer.
+    this.sky.position.copy(this.head);
+    this.cloudSea.position.x = this.head.x;
+    this.cloudSea.position.z = this.head.z;
+    cloudSeaUniforms.uTime.value = time;
+
+    // Keep the shadow frustum on the player, snapped to shadow texels so
+    // shadows don't shimmer as you move.
+    const texel = (SHADOW_EXTENT * 2) / this.sun.shadow.mapSize.x;
+    const sx = Math.round(this.head.x / texel) * texel;
+    const sz = Math.round(this.head.z / texel) * texel;
+    this.sun.target.position.set(sx, this.head.y - 1, sz);
+    this.sun.position.copy(this.sun.target.position).addScaledVector(SUN_DIRECTION, 200);
+    this.sun.target.updateMatrixWorld();
 
     // The flag only needs a refresh every other frame.
     if ((this.flagFrame++ & 1) === 0) waveFlag(this.flagCloth, time);

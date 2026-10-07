@@ -1,7 +1,9 @@
 # Snow Scene
 
-A golden-hour alpine experience for WebXR hand tracking, built with the
-[Immersive Web SDK](https://iwsdk.dev):
+A realistic golden-hour alpine experience for WebXR hand tracking, built with
+the [Immersive Web SDK](https://iwsdk.dev). A physically based sunset sky,
+shadowed snow and granite, a snow-laden spruce forest and a horizon of
+8,000 m-class giants rising from a sea of clouds frame the journey:
 
 1. **Pole up the trail.** Make a fist to grip each walking pole. Plant the tip
    in the snow and pull your hand back to push yourself up the mountain;
@@ -47,6 +49,10 @@ and press **Enter VR**.
 
 - `src/game/terrain.ts`: analytic heightfield shared by rendering and gameplay
 - `src/game/world-builders.ts`, `glider-model.ts`: procedural meshes
+- `src/game/land-material.ts`, `textures.ts`: snow/rock material and
+  procedurally generated textures
+- `src/game/sky.ts`, `far-ranges.ts`, `trees.ts`: sky, sea of clouds, great
+  ranges and spruce forest
 - `src/game/hand-input.ts`: fist/pinch/controller grip detection
 - `src/game/pole-system.ts`: walking-pole locomotion
 - `src/game/climb-system.ts`: hold grabbing, pulling and mantling

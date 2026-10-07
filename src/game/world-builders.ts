@@ -36,7 +36,8 @@ import {
   Uint32BufferAttribute,
   Vector3,
 } from '@iwsdk/core';
-import { GeometryBuilder, identity, placed, segmentMatrix } from './mesh-utils.js';
+import { createLandMaterial } from './land-material.js';
+import { GeometryBuilder, placed } from './mesh-utils.js';
 import {
   CLIFF_BASE_Y,
   CLIFF_CENTER_X,
@@ -59,8 +60,10 @@ import {
 } from './terrain.js';
 
 /** Direction the sunlight comes from (low, golden, over the valley). */
-export const SUN_DIRECTION = new Vector3(-0.38, 0.27, 0.88).normalize();
-export const FOG_COLOR = new Color(0.78, 0.8, 0.9);
+/** Direction the sunlight comes from: a low golden sun over the sea of clouds. */
+export const SUN_DIRECTION = new Vector3(-0.36, 0.15, 0.92).normalize();
+/** Clear-weather aerial haze colour (linear). */
+export const FOG_COLOR = new Color(0.55, 0.6, 0.72);
 
 // ------------------------------------------------------------- terrain -----
 
@@ -140,34 +143,19 @@ export function buildTerrain(): Mesh {
   geometry.setIndex(new Uint32BufferAttribute(indices, 1));
   geometry.computeVertexNormals();
 
-  const normals = geometry.getAttribute('normal');
+  // Vertex colours only tint the packed trail; snow and rock come from the
+  // land material.
   const colors = new Float32Array(nx * nz * 3);
-  const snow = new Color(0.88, 0.91, 0.98);
-  const snowShade = new Color(0.7, 0.78, 0.94);
-  const packed = new Color(0.72, 0.77, 0.9);
-  const rock = new Color(0.27, 0.26, 0.3);
-  const rockWarm = new Color(0.46, 0.4, 0.38);
+  const packed = new Color(0.8, 0.84, 0.92);
+  const white = new Color(1, 1, 1);
   const c = new Color();
-  const r = new Color();
   for (let v = 0; v < nx * nz; v++) {
     const x = positions[v * 3];
-    const y = positions[v * 3 + 1];
     const z = positions[v * 3 + 2];
-    const ny = normals.getY(v);
-    const n = fbm(x * 0.07, z * 0.07, 3);
-    c.copy(snow).lerp(snowShade, 0.25 + 0.35 * n);
-    // A slightly packed, bluish path so the trail reads from a distance.
     const s = -z;
     const d = Math.abs(x - pathX(z));
-    if (s > -6 && s < WALL_S + 0.5) {
-      c.lerp(packed, 0.6 * (1 - smoothstep(0.6, 2.2, d)));
-    }
-    // Exposed rock on steep faces and high on the peak.
-    const steep = smoothstep(0.8, 0.58, ny) + smoothstep(55, 95, y) * smoothstep(0.92, 0.75, ny);
-    if (steep > 0) {
-      r.copy(rock).lerp(rockWarm, 0.5 + 0.5 * valueNoise(x * 0.3, y * 0.5));
-      c.lerp(r, Math.min(1, steep));
-    }
+    c.copy(white);
+    if (s > -6 && s < WALL_S + 0.5) c.lerp(packed, 0.7 * (1 - smoothstep(0.5, 2.0, d)));
     colors[v * 3] = c.r;
     colors[v * 3 + 1] = c.g;
     colors[v * 3 + 2] = c.b;
@@ -175,155 +163,33 @@ export function buildTerrain(): Mesh {
   geometry.setAttribute('color', new BufferAttribute(colors, 3));
   geometry.computeBoundingSphere();
 
-  const mesh = new Mesh(
-    geometry,
-    new MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0 }),
-  );
+  const mesh = new Mesh(geometry, createLandMaterial({ sparkle: true, vertexColors: true }));
   mesh.name = 'Terrain';
-  return mesh;
-}
-
-// ------------------------------------------------------- distant peaks -----
-
-export function buildDistantPeaks(): Mesh {
-  const rand = mulberry32(7);
-  const builder = new GeometryBuilder();
-  const snow = new Color(0.93, 0.95, 1);
-  const rock = new Color(0.36, 0.4, 0.5);
-  const count = 30;
-  for (let i = 0; i < count; i++) {
-    const angle = (i / count) * Math.PI * 2 + rand() * 0.15;
-    const radius = 470 + rand() * 180;
-    const height = 140 + rand() * 210;
-    const base = 120 + rand() * 120;
-    const cx = Math.sin(angle) * radius;
-    const cz = -40 + Math.cos(angle) * radius;
-    const cone = new ConeGeometry(base, height, 9, 6);
-    const pos = cone.getAttribute('position');
-    const seed = rand() * 100;
-    for (let v = 0; v < pos.count; v++) {
-      const px = pos.getX(v);
-      const py = pos.getY(v);
-      const pz = pos.getZ(v);
-      const f = 1 + 0.28 * valueNoise(px * 0.02 + seed, pz * 0.02 + py * 0.02);
-      pos.setXYZ(v, px * f, py, pz * f);
-    }
-    const snowLine = 0.15 + rand() * 0.25;
-    builder.add(cone, placed(cx, height / 2 - 30, cz, rand() * 6), (p, n, out) => {
-      const h = (p.y + 30) / height;
-      const t = smoothstep(snowLine - 0.08, snowLine + 0.1, h + n.y * 0.25);
-      out.copy(rock).lerp(snow, t);
-    });
-  }
-  const material = new MeshStandardMaterial({
-    vertexColors: true,
-    flatShading: true,
-    roughness: 1,
-  });
-  const mesh = new Mesh(builder.build(), material);
-  mesh.name = 'DistantPeaks';
-  return mesh;
-}
-
-// --------------------------------------------------------------- trees -----
-
-function buildTreeGeometry(): BufferGeometry {
-  const builder = new GeometryBuilder();
-  const trunk = new Color(0.33, 0.22, 0.14);
-  const needles = new Color(0.1, 0.24, 0.18);
-  const needlesDark = new Color(0.06, 0.16, 0.13);
-  const snow = new Color(0.95, 0.97, 1);
-  builder.add(new CylinderGeometry(0.12, 0.18, 1.4, 6), placed(0, 0.7, 0), trunk);
-  const tiers = [
-    { y: 1.0, r: 1.5, h: 2.2 },
-    { y: 2.1, r: 1.15, h: 1.9 },
-    { y: 3.1, r: 0.8, h: 1.6 },
-    { y: 4.0, r: 0.45, h: 1.2 },
-  ];
-  for (const tier of tiers) {
-    const cone = new ConeGeometry(tier.r, tier.h, 8, 2);
-    builder.add(cone, placed(0, tier.y + tier.h / 2, 0), (p, n, out) => {
-      const local = (p.y - tier.y) / tier.h;
-      const flake = valueNoise(p.x * 6 + tier.y, p.z * 6) * 0.25;
-      const snowy = smoothstep(0.32, 0.62, local + flake + n.y * 0.2);
-      out.copy(needlesDark).lerp(needles, local).lerp(snow, snowy * 0.9);
-    });
-  }
-  return builder.build();
-}
-
-export function buildForest(): InstancedMesh {
-  const rand = mulberry32(42);
-  const matrices: Matrix4[] = [];
-  const tints: Color[] = [];
-  const q = new Quaternion();
-  const up = new Vector3(0, 1, 0);
-  const pos = new Vector3();
-  const scale = new Vector3();
-  let attempts = 0;
-  while (matrices.length < 900 && attempts < 30000) {
-    attempts++;
-    // Bias sampling toward the play area so the trail feels forested.
-    const nearTrail = rand() < 0.35;
-    const x = nearTrail ? (rand() * 2 - 1) * 45 : (rand() * 2 - 1) * 230;
-    const z = nearTrail ? 30 - rand() * 95 : 240 - rand() * 430;
-    const y = terrainHeight(x, z);
-    const s = -z;
-    const d = Math.abs(x - pathX(z));
-    if (y > 17.5 + valueNoise(x * 0.05, z * 0.05) * 3) continue; // tree line
-    if (terrainSlope(x, z) > 0.85) continue;
-    if (s > -12 && s < WALL_S + 6 && d < 7.5) continue; // keep the trail open
-    if (s > -14 && s < 25 && d < 11) continue; // open view up the trail from the start
-    if (Math.hypot(x, z) < 12) continue; // start area
-    if (Math.hypot(x + 9, z - 4) < 6) continue; // base camp cabin
-    const lx = (x - LAKE_CENTER_X) / LAKE_RADIUS_X;
-    const lz = (z - LAKE_CENTER_Z) / LAKE_RADIUS_Z;
-    if (lx * lx + lz * lz < 1.3) continue;
-    if (s > 60 && s < 95 && d < 14) continue; // cliff + summit
-    const size = 0.75 + rand() * 0.95;
-    pos.set(x, y - 0.15, z);
-    q.setFromAxisAngle(up, rand() * Math.PI * 2);
-    scale.set(size * (0.85 + rand() * 0.3), size, size * (0.85 + rand() * 0.3));
-    matrices.push(new Matrix4().compose(pos, q, scale));
-    const shade = 0.8 + rand() * 0.25;
-    tints.push(new Color(shade, shade + rand() * 0.05, shade));
-  }
-  const mesh = new InstancedMesh(
-    buildTreeGeometry(),
-    new MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95 }),
-    matrices.length,
-  );
-  matrices.forEach((m, i) => {
-    mesh.setMatrixAt(i, m);
-    mesh.setColorAt(i, tints[i]);
-  });
-  mesh.instanceMatrix.needsUpdate = true;
-  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-  mesh.computeBoundingSphere();
-  mesh.name = 'Forest';
+  mesh.receiveShadow = true;
   return mesh;
 }
 
 // --------------------------------------------------------------- rocks -----
 
 function buildRockGeometry(seed: number): BufferGeometry {
-  const geo = new DodecahedronGeometry(1, 1);
+  const geo = new IcosahedronGeometry(1, 3);
   const pos = geo.getAttribute('position');
+  const nor = geo.getAttribute('normal');
   for (let v = 0; v < pos.count; v++) {
     const x = pos.getX(v);
     const y = pos.getY(v);
     const z = pos.getZ(v);
-    const f = 1 + 0.22 * valueNoise(x * 2.1 + seed, z * 2.1 + y * 1.7);
-    pos.setXYZ(v, x * f, y * f * 0.75, z * f);
+    // Weathered boulder: broad lumps plus a few fracture facets.
+    const lump = 0.22 * valueNoise(x * 1.6 + seed, z * 1.6 + y * 1.3);
+    const facet = 0.08 * Math.abs(valueNoise(x * 4.1 - seed, y * 4.3 + z * 2.2));
+    const f = 1 + lump - facet;
+    pos.setXYZ(v, x * f, y * f * 0.72, z * f);
+    // Smooth normals from the sphere direction; detail comes from the normal maps.
+    const len = Math.hypot(x, y / 0.72, z);
+    nor.setXYZ(v, x / len, y / 0.72 / len, z / len);
   }
-  geo.computeVertexNormals();
-  const builder = new GeometryBuilder();
-  const rock = new Color(0.33, 0.32, 0.35);
-  const snow = new Color(0.93, 0.95, 1);
-  builder.add(geo, identity(), (p, n, out) => {
-    out.copy(rock).lerp(snow, smoothstep(0.35, 0.7, n.y + p.y * 0.2));
-  });
-  return builder.build();
+  geo.computeBoundingSphere();
+  return geo;
 }
 
 export function buildRocks(): InstancedMesh {
@@ -370,9 +236,11 @@ export function buildRocks(): InstancedMesh {
   }
   const mesh = new InstancedMesh(
     buildRockGeometry(3),
-    new MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95 }),
+    createLandMaterial({ rockBias: 1, rockScale: 1.6, snowScale: 1.5 }),
     placements.length,
   );
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
   placements.forEach((m, i) => mesh.setMatrixAt(i, m));
   mesh.instanceMatrix.needsUpdate = true;
   mesh.computeBoundingSphere();
@@ -389,11 +257,15 @@ export const CLIFF_FACE_Z = WALL_Z + 0.06;
 /** Displacement of the rock face toward the player (+z) at a face point. */
 function cliffDisplacement(x: number, y: number): number {
   const lx = x - CLIFF_CENTER_X;
-  const rough = fbm(lx * 0.45 + 11, y * 0.45, 4) * 0.7 + fbm(lx * 1.8, y * 1.8, 2) * 0.12;
-  // Keep the climbing lane nearly flat so holds sit cleanly on the face.
-  const lane = smoothstep(1.3, 3.2, Math.abs(lx));
-  const flare = smoothstep(4, CLIFF_WIDTH / 2, Math.abs(lx)) * 0.9;
-  return Math.max(0, rough * (0.3 + 0.7 * lane) + 0.12 + flare);
+  const rough = fbm(lx * 0.45 + 11, y * 0.45, 4) * 0.7 + fbm(lx * 1.8, y * 1.8, 3) * 0.14;
+  // Vertical cracks and buttresses give the wall real relief.
+  const cracks = Math.abs(valueNoise(lx * 0.9 + 3.3, y * 0.12)) * 0.45;
+  const ledges = Math.max(0, Math.sin(y * 1.9 + valueNoise(lx * 0.4, y * 0.3) * 2.5)) * 0.12;
+  // Keep the climbing lane gently textured so holds sit cleanly on the face.
+  const lane = smoothstep(1.2, 3.0, Math.abs(lx));
+  const flare = smoothstep(4, CLIFF_WIDTH / 2, Math.abs(lx)) * 1.1;
+  const relief = rough * (0.35 + 0.9 * lane) + (cracks + ledges) * lane;
+  return Math.max(0, relief + 0.14 + flare);
 }
 
 export function buildCliff(): Group {
@@ -402,7 +274,7 @@ export function buildCliff(): Group {
   const bottom = CLIFF_BASE_Y - 1.2;
   const top = SUMMIT_Y + 0.12;
   const height = top - bottom;
-  const plane = new PlaneGeometry(CLIFF_WIDTH, height, 68, 40);
+  const plane = new PlaneGeometry(CLIFF_WIDTH, height, 96, 56);
   const pos = plane.getAttribute('position');
   for (let v = 0; v < pos.count; v++) {
     const x = pos.getX(v) + CLIFF_CENTER_X;
@@ -410,28 +282,19 @@ export function buildCliff(): Group {
     pos.setXYZ(v, x, y, CLIFF_FACE_Z + cliffDisplacement(x, y));
   }
   plane.computeVertexNormals();
-  const builder = new GeometryBuilder();
-  const rockDark = new Color(0.16, 0.15, 0.18);
-  const rockLight = new Color(0.42, 0.36, 0.33);
-  const snow = new Color(0.93, 0.95, 1);
-  builder.add(plane, identity(), (p, n, out) => {
-    const streak = valueNoise(p.x * 1.4, p.y * 0.25) * 0.5 + 0.5;
-    const grain = valueNoise(p.x * 9, p.y * 9) * 0.5 + 0.5;
-    out.copy(rockDark).lerp(rockLight, streak * 0.75 + grain * 0.25);
-    out.lerp(snow, smoothstep(0.25, 0.6, n.y) * 0.9);
-  });
-  const face = new Mesh(
-    builder.build(),
-    new MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.9 }),
-  );
+  const face = new Mesh(plane, createLandMaterial({ rockScale: 4.5, snowScale: 1.5 }));
+  face.castShadow = true;
+  face.receiveShadow = true;
   face.name = 'CliffFace';
   group.add(face);
 
   // A snow cornice softens the summit lip.
   const cornice = new Mesh(
-    new CylinderGeometry(0.26, 0.26, CLIFF_WIDTH + 1, 12, 1),
-    new MeshStandardMaterial({ color: 0xf2f5fc, roughness: 0.85 }),
+    new CylinderGeometry(0.26, 0.26, CLIFF_WIDTH + 1, 16, 1),
+    createLandMaterial({ snowScale: 1.2 }),
   );
+  cornice.castShadow = true;
+  cornice.receiveShadow = true;
   cornice.rotation.z = Math.PI / 2;
   cornice.scale.set(0.55, 1, 1);
   cornice.position.set(CLIFF_CENTER_X, SUMMIT_Y + 0.02, WALL_Z + 0.02);
@@ -482,27 +345,30 @@ export function holdLayout(): HoldPlacement[] {
   return holds;
 }
 
+/** A chalk-dusted rock hold; a faint warm glow keeps it findable in the storm. */
 export function buildHoldMesh(seed: number): Mesh {
-  const geo = new IcosahedronGeometry(0.075, 1);
+  const geo = new IcosahedronGeometry(0.075, 2);
   const pos = geo.getAttribute('position');
+  const nor = geo.getAttribute('normal');
   for (let v = 0; v < pos.count; v++) {
     const x = pos.getX(v);
     const y = pos.getY(v);
     const z = pos.getZ(v);
-    const f = 1 + 0.18 * valueNoise(x * 30 + seed, y * 30 + z * 20);
+    const f = 1 + 0.15 * valueNoise(x * 30 + seed, y * 30 + z * 20);
     pos.setXYZ(v, x * f * 1.35, y * f * 0.8, z * f * 0.95);
+    const len = Math.hypot(x / 1.35, y / 0.8, z / 0.95);
+    nor.setXYZ(v, x / 1.35 / len, y / 0.8 / len, z / 0.95 / len);
   }
-  geo.computeVertexNormals();
   const mesh = new Mesh(
     geo,
     new MeshStandardMaterial({
-      color: 0xc99a62,
-      roughness: 0.75,
-      flatShading: true,
-      emissive: new Color(1, 0.62, 0.25),
+      color: 0xb8a58e,
+      roughness: 0.85,
+      emissive: new Color(1, 0.7, 0.4),
       emissiveIntensity: 0.18,
     }),
   );
+  mesh.castShadow = true;
   return mesh;
 }
 
@@ -654,6 +520,8 @@ export function buildCabin(x: number, z: number, rotY: number): Group {
     builder.build(),
     new MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true }),
   );
+  body.castShadow = true;
+  body.receiveShadow = true;
   group.add(body);
 
   const glow = new MeshBasicMaterial({ color: new Color(1.0, 0.72, 0.36) });
@@ -684,6 +552,7 @@ export function buildLake(): Mesh {
   lake.scale.set(LAKE_RADIUS_X * 0.88, LAKE_RADIUS_Z * 0.88, 1);
   lake.position.set(LAKE_CENTER_X, LAKE_Y, LAKE_CENTER_Z);
   lake.name = 'FrozenLake';
+  lake.receiveShadow = true;
   return lake;
 }
 
@@ -751,6 +620,8 @@ export function buildWorkbench(position: Vector3): Group {
     builder.build(),
     new MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true }),
   );
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
   group.add(mesh);
   return group;
 }
@@ -792,36 +663,6 @@ export function buildPole(): Mesh {
 
 /** Length from the grip (origin) to the tip of the pole. */
 export const POLE_TIP_DISTANCE = 1.22;
-
-// ------------------------------------------------------------- sky bits ----
-
-export function buildSun(): Sprite {
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = 256;
-  const ctx = canvas.getContext('2d')!;
-  const g = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
-  g.addColorStop(0, 'rgba(255,250,235,1)');
-  g.addColorStop(0.12, 'rgba(255,236,190,0.95)');
-  g.addColorStop(0.3, 'rgba(255,190,130,0.35)');
-  g.addColorStop(1, 'rgba(255,160,110,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 256, 256);
-  const texture = new CanvasTexture(canvas);
-  texture.colorSpace = SRGBColorSpace;
-  const sprite = new Sprite(
-    new SpriteMaterial({
-      map: texture,
-      blending: AdditiveBlending,
-      depthWrite: false,
-      fog: false,
-      transparent: true,
-    }),
-  );
-  sprite.scale.setScalar(220);
-  sprite.position.copy(SUN_DIRECTION).multiplyScalar(900);
-  sprite.name = 'Sun';
-  return sprite;
-}
 
 /** White sphere around the head used for comfortable scene transitions. */
 export function buildFadeSphere(): Mesh {

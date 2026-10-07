@@ -21,6 +21,8 @@ export const CLIFF_BASE_Y = TRAIL_RISE;
 export const CLIFF_HEIGHT = 6.6;
 export const SUMMIT_Y = CLIFF_BASE_Y + CLIFF_HEIGHT;
 export const VALLEY_FLOOR_Y = -14;
+/** Height of the sea of clouds that fills the lowlands beyond the valley. */
+export const CLOUD_SEA_Y = -120;
 export const LAKE_CENTER_X = -6;
 export const LAKE_CENTER_Z = 112;
 export const LAKE_RADIUS_X = 26;
@@ -108,9 +110,8 @@ function baseProfile(z: number): number {
   const s = -z;
   if (z > 0) {
     // valley falling away behind the start, rising again far beyond the lake
-    return (
-      VALLEY_FLOOR_Y * smoothstep(12, 55, z) + 70 * smoothstep(190, 330, z)
-    );
+    // The valley ends in a drop-off into the sea of clouds.
+    return VALLEY_FLOOR_Y * smoothstep(12, 55, z) - 260 * smoothstep(195, 330, z);
   }
   if (s < WALL_S) return trailHeight(s);
   // cliff step then the summit shoulder, then the rise toward the main peak

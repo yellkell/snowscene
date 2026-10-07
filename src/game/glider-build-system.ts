@@ -88,6 +88,9 @@ export class GliderBuildSystem extends createSystem({
     // Keel rests on the stand, nose pointing back toward the player.
     this.kitRoot.position.set(base.x, base.y + KIT_KEEL_HEIGHT - KEEL_Y * KIT_SCALE + 0.03, base.z);
     this.kitRoot.rotation.y = Math.PI;
+    this.kitRoot.traverse((child) => {
+      child.castShadow = true;
+    });
     this.world.createTransformEntity(this.kitRoot, { persistent: true });
     this.kitRoot.updateMatrixWorld(true);
     const kitQuat = this.kitRoot.getWorldQuaternion(new Quaternion());

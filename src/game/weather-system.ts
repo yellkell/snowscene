@@ -6,37 +6,31 @@
  * blizzard on the cliff, then the sky clears at the summit for a golden
  * glide home and a gentle snowfall after landing. Storm and gusting wind
  * drive snowfall density, wind drift, blowing ground snow (spindrift),
- * fog distance, a grey sky veil, drifting clouds, sunlight and wind audio.
+ * the overcast sky, image-based lighting, fog and aerial haze, the cloud
+ * sea, sunlight, snow glints and wind audio.
  */
 
 import {
-  BackSide,
   BufferGeometry,
-  CanvasTexture,
   Color,
   createSystem,
-  DirectionalLight,
   Float32BufferAttribute,
   Fog,
-  Mesh,
-  MeshBasicMaterial,
   Points,
   ShaderMaterial,
-  SphereGeometry,
-  Sprite,
-  SpriteMaterial,
-  SRGBColorSpace,
   Vector3,
 } from '@iwsdk/core';
 import { audio } from './audio.js';
+import { landUniforms } from './land-material.js';
 import { getHeadWorld } from './rig.js';
 import { sceneRefs } from './scene-system.js';
+import { cloudSeaUniforms, skyUniforms } from './sky.js';
 import { game, Phase } from './state.js';
 import { mulberry32, smoothstep, valueNoise } from './terrain.js';
 import { FOG_COLOR } from './world-builders.js';
 
-const STORM_FOG = new Color(0.64, 0.67, 0.75);
-const CLOUD_COUNT = 26;
+const STORM_FOG = new Color(0.7, 0.72, 0.77);
+const SUN_BASE = 3.2;
 
 interface SnowLayerOptions {
   count: number;
@@ -111,44 +105,16 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
   return points;
 }
 
-function cloudTexture(seed: number): CanvasTexture {
-  const rand = mulberry32(seed);
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 128;
-  const ctx = canvas.getContext('2d')!;
-  for (let i = 0; i < 14; i++) {
-    const x = 50 + rand() * 156;
-    const y = 50 + rand() * 40 - (Math.abs(x - 128) / 128) * 10;
-    const r = 22 + rand() * 32;
-    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0, 'rgba(255,255,255,0.55)');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 256, 128);
-  }
-  const texture = new CanvasTexture(canvas);
-  texture.colorSpace = SRGBColorSpace;
-  return texture;
-}
-
-interface Cloud {
-  sprite: Sprite;
-  base: number;
-}
-
 export class WeatherSystem extends createSystem({}) {
   private snow!: Points;
   private drift!: Points;
-  private veil!: Mesh;
-  private clouds: Cloud[] = [];
   private storm = 0.25;
   private gustWasHigh = false;
   private readonly head = new Vector3();
   private readonly snowOffset = new Vector3();
   private readonly driftOffset = new Vector3();
   private readonly fogColor = new Color();
-  private readonly cloudTint = new Color();
+  private stormLighting = false;
 
   init(): void {
     const add = (object: Parameters<typeof this.world.createTransformEntity>[0]) =>
@@ -174,47 +140,6 @@ export class WeatherSystem extends createSystem({}) {
     this.drift.name = 'Spindrift';
     add(this.drift);
 
-    this.veil = new Mesh(
-      new SphereGeometry(950, 24, 12),
-      new MeshBasicMaterial({
-        color: STORM_FOG,
-        side: BackSide,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        fog: false,
-      }),
-    );
-    this.veil.renderOrder = -1e8;
-    this.veil.frustumCulled = false;
-    this.veil.name = 'StormVeil';
-    add(this.veil);
-
-    const rand = mulberry32(77);
-    const textures = [cloudTexture(1), cloudTexture(2), cloudTexture(3)];
-    for (let i = 0; i < CLOUD_COUNT; i++) {
-      const sprite = new Sprite(
-        new SpriteMaterial({
-          map: textures[i % textures.length],
-          transparent: true,
-          depthWrite: false,
-          opacity: 0.7,
-        }),
-      );
-      const low = i < 8; // mist banks that hang around the cliff band
-      const angle = rand() * Math.PI * 2;
-      const radius = low ? 30 + rand() * 60 : 140 + rand() * 360;
-      sprite.position.set(
-        Math.sin(angle) * radius,
-        low ? 24 + rand() * 12 : 60 + rand() * 70,
-        -50 + Math.cos(angle) * radius,
-      );
-      const size = low ? 40 + rand() * 30 : 120 + rand() * 140;
-      sprite.scale.set(size, size * 0.45, 1);
-      sprite.name = 'Cloud';
-      add(sprite);
-      this.clouds.push({ sprite, base: low ? 0.5 : 0.75 });
-    }
   }
 
   private targetStorm(): number {
@@ -268,42 +193,34 @@ export class WeatherSystem extends createSystem({}) {
     (drift.uOffset.value as Vector3).copy(this.driftOffset);
     drift.uOpacity.value = smoothstep(1.8, 5.5, windSpeed) * 0.75;
 
-    // Visibility closes in during the storm.
+    // Visibility closes in during the storm; in clear air only the far
+    // ranges pick up aerial haze.
     const fog = this.scene.fog as Fog | null;
     this.fogColor.copy(FOG_COLOR).lerp(STORM_FOG, storm);
+    const near = 400 + (6 - 400) * storm;
+    const far = 24000 + (110 - 24000) * Math.pow(storm, 0.6);
     if (fog) {
       fog.color.copy(this.fogColor);
-      fog.near = 140 + (6 - 140) * storm;
-      fog.far = 1500 + (110 - 1500) * Math.pow(storm, 0.7);
+      fog.near = near;
+      fog.far = far;
     }
-    const veilMaterial = this.veil.material as MeshBasicMaterial;
-    veilMaterial.color.copy(this.fogColor);
-    veilMaterial.opacity = smoothstep(0.15, 0.9, storm) * 0.85;
-    this.veil.visible = veilMaterial.opacity > 0.01;
-    this.veil.position.copy(this.head);
+    cloudSeaUniforms.uHazeColor.value.copy(this.fogColor);
+    cloudSeaUniforms.uHazeNear.value = near;
+    cloudSeaUniforms.uHazeFar.value = far;
+    cloudSeaUniforms.uStorm.value = storm;
 
-    // Sun dims behind the clouds.
-    const sun = sceneRefs.sunLight as DirectionalLight | null;
-    if (sun) sun.intensity = 1.9 * (1 - 0.65 * storm);
-    const sunSprite = sceneRefs.sunSprite as Sprite | null;
-    if (sunSprite) (sunSprite.material as SpriteMaterial).opacity = 1 - storm * 0.95;
-
-    // Clouds drift with the wind and darken in the storm.
-    this.cloudTint.setRGB(1, 1, 1).lerp(STORM_FOG, storm * 0.8);
-    for (const cloud of this.clouds) {
-      const p = cloud.sprite.position;
-      p.x += wx * 0.35 * dt;
-      p.z += wz * 0.35 * dt;
-      const dx = p.x;
-      const dz = p.z + 50;
-      if (dx * dx + dz * dz > 520 * 520) {
-        p.x = -p.x * 0.95;
-        p.z = -50 - dz * 0.95;
-      }
-      const material = cloud.sprite.material as SpriteMaterial;
-      material.opacity = cloud.base * (0.55 + 0.45 * storm);
-      material.color.copy(this.cloudTint);
+    // Overcast sky and lighting.
+    skyUniforms.uStorm.value = smoothstep(0.1, 0.85, storm);
+    const stormLighting = storm > 0.5;
+    if (stormLighting !== this.stormLighting) {
+      this.stormLighting = stormLighting;
+      const env = stormLighting ? sceneRefs.stormEnvironment : sceneRefs.clearEnvironment;
+      if (env) this.scene.environment = env;
     }
+    this.scene.environmentIntensity = stormLighting ? 1.25 : 1 + storm * 0.3;
+    const sun = sceneRefs.sunLight;
+    if (sun) sun.intensity = SUN_BASE * (1 - 0.8 * smoothstep(0.1, 0.8, storm));
+    landUniforms.uSparkle.value = 3 * (1 - smoothstep(0.15, 0.6, storm));
 
     // Wind audio follows both the weather and the glide speed.
     const weatherWind = storm * (0.2 + 0.6 * gust);
