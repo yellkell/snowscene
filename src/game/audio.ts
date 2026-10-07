@@ -1,8 +1,18 @@
 /**
- * Tiny synthesized soundscape (no audio files): snow crunches for pole
- * plants, rock clacks for holds, chimes for glider parts and a wind bed whose
- * level follows the glide speed.
+ * Soundscape: synthesized snow crunches for pole plants, rock clacks for
+ * holds, chimes for glider parts and a wind bed, plus the music score
+ * ("By the River" for the ascent, crossfading into "Night Catch" once the
+ * glider is built).
  */
+
+export type MusicTrack = 'river' | 'night';
+
+const MUSIC_FILES: Record<MusicTrack, string> = {
+  river: 'audio/by-the-river.mp3',
+  night: 'audio/night-catch.ogg',
+};
+const MUSIC_VOLUME = 0.42;
+const CROSSFADE_SECONDS = 4;
 
 class SnowAudio {
   private ctx: AudioContext | null = null;
@@ -10,6 +20,9 @@ class SnowAudio {
   private noise: AudioBuffer | null = null;
   private windGain: GainNode | null = null;
   private windFilter: BiquadFilterNode | null = null;
+  private music = new Map<MusicTrack, { element: HTMLAudioElement; gain: GainNode }>();
+  private wantedTrack: MusicTrack = 'river';
+  private currentTrack: MusicTrack | null = null;
 
   /** Create/resume the audio context; call from a user gesture or XR start. */
   unlock(): void {
@@ -29,6 +42,59 @@ class SnowAudio {
       this.startWind();
     }
     if (this.ctx.state === 'suspended') void this.ctx.resume();
+    this.applyMusic();
+  }
+
+  /** Choose the score; crossfades if audio is already running. */
+  setMusic(track: MusicTrack): void {
+    this.wantedTrack = track;
+    this.applyMusic();
+  }
+
+  private musicFor(track: MusicTrack) {
+    let entry = this.music.get(track);
+    if (!entry && this.ctx && this.master) {
+      const element = new Audio(`${import.meta.env.BASE_URL}${MUSIC_FILES[track]}`);
+      element.loop = true;
+      element.preload = 'auto';
+      element.crossOrigin = 'anonymous';
+      const gain = this.ctx.createGain();
+      gain.gain.value = 0;
+      this.ctx.createMediaElementSource(element).connect(gain).connect(this.master);
+      entry = { element, gain };
+      this.music.set(track, entry);
+    }
+    return entry;
+  }
+
+  private applyMusic(): void {
+    if (!this.ctx || this.currentTrack === this.wantedTrack) return;
+    const t = this.ctx.currentTime;
+    const previous = this.currentTrack ? this.music.get(this.currentTrack) : undefined;
+    if (previous) {
+      previous.gain.gain.cancelScheduledValues(t);
+      previous.gain.gain.setValueAtTime(previous.gain.gain.value, t);
+      previous.gain.gain.linearRampToValueAtTime(0, t + CROSSFADE_SECONDS);
+      const fadingTrack = this.currentTrack;
+      window.setTimeout(() => {
+        // Stop decoding once faded out, unless it has been chosen again.
+        if (this.currentTrack !== fadingTrack) previous.element.pause();
+      }, CROSSFADE_SECONDS * 1000 + 100);
+    }
+    const next = this.musicFor(this.wantedTrack);
+    if (!next) return;
+    this.currentTrack = this.wantedTrack;
+    // Restarting the ascent theme begins it from the top.
+    if (next.element.paused) {
+      if (this.wantedTrack === 'river' || next.element.ended) next.element.currentTime = 0;
+      void next.element.play().catch(() => {
+        // Autoplay was refused; the next user gesture calls unlock() again.
+        this.currentTrack = null;
+      });
+    }
+    next.gain.gain.cancelScheduledValues(t);
+    next.gain.gain.setValueAtTime(next.gain.gain.value, t);
+    next.gain.gain.linearRampToValueAtTime(MUSIC_VOLUME, t + (previous ? CROSSFADE_SECONDS : 2));
   }
 
   private startWind(): void {

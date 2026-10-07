@@ -13,7 +13,7 @@ import {
 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt, yawForward } from './rig.js';
-import { fadeThen, game, Phase, requestRestart, setPhase } from './state.js';
+import { fadeThen, game, PART_COUNT, Phase, requestRestart, setPhase } from './state.js';
 import { WALL_Z } from './terrain.js';
 
 const PANEL_NODE_ID = 'guide-panel';
@@ -48,6 +48,20 @@ export class GuideSystem extends createSystem({}) {
   private phaseTime = 0;
 
   init(): void {
+    // Score: "By the River" for the ascent, "Night Catch" once the glider is built.
+    const updateMusic = () => {
+      const phase = game.phase.peek();
+      const built =
+        game.partsPlaced.peek() >= PART_COUNT ||
+        phase === Phase.Launch ||
+        phase === Phase.Gliding ||
+        phase === Phase.Landed;
+      audio.setMusic(built ? 'night' : 'river');
+    };
+    this.cleanupFuncs.push(
+      game.phase.subscribe(updateMusic),
+      game.partsPlaced.subscribe(updateMusic),
+    );
     const unlock = () => audio.unlock();
     window.addEventListener('pointerdown', unlock);
     window.addEventListener('keydown', unlock);

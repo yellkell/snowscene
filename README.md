@@ -17,6 +17,9 @@ shadowed snow and granite, a snow-laden spruce forest and a horizon of
    like a steering wheel to turn; pull it in to dive, push it out to float.
    Land in the valley. Thanks for playing!
 
+Music: "By the River" accompanies the ascent and crossfades into "Night
+Catch" once the glider is assembled (`public/audio/`).
+
 The weather follows the journey: light snow at the trailhead thickens into a
 gusty blizzard with blowing ground snow on the cliff, then the sky clears at
 the summit for a golden glide home.

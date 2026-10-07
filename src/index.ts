@@ -6,6 +6,7 @@
 
 import { World } from '@iwsdk/core';
 import projectOptions from 'virtual:iwsdk-project';
+import { audio } from './game/audio.js';
 import { ClimbSystem } from './game/climb-system.js';
 import { DesktopLookSystem } from './game/desktop-look-system.js';
 import { GlideSystem } from './game/glide-system.js';
@@ -34,6 +35,6 @@ World.create(
 
   // Dev-only handle for automated checks and quick phase skipping.
   if (import.meta.env.DEV) {
-    (window as unknown as Record<string, unknown>).__snow = { world, game, hands, Phase, setPhase };
+    (window as unknown as Record<string, unknown>).__snow = { world, game, hands, audio, Phase, setPhase };
   }
 });
