@@ -123,10 +123,10 @@ export const tutorialLevel: Level = {
 
   drawMap(ctx: CanvasRenderingContext2D, size: number, you: Vector3, yaw: number): void {
     // North-up sketch of the tutorial: trail, cliff, summit and the lake party.
-    const minX = -60;
-    const maxX = 60;
+    const minX = -80;
+    const maxX = 80;
     const minZ = -90;
-    const maxZ = 150;
+    const maxZ = 270;
     const scale = (size * 0.84) / Math.max(maxX - minX, maxZ - minZ);
     const ox = size / 2 - ((minX + maxX) / 2) * scale;
     const oz = size / 2 - ((minZ + maxZ) / 2) * scale;

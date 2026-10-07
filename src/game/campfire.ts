@@ -40,8 +40,10 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import { audio } from './audio.js';
+import { landUniforms } from './land-material.js';
 import { getHeadWorld } from './rig.js';
 import { sceneRefs } from './scene-system.js';
+import { game, PART_COUNT, Phase } from './state.js';
 import { LAKE_CENTER_X, LAKE_CENTER_Z, LAKE_Y } from './terrain.js';
 import { segmentMatrix } from './mesh-utils.js';
 import { buildBarkTexture } from './textures.js';
@@ -387,6 +389,9 @@ function buildDancer(jacket: number, hat: number, skin: number): { root: Group; 
   return { root, arms };
 }
 
+/** How long a fire takes to grow from embers to a full blaze. */
+const IGNITE_SECONDS = 3.5;
+
 /**
  * One fire (optionally with a party around it). Build it with a parent
  * entity creator, then call `update` every frame.
@@ -400,6 +405,9 @@ export class Bonfire {
   private smoke: Plume;
   private dancers: Dancer[] = [];
   private readonly flameHeight: number;
+  private flames!: Group;
+  /** Seconds since ignite() (Infinity = fully lit). */
+  private igniteAge = Infinity;
   visible = true;
   readonly objects: Object3D[] = [];
 
@@ -451,6 +459,7 @@ export class Bonfire {
       flames.add(plane);
     }
     place(flames);
+    this.flames = flames;
 
     if (options.light) {
       this.light = new PointLight(new Color(1, 0.55, 0.22), 3500 * scale * scale, 160 * scale, 2);
@@ -502,7 +511,7 @@ export class Bonfire {
     this.objects.push(this.sparks.points);
 
     this.smoke = new Plume(
-      Math.round(90 * scale) + 20,
+      Math.round(42 * scale) + 10,
       (i, p, v) => {
         p[i * 3] = fx + (Math.random() - 0.5) * 1.5 * scale;
         p[i * 3 + 1] = fy + fh * 0.75;
@@ -517,9 +526,9 @@ export class Bonfire {
         p[i * 3 + 1] += v[i * 3 + 1] * dt;
         p[i * 3 + 2] += v[i * 3 + 2] * dt;
       },
-      (t) => Math.min(1, t * 5) * (1 - t) * 0.6,
-      (t) => (2.2 + t * 16) * Math.sqrt(scale),
-      new Color(0.16, 0.15, 0.15),
+      (t) => Math.min(1, t * 5) * (1 - t) * 0.32,
+      (t) => (2 + t * 11) * Math.sqrt(scale),
+      new Color(0.42, 0.41, 0.42),
       false,
     );
     this.objects.push(this.smoke.points);
@@ -530,10 +539,27 @@ export class Bonfire {
     for (const object of this.objects) object.visible = visible;
   }
 
+  /** Show the fire and grow it from embers to a roaring blaze. */
+  ignite(): void {
+    this.setVisible(true);
+    this.igniteAge = 0;
+  }
+
+  /** 0..1 how lit the fire is (ramps up after ignite()). */
+  get blaze(): number {
+    if (!this.visible) return 0;
+    const t = Math.min(1, this.igniteAge / IGNITE_SECONDS);
+    return 1 - (1 - t) * (1 - t) * (1 - t);
+  }
+
   /** Returns the fire's audible level at the viewer (0..1). */
   update(dt: number, time: number, viewer: Vector3, flicker: number): number {
     if (!this.visible) return 0;
     const scale = this.options.scale;
+    if (this.igniteAge < IGNITE_SECONDS) {
+      this.igniteAge += dt;
+      this.flames.scale.setScalar(0.08 + 0.92 * this.blaze);
+    }
     if (this.light) this.light.intensity = 3500 * scale * scale * flicker;
     this.sparks.update(dt);
     this.smoke.update(dt);
@@ -551,7 +577,7 @@ export class Bonfire {
 
     const dist = viewer.distanceTo(this.position);
     const beacon = Math.min(1, Math.max(0, (dist - 30 * scale) / (70 * scale)));
-    (this.glow.material as SpriteMaterial).opacity = beacon * (0.8 + 0.2 * flicker);
+    (this.glow.material as SpriteMaterial).opacity = beacon * (0.8 + 0.2 * flicker) * this.blaze;
     this.glow.scale.setScalar((12 + beacon * 18) * scale * (0.9 + 0.1 * flicker));
     return Math.pow(Math.max(0, 1 - dist / (90 * Math.max(0.4, scale))), 1.5);
   }
@@ -562,11 +588,33 @@ export const fires: Bonfire[] = [];
 
 export class CampfireSystem extends createSystem({}) {
   private readonly head = new Vector3();
+  private party!: Bonfire;
 
   init(): void {
-    // The tutorial's party on the frozen lake.
-    const party = new Bonfire(FIRE_POS, { scale: 1, party: true, light: true });
-    this.addFire(party, sceneRefs.tutorialRoot ?? undefined);
+    // The tutorial's party on the frozen lake. It stays dark until the
+    // glider is built, then lights up in the distance: that's where you fly.
+    // Its light is faked in the land/lake shaders (uFireGlow): a real
+    // PointLight costs every lit pixel on the headset.
+    this.party = new Bonfire(FIRE_POS, { scale: 1, party: true, light: false });
+    this.addFire(this.party, sceneRefs.tutorialRoot ?? undefined);
+    this.party.setVisible(false);
+    landUniforms.uFireGlow.value.set(FIRE_POS.x, FIRE_POS.y, FIRE_POS.z, 0);
+    const updateParty = () => {
+      const phase = game.phase.peek();
+      const built =
+        game.partsPlaced.peek() >= PART_COUNT ||
+        phase === Phase.Launch ||
+        phase === Phase.Gliding ||
+        phase === Phase.Landed;
+      if (built && !this.party.visible) {
+        this.party.ignite();
+        audio.whoosh();
+      } else if (!built && this.party.visible) {
+        this.party.setVisible(false);
+      }
+    };
+    updateParty();
+    this.cleanupFuncs.push(game.phase.subscribe(updateParty), game.partsPlaced.subscribe(updateParty));
   }
 
   /** Create entities for a fire and start animating it. */
@@ -586,6 +634,7 @@ export class CampfireSystem extends createSystem({}) {
     getHeadWorld(this.world, this.head);
     let level = 0;
     for (const fire of fires) level = Math.max(level, fire.update(dt, time, this.head, flicker));
+    landUniforms.uFireGlow.value.w = this.party.visible ? 2.2 * flicker * this.party.blaze : 0;
     // Crackle and roar from the nearest fire.
     audio.setFire(level);
     if (level > 0.02 && Math.random() < dt * 14 * level) audio.crackle(level);

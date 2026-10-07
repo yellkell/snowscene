@@ -95,7 +95,7 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
         float on = step(aSeed, uIntensity);
         float base = min(uSize * (0.45 + aSeed * 0.7) / max(-mv.z, 0.1), uMaxSize);
         float streakPx = length(d) * 600.0;
-        vStretch = clamp(1.0 + streakPx / max(base, 1.0), 1.0, 5.0);
+        vStretch = clamp(1.0 + streakPx / max(base, 1.0), 1.0, 3.5);
         vDir = length(d) > 1e-6 ? normalize(vec2(d.x, -d.y)) : vec2(0.0, 1.0);
         gl_PointSize = on * base * vStretch;
         float r = length((p - uCenter) / (0.5 * uBox));
@@ -140,7 +140,7 @@ export class WeatherSystem extends createSystem({}) {
       this.world.createTransformEntity(object, { persistent: true });
 
     this.snow = buildSnowLayer({
-      count: 7500,
+      count: 4800,
       box: new Vector3(30, 24, 30),
       size: 36,
       maxSize: 14,
@@ -150,7 +150,7 @@ export class WeatherSystem extends createSystem({}) {
     add(this.snow);
 
     this.drift = buildSnowLayer({
-      count: 3000,
+      count: 1600,
       box: new Vector3(24, 2.4, 24),
       size: 16,
       maxSize: 7,

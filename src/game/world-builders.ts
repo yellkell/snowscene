@@ -36,11 +36,12 @@ import {
   Uint32BufferAttribute,
   Vector3,
 } from '@iwsdk/core';
-import { createLandMaterial } from './land-material.js';
+import { applyFireGlow, createLandMaterial } from './land-material.js';
 import { GeometryBuilder, placed } from './mesh-utils.js';
 import {
   CLIFF_BASE_Y,
   CLIFF_CENTER_X,
+  CLOUD_SEA_Y,
   fbm,
   LAKE_CENTER_X,
   LAKE_CENTER_Z,
@@ -54,6 +55,9 @@ import {
   terrainHeight,
   terrainSlope,
   TRAIL_END_S,
+  TUTORIAL_CENTER_X,
+  TUTORIAL_CENTER_Z,
+  TUTORIAL_TERRAIN_RADIUS,
   valueNoise,
   WALL_S,
   WALL_Z,
@@ -124,8 +128,19 @@ export function buildTerrain(): Mesh {
       positions[k + 2] = zs[j];
     }
   }
-  const indices = new Uint32Array((nx - 1) * (nz - 1) * 6);
-  let t = 0;
+  // The great ranges (far depth layer) begin where this terrain ends, so
+  // drop anything outside that radius, and anything sunk in the clouds.
+  const keep = new Uint8Array(nx * nz);
+  for (let v = 0; v < nx * nz; v++) {
+    const x = positions[v * 3];
+    const y = positions[v * 3 + 1];
+    const z = positions[v * 3 + 2];
+    const inside = Math.hypot(x - TUTORIAL_CENTER_X, z - TUTORIAL_CENTER_Z) <= TUTORIAL_TERRAIN_RADIUS;
+    keep[v] = inside ? (y > CLOUD_SEA_Y - 4 ? 2 : 1) : 0;
+  }
+  const tri = (p: number, q: number, r: number) =>
+    keep[p] && keep[q] && keep[r] && (keep[p] === 2 || keep[q] === 2 || keep[r] === 2);
+  const indexList: number[] = [];
   for (let j = 0; j < nz - 1; j++) {
     for (let i = 0; i < nx - 1; i++) {
       const a = j * nx + i;
@@ -133,14 +148,11 @@ export function buildTerrain(): Mesh {
       const c = a + nx;
       const d = c + 1;
       // counter-clockwise when seen from above (+Y)
-      indices[t++] = a;
-      indices[t++] = c;
-      indices[t++] = b;
-      indices[t++] = b;
-      indices[t++] = c;
-      indices[t++] = d;
+      if (tri(a, c, b)) indexList.push(a, c, b);
+      if (tri(b, c, d)) indexList.push(b, c, d);
     }
   }
+  const indices = new Uint32Array(indexList);
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new BufferAttribute(positions, 3));
   geometry.setIndex(new Uint32BufferAttribute(indices, 1));
@@ -166,7 +178,7 @@ export function buildTerrain(): Mesh {
   geometry.setAttribute('color', new BufferAttribute(colors, 3));
   geometry.computeBoundingSphere();
 
-  const mesh = new Mesh(geometry, createLandMaterial({ sparkle: true, vertexColors: true }));
+  const mesh = new Mesh(geometry, createLandMaterial({ sparkle: true, vertexColors: true, cloudMist: true }));
   mesh.name = 'Terrain';
   mesh.receiveShadow = true;
   return mesh;
@@ -544,14 +556,13 @@ export function buildCabin(x: number, z: number, rotY: number): Group {
 // ---------------------------------------------------------------- lake -----
 
 export function buildLake(): Mesh {
-  const lake = new Mesh(
-    new CircleGeometry(1, 72),
-    new MeshStandardMaterial({
-      color: new Color(0.62, 0.78, 0.9),
-      roughness: 0.12,
-      metalness: 0.15,
-    }),
-  );
+  const iceMaterial = new MeshStandardMaterial({
+    color: new Color(0.62, 0.78, 0.9),
+    roughness: 0.12,
+    metalness: 0.15,
+  });
+  applyFireGlow(iceMaterial);
+  const lake = new Mesh(new CircleGeometry(1, 72), iceMaterial);
   lake.rotation.x = -Math.PI / 2;
   lake.scale.set(LAKE_RADIUS_X * 0.88, LAKE_RADIUS_Z * 0.88, 1);
   lake.position.set(LAKE_CENTER_X, LAKE_Y, LAKE_CENTER_Z);

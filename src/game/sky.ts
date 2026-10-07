@@ -22,6 +22,7 @@ import {
   type WebGLRenderer,
   type Texture,
 } from '@iwsdk/core';
+import { FAR_DEPTH_GLSL, FAR_LAYER_ORDER } from './far-layer.js';
 import { CLOUD_SEA_Y } from './terrain.js';
 import { landTextures } from './textures.js';
 
@@ -196,10 +197,17 @@ export const cloudSeaUniforms = {
 
 const CLOUD_VERTEX = /* glsl */ `
 varying vec3 vWorld;
+varying float vViewZ;
 void main() {
   vec4 w = modelMatrix * vec4(position, 1.0);
   vWorld = w.xyz;
-  gl_Position = projectionMatrix * viewMatrix * w;
+  vec4 mv = viewMatrix * w;
+  vViewZ = -mv.z;
+  gl_Position = projectionMatrix * mv;
+  // Far layer: depth comes from the fragment shader. Keep near-plane
+  // clipping but push the far plane to infinity.
+  float nearZ = projectionMatrix[3][2] / (projectionMatrix[2][2] - 1.0);
+  gl_Position.z = gl_Position.w - 2.0 * nearZ;
 }
 `;
 
@@ -214,6 +222,8 @@ uniform float uHazeFar;
 uniform float uStorm;
 uniform sampler2D uNoise;
 varying vec3 vWorld;
+varying float vViewZ;
+${FAR_DEPTH_GLSL}
 // Billow height from a tileable fbm texture at three scales (cheap on mobile GPUs).
 float billow(vec2 p) {
   vec2 drift = vec2(uTime * 0.6, uTime * 0.25);
@@ -235,6 +245,7 @@ void main() {
   float dist = length(vWorld - cameraPosition);
   col = mix(col, uHazeColor, smoothstep(uHazeNear, uHazeFar, dist) * 0.85);
   gl_FragColor = vec4(col, 1.0);
+  gl_FragDepth = farLayerDepth(vViewZ);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }
@@ -255,6 +266,7 @@ export function buildCloudSea(): Mesh {
   );
   mesh.position.y = CLOUD_SEA_Y;
   mesh.frustumCulled = false;
+  mesh.renderOrder = FAR_LAYER_ORDER + 1;
   mesh.name = 'CloudSea';
   return mesh;
 }

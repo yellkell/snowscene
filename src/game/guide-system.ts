@@ -66,12 +66,27 @@ export class GuideSystem extends createSystem({}) {
       game.partsPlaced.subscribe(updateMusic),
       game.beaconLit.subscribe(updateMusic),
     );
+    // Browsers only start audio from a user gesture, so try on every kind
+    // we can see: page input, entering XR, and XR pinches / squeezes (which
+    // count as user activation inside an immersive session).
     const unlock = () => audio.unlock();
-    window.addEventListener('pointerdown', unlock);
-    window.addEventListener('keydown', unlock);
+    const pageEvents = ['pointerdown', 'pointerup', 'click', 'touchend', 'keydown'];
+    for (const type of pageEvents) window.addEventListener(type, unlock);
+    const xrEvents = ['selectstart', 'select', 'squeezestart', 'squeeze', 'inputsourceschange'];
+    const xr = this.world.renderer.xr;
+    const onSessionStart = () => {
+      audio.unlock();
+      const session = xr.getSession();
+      if (!session) return;
+      for (const type of xrEvents) session.addEventListener(type, unlock);
+      session.addEventListener('visibilitychange', unlock);
+    };
+    xr.addEventListener('sessionstart', onSessionStart);
     this.cleanupFuncs.push(
-      () => window.removeEventListener('pointerdown', unlock),
-      () => window.removeEventListener('keydown', unlock),
+      () => {
+        for (const type of pageEvents) window.removeEventListener(type, unlock);
+      },
+      () => xr.removeEventListener('sessionstart', onSessionStart),
     );
     this.tryBindPanel();
   }
