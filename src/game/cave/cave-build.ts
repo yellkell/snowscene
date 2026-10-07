@@ -30,7 +30,6 @@ import {
   MeshStandardMaterial,
   Object3D,
   PlaneGeometry,
-  PointLight,
   RepeatWrapping,
   SphereGeometry,
   SRGBColorSpace,
@@ -148,8 +147,8 @@ export interface CaveVisuals {
   /** Light and fire effects for the lit beacon. */
   beaconGlow: Sprite;
   lights: Object3D[];
-  riderLight: PointLight;
-  beaconLight: PointLight;
+  /** The ice walls' material: it warms when the beacon is lit (no real lights). */
+  shell: MeshStandardMaterial;
   /** The column of daylight from the chimney. */
   shaft: Mesh;
 }
@@ -892,7 +891,8 @@ export function buildCave(): CaveVisuals {
   root.position.copy(CAVE_ORIGIN);
   root.visible = false;
 
-  root.add(buildShell());
+  const shellMesh = buildShell();
+  root.add(shellMesh);
   root.add(buildIce());
   const shaft = buildShaft();
   root.add(shaft);
@@ -1046,13 +1046,11 @@ export function buildCave(): CaveVisuals {
   beaconGlow.position.copy(brazier).add(new Vector3(0, 0.4, 0));
   root.add(beaconGlow);
 
-  // Lights: a cool fill, the lantern you carry, and the beacon.
-  const hemi = new HemisphereLight(0x8fb6e8, 0x3a2818, 1.3);
+  // One cheap fill light; lanterns, lamps, crystals and the beacon glow are
+  // emissive, so no light costs a pixel more than this (Quest budget).
+  const hemi = new HemisphereLight(0x9cc0ee, 0x4a3420, 1.7);
   hemi.position.set(0, 20, -9);
-  const riderLight = new PointLight(0xffc27a, 14, 12, 1.3);
-  const beaconLight = new PointLight(0xff9a40, 0, 34, 1.2);
-  beaconLight.position.copy(brazier).add(new Vector3(0, 0.6, 0));
-  const lights: Object3D[] = [hemi, riderLight, beaconLight];
+  const lights: Object3D[] = [hemi];
   for (const light of lights) {
     light.visible = false;
     root.add(light);
@@ -1076,8 +1074,7 @@ export function buildCave(): CaveVisuals {
     brazier,
     beaconGlow,
     lights,
-    riderLight,
-    beaconLight,
+    shell: shellMesh.material as MeshStandardMaterial,
     shaft,
   };
 }

@@ -71,6 +71,9 @@ const TAKE_RADIUS = 0.3;
 const LIGHT_RADIUS = 0.42;
 /** A missed step burns the deck that left without you for this long. */
 const SLIP_FLASH = 0.6;
+/** The ice walls' own glow, and how warm it turns once the beacon burns. */
+const ICE_GLOW = new Color(0.025, 0.08, 0.16);
+const FIRE_GLOW = new Color(0.2, 0.1, 0.05);
 /** Seconds after the beacon catches before the flume. */
 const BEACON_HOLD = 4.5;
 
@@ -144,6 +147,9 @@ export class CaveSystem extends createSystem({}) {
         }
       }),
       game.resetCount.subscribe(() => this.reset()),
+      game.recentre.subscribe((n) => {
+        if (n > 0 && this.inside) this.recentre();
+      }),
     );
   }
 
@@ -160,7 +166,7 @@ export class CaveSystem extends createSystem({}) {
     this.v.torch.quaternion.identity();
     this.v.torch.visible = true;
     this.v.beaconGlow.material.opacity = 0;
-    this.v.beaconLight.intensity = 0;
+    this.v.shell.emissive.copy(ICE_GLOW);
     this.caveFire.setVisible(false);
     this.beaconTimer = -1;
     game.partsFound.value = 0;
@@ -195,6 +201,29 @@ export class CaveSystem extends createSystem({}) {
     this.placeRig();
     if (game.phase.peek() !== Phase.Cave) setPhase(Phase.Cave);
     toast(this.world.renderer.xr.isPresenting ? 'Step onto decks with green lamps.' : 'W steps across when the lamps are green.', 5);
+  }
+
+  /** Put the head back on the centre of the square you're standing on. */
+  private recentre(): void {
+    const rig = this.states[this.tracked].anchor;
+    getHeadWorld(this.world, this.head);
+    const px = this.head.x - CAVE_ORIGIN.x - rig.x;
+    const pz = this.head.z - CAVE_ORIGIN.z - rig.z;
+    let best = PLATFORMS[this.tracked].claim[0];
+    let bestD = Infinity;
+    for (const sq of PLATFORMS[this.tracked].claim) {
+      const o = sqOffset(sq);
+      const d = (o.x - px) ** 2 + (o.z - pz) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = sq;
+      }
+    }
+    const o = sqOffset(best);
+    this.off.x += o.x - px;
+    this.off.z += o.z - pz;
+    this.placeRig();
+    toast('Recentred on this deck.', 2);
   }
 
   private exit(): void {
@@ -422,7 +451,8 @@ export class CaveSystem extends createSystem({}) {
     if (game.beaconLit.peek()) {
       if (this.beaconTimer >= 0) {
         this.beaconTimer += dt;
-        this.v.beaconLight.intensity = Math.min(40, this.beaconTimer * 30);
+        // Firelight on the ice: the walls warm as the beacon takes.
+        this.v.shell.emissive.copy(ICE_GLOW).lerp(FIRE_GLOW, Math.min(1, this.beaconTimer / 2));
         this.v.beaconGlow.material.opacity = Math.min(0.85, this.beaconTimer);
         if (this.beaconTimer > BEACON_HOLD) {
           this.beaconTimer = -1;
@@ -618,9 +648,6 @@ export class CaveSystem extends createSystem({}) {
     }
     v.torchFlame.visible = !game.beaconLit.peek();
 
-    // The lantern you carry.
-    getHeadWorld(this.world, this.head);
-    v.riderLight.position.set(this.head.x - CAVE_ORIGIN.x + 0.2, this.head.y - CAVE_ORIGIN.y - 0.25, this.head.z - CAVE_ORIGIN.z);
     const shaft = v.shaft.material as { opacity: number };
     shaft.opacity = 0.07 + 0.02 * Math.sin(time * 0.6);
   }
