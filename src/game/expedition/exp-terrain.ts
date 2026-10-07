@@ -23,6 +23,21 @@ import {
   SUMMIT_X,
   SUMMIT_Z,
 } from './exp-route.js';
+import {
+  CAMPS,
+  campCentre,
+  CREVASSE_DEPTH,
+  CREVASSE_HALF_GAP,
+  CREVASSE_HALF_LENGTH,
+  CREVASSE_S,
+  outwardSide,
+  RIVER_DEPTH,
+  RIVER_HALF_WIDTH,
+  RIVER_S,
+  ROPE_END_S,
+  ROPE_START_S,
+  routeFrame,
+} from './exp-layout.js';
 
 /** Half width of the flat walkable bench along the route (metres). */
 export const BENCH_HALF_WIDTH = 4;
@@ -74,16 +89,71 @@ export function naturalHeight(x: number, z: number, routeDist = Infinity): numbe
   return base + mask * (ridges + rolls) + fine;
 }
 
+// Precomputed feature frames (module load; cheap).
+const campFlats = CAMPS.map((camp) => {
+  const c = campCentre(camp);
+  return { x: c.x, z: c.z, elev: c.elev, radius: camp.radius };
+});
+const river = routeFrame(RIVER_S);
+const crevasse = routeFrame(CREVASSE_S);
+const ropeOutward = outwardSide((ROPE_START_S + ROPE_END_S) / 2);
+
 /** Ground height of the expedition terrain at (x, z). */
 export function expeditionHeight(x: number, z: number): number {
   const p = project(x, z, scratch);
   const natural = naturalHeight(x, z, p.dist);
-  if (p.dist === Infinity) return natural;
-  const w = 1 - smoothstep(BENCH_HALF_WIDTH, BENCH_HALF_WIDTH + BENCH_BLEND, p.dist);
-  if (w <= 0) return natural;
-  // Wind ripples on the bench (a few centimetres) so it isn't a flat ribbon.
-  const bench = p.elev + valueNoise(x * 0.5, z * 0.5) * 0.04;
-  return natural + (bench - natural) * w;
+  let h = natural;
+  if (p.dist !== Infinity) {
+    const w = 1 - smoothstep(BENCH_HALF_WIDTH, BENCH_HALF_WIDTH + BENCH_BLEND, p.dist);
+    if (w > 0) {
+      // Wind ripples on the bench (a few centimetres) so it isn't a flat ribbon.
+      const bench = p.elev + valueNoise(x * 0.5, z * 0.5) * 0.04;
+      h = natural + (bench - natural) * w;
+    }
+    // The fixed-rope ledge: a sheer drop on the downhill side, a rock wall
+    // on the uphill side.
+    if (p.s > ROPE_START_S - 40 && p.s < ROPE_END_S + 40) {
+      const win = smoothstep(ROPE_START_S - 40, ROPE_START_S, p.s) * smoothstep(ROPE_END_S + 40, ROPE_END_S, p.s);
+      const out = p.d * ropeOutward;
+      h -= 70 * smoothstep(2.6, 11, out) * win;
+      h += 22 * smoothstep(3.2, 9, -out) * win;
+    }
+  }
+  // Camps sit on flattened pads.
+  for (const c of campFlats) {
+    const dx = x - c.x;
+    const dz = z - c.z;
+    const d2 = dx * dx + dz * dz;
+    const outer = c.radius + 24;
+    if (d2 > outer * outer) continue;
+    const w = 1 - smoothstep(c.radius, outer, Math.sqrt(d2));
+    h += (c.elev + valueNoise(x * 0.3, z * 0.3) * 0.05 - h) * w;
+  }
+  // The river cuts a channel across the valley, flowing away from the peak.
+  {
+    const dx = x - river.x;
+    const dz = z - river.z;
+    const across = Math.abs(dx * river.tx + dz * river.tz);
+    const along = dx * river.nx + dz * river.nz;
+    if (across < RIVER_HALF_WIDTH + 14 && Math.abs(along) < 900) {
+      const taper = smoothstep(900, 700, Math.abs(along));
+      h -= RIVER_DEPTH * (1 - smoothstep(RIVER_HALF_WIDTH - 1.5, RIVER_HALF_WIDTH + 2.5, across)) * taper;
+      h -= 1.2 * (1 - smoothstep(RIVER_HALF_WIDTH + 2.5, RIVER_HALF_WIDTH + 14, across)) * taper;
+    }
+  }
+  // The crevasse: a deep slot across the glacier route.
+  {
+    const dx = x - crevasse.x;
+    const dz = z - crevasse.z;
+    const across = Math.abs(dx * crevasse.tx + dz * crevasse.tz);
+    const along = Math.abs(dx * crevasse.nx + dz * crevasse.nz);
+    if (across < CREVASSE_HALF_GAP + 0.6 && along < CREVASSE_HALF_LENGTH) {
+      const lip = 1 - smoothstep(CREVASSE_HALF_GAP - 0.25, CREVASSE_HALF_GAP + 0.35, across);
+      const ends = smoothstep(CREVASSE_HALF_LENGTH, CREVASSE_HALF_LENGTH - 8, along);
+      h -= CREVASSE_DEPTH * lip * ends;
+    }
+  }
+  return h;
 }
 
 /** Approximate slope (rise / run) of the expedition terrain. */

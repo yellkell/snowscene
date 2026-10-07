@@ -48,6 +48,21 @@ class SnowAudio {
     this.applyMusic();
   }
 
+  /** The audio context once unlocked (null before the first gesture). */
+  context(): AudioContext | null {
+    return this.ctx;
+  }
+
+  /** Master output node that extra sound modules should connect to. */
+  output(): GainNode | null {
+    return this.master;
+  }
+
+  /** Shared 2 s white-noise buffer for synthesising wind, water, snow. */
+  noiseBuffer(): AudioBuffer | null {
+    return this.noise;
+  }
+
   /** Choose the score; crossfades if audio is already running. */
   setMusic(track: MusicTrack): void {
     this.wantedTrack = track;
