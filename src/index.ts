@@ -11,6 +11,8 @@ import { BackpackSystem } from './game/backpack-system.js';
 import { CampfireSystem } from './game/campfire.js';
 import { ClimbSystem } from './game/climb-system.js';
 import { DesktopLookSystem } from './game/desktop-look-system.js';
+import { ExpeditionDirectorSystem } from './game/expedition/director/director-system.js';
+import { WristHudSystem } from './game/expedition/director/wrist-hud.js';
 import { GlideSystem } from './game/glide-system.js';
 import { GliderBuildSystem } from './game/glider-build-system.js';
 import { GuideSystem } from './game/guide-system.js';
@@ -42,7 +44,11 @@ World.create(
     .registerSystem(ClimbSystem, { priority: 11 })
     .registerSystem(GliderBuildSystem, { priority: 12 })
     .registerSystem(GlideSystem, { priority: 13 })
-    .registerSystem(GuideSystem, { priority: 30 });
+    .registerSystem(GuideSystem, { priority: 30 })
+    // The expedition (?expedition / ?expedition&s=5000 start it directly).
+    // The director must be registered before other expedition systems.
+    .registerSystem(ExpeditionDirectorSystem, { priority: 5 })
+    .registerSystem(WristHudSystem, { priority: 31 });
 
   // Dev-only handle for automated checks and quick phase skipping.
   if (import.meta.env.DEV) {

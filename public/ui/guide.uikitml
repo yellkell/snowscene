@@ -2,7 +2,9 @@
   Guide panel for the mountain experience. Text is swapped at runtime by
   GuideSystem (src/game/guide-system.ts) as the player moves between phases.
   Panel, Divider, Button, ButtonIcon and ButtonLabel come from the bundled
-  Horizon kit; Mountain, RectangleGoggles and RotateCcw are Lucide icons.
+  Horizon kit; Mountain, MountainSnow, RectangleGoggles, RotateCcw,
+  SkipForward and Undo2 are Lucide icons. The expedition buttons are wired
+  in GuideSystem too (src/game/expedition/director/exp-control.ts).
 -->
 <style>
   .panel-root {
@@ -102,5 +104,29 @@
       <RotateCcw></RotateCcw>
     </ButtonIcon>
     <ButtonLabel class="button-label">Play again</ButtonLabel>
+  </Button>
+  <Button id="expedition-button" class="button" style="display: none">
+    <ButtonIcon>
+      <MountainSnow></MountainSnow>
+    </ButtonIcon>
+    <ButtonLabel class="button-label">Start the Expedition</ButtonLabel>
+  </Button>
+  <Button id="skip-button" class="button" style="display: none">
+    <ButtonIcon>
+      <SkipForward></SkipForward>
+    </ButtonIcon>
+    <ButtonLabel class="button-label">Skip to the next camp</ButtonLabel>
+  </Button>
+  <Button id="exp-restart-button" class="button" style="display: none">
+    <ButtonIcon>
+      <RotateCcw></RotateCcw>
+    </ButtonIcon>
+    <ButtonLabel class="button-label">Restart expedition</ButtonLabel>
+  </Button>
+  <Button id="tutorial-button" class="button" style="display: none">
+    <ButtonIcon>
+      <Undo2></Undo2>
+    </ButtonIcon>
+    <ButtonLabel class="button-label">Back to the tutorial</ButtonLabel>
   </Button>
 </Panel>

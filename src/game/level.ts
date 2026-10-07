@@ -61,6 +61,15 @@ export interface Level {
   landingShort: number;
   /** Cruise airspeed for this level's glider (m/s). */
   glideSpeed: number;
+  /** Optional glide-assist tuning; the defaults suit the tutorial's short glide. */
+  glideAssist?: {
+    /** Upper limit of the assisted sink rate (m/s). Default 4.5. */
+    maxSink: number;
+    /** How strongly the assist sets the sink rate at neutral pitch (0..1). Default 0.8. */
+    weight: number;
+    /** Lift over rising ground to keep about this much air below (m); 0 = off. */
+    clearance: number;
+  };
   /** Storm level the weather should head toward right now (0..1). */
   stormTarget(head: Vector3): number;
   /** Height of the cloud deck (sea of clouds). */
