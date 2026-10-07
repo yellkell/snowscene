@@ -16,7 +16,8 @@ import { createSystem, InputComponent, Vector3 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { BAR_BELOW_EYES, BAR_HALF_WIDTH, BAR_Y, BAR_Z, buildGlider } from './glider-model.js';
 import { hands, HANDS } from './hand-input.js';
-import { faceYaw, getHeadWorld, placeHeadAt, rotateRigAroundHead, yawForward } from './rig.js';
+import { FIRE_POS } from './campfire.js';
+import { faceYaw, getHeadWorld, placeHeadAt, rotateRigAroundHead, wrapAngle, yawForward } from './rig.js';
 import { sceneRefs } from './scene-system.js';
 import { fadeThen, game, Phase, setPhase } from './state.js';
 import {
@@ -36,6 +37,8 @@ import {
 const BAR_REACH = 0.2;
 const MAX_TURN_RATE = 0.55; // rad/s
 const LAUNCH_HOLD_TIME = 0.35;
+/** The approach assist aims this far short of the fire (metres). */
+const LANDING_SHORT_OF_FIRE = 26;
 
 function groundAt(x: number, z: number): number {
   const lx = (x - LAKE_CENTER_X) / (LAKE_RADIUS_X * 0.88);
@@ -204,14 +207,31 @@ export class GlideSystem extends createSystem({}) {
 
     // Push out (pitch > 0) floats slowly, pull in (pitch < 0) dives fast.
     const targetSpeed = 9 - 2.2 * this.pitch;
-    const sink = this.pitch < 0 ? 1.45 - this.pitch * 2.8 : 1.45 - this.pitch * 0.55;
+    let sink = this.pitch < 0 ? 1.45 - this.pitch * 2.8 : 1.45 - this.pitch * 0.55;
     this.speed += (targetSpeed - this.speed) * Math.min(1, dt * 0.8);
     game.airspeed = this.speed;
+
+    // Gentle approach assist toward a landing spot just short of the camp
+    // fire. Your own steering and pitch always take precedence.
+    let autoTurn = 0;
+    const toX = FIRE_POS.x - this.head.x;
+    const toZ = FIRE_POS.z - this.head.z;
+    const fireDist = Math.hypot(toX, toZ);
+    const aimDist = fireDist - LANDING_SHORT_OF_FIRE;
+    if (aimDist > 3) {
+      const err = wrapAngle(Math.atan2(-toX, -toZ) - this.gliderYaw);
+      if (Math.abs(this.steer) < 0.15) autoTurn = clamp(err * 0.6, -0.4, 0.4);
+      if (Math.abs(err) < 0.9) {
+        const needed = ((this.player.position.y - FIRE_POS.y) / aimDist) * this.speed;
+        const weight = 0.8 * (1 - Math.min(1, Math.abs(this.pitch)));
+        sink += (clamp(needed, 0.3, 4.5) - sink) * weight;
+      }
+    }
 
     const rig = this.player;
     rig.position.addScaledVector(this.fwd, this.speed * dt);
     rig.position.y -= sink * dt;
-    const turn = -this.steer * MAX_TURN_RATE * dt;
+    const turn = (-this.steer * MAX_TURN_RATE + autoTurn) * dt;
     if (turn !== 0) rotateRigAroundHead(this.world, turn, this.head);
     rig.updateMatrixWorld(true);
     this.poseGlider();
@@ -231,9 +251,10 @@ export class GlideSystem extends createSystem({}) {
         this.cloudLanding = true;
         fadeThen(() => {
           this.cloudLanding = false;
+          // Come down out of the clouds beside the camp, facing the fire.
           faceYaw(this.world, Math.PI);
-          const x = LAKE_CENTER_X + LAKE_RADIUS_X * 0.6;
-          const z = LAKE_CENTER_Z + LAKE_RADIUS_Z * 0.95;
+          const x = FIRE_POS.x;
+          const z = FIRE_POS.z - LANDING_SHORT_OF_FIRE;
           placeHeadAt(this.world, x, z, groundAt(x, z));
           this.gliderYawOffset = Math.PI - this.player.rotation.y;
           this.speed = 0;
@@ -274,10 +295,11 @@ export class GlideSystem extends createSystem({}) {
     getHeadWorld(this.world, this.head);
     yawForward(this.gliderYaw, this.fwd);
     const root = this.glider.root;
-    const x = this.head.x + this.fwd.x * 4 - this.fwd.z * 2.4;
-    const z = this.head.z + this.fwd.z * 4 + this.fwd.x * 2.4;
+    // Set it down off to the side, clear of the campfire ahead.
+    const x = this.head.x - this.fwd.x * 0.5 - this.fwd.z * 5;
+    const z = this.head.z - this.fwd.z * 0.5 + this.fwd.x * 5;
     root.position.set(x, groundAt(x, z) - 0.95, z);
-    root.rotation.set(-0.12, this.gliderYaw + 2.2, 0.28, 'YXZ');
+    root.rotation.set(-0.12, this.gliderYaw + 1.3, 0.28, 'YXZ');
     root.updateMatrixWorld(true);
   }
 

@@ -60,8 +60,11 @@ import {
 } from './terrain.js';
 
 /** Direction the sunlight comes from (low, golden, over the valley). */
-/** Direction the sunlight comes from: a low golden sun over the sea of clouds. */
-export const SUN_DIRECTION = new Vector3(-0.36, 0.15, 0.92).normalize();
+/**
+ * Direction the sunlight comes from: a low dusk sun off to the west of the
+ * glide line, so the campfire ahead never sits in its glare.
+ */
+export const SUN_DIRECTION = new Vector3(-0.72, 0.065, 0.68).normalize();
 /** Clear-weather aerial haze colour (linear). */
 export const FOG_COLOR = new Color(0.55, 0.6, 0.72);
 

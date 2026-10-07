@@ -60,6 +60,7 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
       uCenter: { value: new Vector3() },
       uBox: { value: opts.box.clone() },
       uOffset: { value: new Vector3() },
+      uVelocity: { value: new Vector3() },
       uSize: { value: opts.size },
       uMaxSize: { value: opts.maxSize },
       uIntensity: { value: 1 },
@@ -70,29 +71,46 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
       uniform vec3 uCenter;
       uniform vec3 uBox;
       uniform vec3 uOffset;
+      uniform vec3 uVelocity;
       uniform float uSize;
       uniform float uMaxSize;
       uniform float uIntensity;
       uniform float uOpacity;
       attribute float aSeed;
       varying float vAlpha;
+      varying vec2 vDir;
+      varying float vStretch;
       void main() {
-        vec3 p = position * uBox + uOffset * (0.75 + aSeed * 0.5);
+        float speedVar = 0.75 + aSeed * 0.5;
+        vec3 p = position * uBox + uOffset * speedVar;
         p.x += sin(uTime * 0.6 + aSeed * 30.0) * 0.4;
         p.z += cos(uTime * 0.45 + aSeed * 17.0) * 0.3;
         p = mod(p - uCenter + 0.5 * uBox, uBox) + uCenter - 0.5 * uBox;
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mv;
+        // Motion streak: where this flake will be a moment from now, on screen.
+        vec4 ahead = projectionMatrix * (modelViewMatrix * vec4(p + uVelocity * speedVar * 0.045, 1.0));
+        vec2 d = ahead.xy / ahead.w - gl_Position.xy / gl_Position.w;
         float on = step(aSeed, uIntensity);
-        gl_PointSize = on * min(uSize * (0.45 + aSeed * 0.7) / max(-mv.z, 0.1), uMaxSize);
+        float base = min(uSize * (0.45 + aSeed * 0.7) / max(-mv.z, 0.1), uMaxSize);
+        float streakPx = length(d) * 600.0;
+        vStretch = clamp(1.0 + streakPx / max(base, 1.0), 1.0, 5.0);
+        vDir = length(d) > 1e-6 ? normalize(vec2(d.x, -d.y)) : vec2(0.0, 1.0);
+        gl_PointSize = on * base * vStretch;
         float r = length((p - uCenter) / (0.5 * uBox));
         vAlpha = on * (1.0 - smoothstep(0.55, 1.0, r)) * uOpacity;
       }
     `,
     fragmentShader: /* glsl */ `
       varying float vAlpha;
+      varying vec2 vDir;
+      varying float vStretch;
       void main() {
-        float a = smoothstep(0.5, 0.1, length(gl_PointCoord - 0.5)) * vAlpha;
+        vec2 pc = gl_PointCoord - 0.5;
+        // Elliptical flake stretched along its screen-space motion.
+        float along = dot(pc, vDir);
+        float across = dot(pc, vec2(-vDir.y, vDir.x)) * vStretch;
+        float a = smoothstep(0.5, 0.1, length(vec2(along, across))) * vAlpha;
         if (a < 0.02) discard;
         gl_FragColor = vec4(1.0, 1.0, 1.0, a);
       }
@@ -121,8 +139,8 @@ export class WeatherSystem extends createSystem({}) {
       this.world.createTransformEntity(object, { persistent: true });
 
     this.snow = buildSnowLayer({
-      count: 4500,
-      box: new Vector3(36, 30, 36),
+      count: 7500,
+      box: new Vector3(30, 24, 30),
       size: 36,
       maxSize: 14,
       seed: 12,
@@ -131,8 +149,8 @@ export class WeatherSystem extends createSystem({}) {
     add(this.snow);
 
     this.drift = buildSnowLayer({
-      count: 2000,
-      box: new Vector3(26, 2.4, 26),
+      count: 3000,
+      box: new Vector3(24, 2.4, 24),
       size: 16,
       maxSize: 7,
       seed: 31,
@@ -146,17 +164,19 @@ export class WeatherSystem extends createSystem({}) {
     const s = -this.head.z;
     switch (game.phase.peek()) {
       case Phase.Poling:
-        return 0.2 + 0.6 * smoothstep(15, 65, s);
+        // A proper blizzard that worsens as you climb.
+        return 0.55 + 0.4 * smoothstep(5, 60, s);
       case Phase.Climbing:
-        return 0.88;
+        return 1;
       case Phase.Building:
-        return 0.12;
+        // Breaking through the top of the storm: the sky clears.
+        return 0.06;
       case Phase.Launch:
-        return 0.05;
+        return 0.03;
       case Phase.Gliding:
-        return 0.1;
+        return 0.05;
       default:
-        return 0.3;
+        return 0.12;
     }
   }
 
@@ -165,23 +185,25 @@ export class WeatherSystem extends createSystem({}) {
     getHeadWorld(this.world, this.head);
 
     if (game.stormOverride !== null) this.storm = game.stormOverride;
-    else this.storm += (this.targetStorm() - this.storm) * (1 - Math.exp(-dt / 4));
+    else this.storm += (this.targetStorm() - this.storm) * (1 - Math.exp(-dt / 3.2));
     const storm = this.storm;
     const gust = 0.5 + 0.5 * valueNoise(time * 0.35, 3.1);
     const windYaw = 0.6 + valueNoise(time * 0.04, 9.7) * 1.3;
-    const windSpeed = 0.6 + storm * (2.5 + 5 * gust);
+    const windSpeed = 0.6 + storm * (3.5 + 8.5 * gust * gust);
     const wx = Math.cos(windYaw) * windSpeed;
     const wz = Math.sin(windYaw) * windSpeed;
 
     // Falling snow: denser and more wind-driven as the storm builds.
     this.snowOffset.x += wx * dt;
     this.snowOffset.z += wz * dt;
-    this.snowOffset.y -= (0.85 + storm * 0.7) * dt;
+    const fall = 0.85 + storm * 0.9;
+    this.snowOffset.y -= fall * dt;
     const snow = (this.snow.material as ShaderMaterial).uniforms;
     snow.uTime.value = time;
     (snow.uCenter.value as Vector3).copy(this.head);
     (snow.uOffset.value as Vector3).copy(this.snowOffset);
-    snow.uIntensity.value = 0.25 + storm * 0.75;
+    (snow.uVelocity.value as Vector3).set(wx, -fall, wz);
+    snow.uIntensity.value = 0.18 + storm * 0.82;
 
     // Spindrift: snow blown along the ground in strong wind.
     this.driftOffset.x += wx * 1.8 * dt;
@@ -191,6 +213,7 @@ export class WeatherSystem extends createSystem({}) {
     drift.uTime.value = time;
     (drift.uCenter.value as Vector3).set(this.head.x, this.player.position.y + 0.9, this.head.z);
     (drift.uOffset.value as Vector3).copy(this.driftOffset);
+    (drift.uVelocity.value as Vector3).set(wx * 1.8, 0, wz * 1.8);
     drift.uOpacity.value = smoothstep(1.8, 5.5, windSpeed) * 0.75;
 
     // Visibility closes in during the storm; in clear air only the far
@@ -198,7 +221,7 @@ export class WeatherSystem extends createSystem({}) {
     const fog = this.scene.fog as Fog | null;
     this.fogColor.copy(FOG_COLOR).lerp(STORM_FOG, storm);
     const near = 400 + (6 - 400) * storm;
-    const far = 24000 + (110 - 24000) * Math.pow(storm, 0.6);
+    const far = 24000 + (80 - 24000) * Math.pow(storm, 0.6);
     if (fog) {
       fog.color.copy(this.fogColor);
       fog.near = near;
@@ -223,9 +246,10 @@ export class WeatherSystem extends createSystem({}) {
     landUniforms.uSparkle.value = 3 * (1 - smoothstep(0.15, 0.6, storm));
 
     // Wind audio follows both the weather and the glide speed.
-    const weatherWind = storm * (0.2 + 0.6 * gust);
+    const weatherWind = storm * (0.3 + 0.7 * gust);
     audio.setWind(Math.max(weatherWind, Math.min(1, game.airspeed / 12)));
-    const gustHigh = gust > 0.82 && storm > 0.5;
+    audio.setStorm(storm, gust);
+    const gustHigh = gust > 0.78 && storm > 0.45;
     if (gustHigh && !this.gustWasHigh) audio.whoosh();
     this.gustWasHigh = gustHigh;
   }

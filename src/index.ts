@@ -7,6 +7,7 @@
 import { World } from '@iwsdk/core';
 import projectOptions from 'virtual:iwsdk-project';
 import { audio } from './game/audio.js';
+import { CampfireSystem } from './game/campfire.js';
 import { ClimbSystem } from './game/climb-system.js';
 import { DesktopLookSystem } from './game/desktop-look-system.js';
 import { GlideSystem } from './game/glide-system.js';
@@ -25,6 +26,7 @@ World.create(
   world
     .registerSystem(SceneSetupSystem, { priority: 20 })
     .registerSystem(WeatherSystem, { priority: 21 })
+    .registerSystem(CampfireSystem, { priority: 22 })
     .registerSystem(HandInputSystem, { priority: 0 })
     .registerSystem(DesktopLookSystem, { priority: 1 })
     .registerSystem(PoleSystem, { priority: 10 })

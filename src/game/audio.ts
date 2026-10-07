@@ -20,6 +20,9 @@ class SnowAudio {
   private noise: AudioBuffer | null = null;
   private windGain: GainNode | null = null;
   private windFilter: BiquadFilterNode | null = null;
+  private howlGain: GainNode | null = null;
+  private howlFilter: BiquadFilterNode | null = null;
+  private fireGain: GainNode | null = null;
   private music = new Map<MusicTrack, { element: HTMLAudioElement; gain: GainNode }>();
   private wantedTrack: MusicTrack = 'river';
   private currentTrack: MusicTrack | null = null;
@@ -110,6 +113,50 @@ class SnowAudio {
     this.windGain.gain.value = 0.04;
     src.connect(this.windFilter).connect(this.windGain).connect(this.master!);
     src.start();
+
+    // Storm howl: resonant band of noise whose pitch rides the gusts.
+    const howl = ctx.createBufferSource();
+    howl.buffer = this.noise;
+    howl.loop = true;
+    this.howlFilter = ctx.createBiquadFilter();
+    this.howlFilter.type = 'bandpass';
+    this.howlFilter.frequency.value = 500;
+    this.howlFilter.Q.value = 9;
+    this.howlGain = ctx.createGain();
+    this.howlGain.gain.value = 0;
+    howl.connect(this.howlFilter).connect(this.howlGain).connect(this.master!);
+    howl.start(0, 0.7);
+
+    // Fire bed: low roar under the crackles.
+    const roar = ctx.createBufferSource();
+    roar.buffer = this.noise;
+    roar.loop = true;
+    const roarFilter = ctx.createBiquadFilter();
+    roarFilter.type = 'lowpass';
+    roarFilter.frequency.value = 260;
+    this.fireGain = ctx.createGain();
+    this.fireGain.gain.value = 0;
+    roar.connect(roarFilter).connect(this.fireGain).connect(this.master!);
+    roar.start(0, 1.3);
+  }
+
+  /** Blizzard howl, 0 (calm) .. 1 (full storm); gust 0..1 bends the pitch. */
+  setStorm(level: number, gust: number): void {
+    if (!this.ctx || !this.howlGain || !this.howlFilter) return;
+    const t = this.ctx.currentTime;
+    this.howlGain.gain.setTargetAtTime(level * level * (0.35 + 0.65 * gust) * 0.55, t, 0.4);
+    this.howlFilter.frequency.setTargetAtTime(320 + gust * 520 + level * 120, t, 0.6);
+  }
+
+  /** Campfire loudness by proximity, 0..1. */
+  setFire(level: number): void {
+    if (!this.ctx || !this.fireGain) return;
+    this.fireGain.gain.setTargetAtTime(level * 0.35, this.ctx.currentTime, 0.3);
+  }
+
+  crackle(level: number): void {
+    this.burst(2500 + Math.random() * 3000, 1.5, 0.03 + Math.random() * 0.05, 0.25 * level, 'highpass');
+    if (Math.random() < 0.3) this.burst(180 + Math.random() * 120, 2, 0.08, 0.2 * level);
   }
 
   /** 0 = calm alpine breeze, 1 = rushing air while gliding fast. */

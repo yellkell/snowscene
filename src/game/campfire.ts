@@ -1,0 +1,523 @@
+/**
+ * The party on the frozen lake: a towering bonfire you spot from the summit
+ * once the storm breaks, and where the glide ends.
+ *
+ * Flames are crossed billboards with an animated noise shader; sparks and a
+ * smoke column are small CPU particle pools; a flickering warm point light
+ * lights the ice and snow, and a glow keeps it visible as a beacon from the
+ * summit. Partygoers sway around the fire under strings of festoon lights,
+ * with benches and tents around the edge; the crackle and roar rise as you
+ * get close.
+ */
+
+import {
+  AdditiveBlending,
+  BufferAttribute,
+  BufferGeometry,
+  CanvasTexture,
+  CapsuleGeometry,
+  Color,
+  ConeGeometry,
+  createSystem,
+  CylinderGeometry,
+  DoubleSide,
+  Group,
+  IcosahedronGeometry,
+  InstancedMesh,
+  Matrix4,
+  Mesh,
+  MeshStandardMaterial,
+  NormalBlending,
+  PlaneGeometry,
+  PointLight,
+  Points,
+  ShaderMaterial,
+  Sprite,
+  SpriteMaterial,
+  SRGBColorSpace,
+  Vector3,
+} from '@iwsdk/core';
+import { audio } from './audio.js';
+import { getHeadWorld } from './rig.js';
+import { LAKE_CENTER_X, LAKE_CENTER_Z, LAKE_Y } from './terrain.js';
+import { segmentMatrix } from './mesh-utils.js';
+import { buildBarkTexture } from './textures.js';
+
+/** Base of the bonfire, on the lake ice. */
+export const FIRE_POS = new Vector3(LAKE_CENTER_X + 2, LAKE_Y + 0.02, LAKE_CENTER_Z - 2);
+/** Radius of the party (dancers, lights, tents) around the fire. */
+export const PARTY_RADIUS = 16;
+const FLAME_HEIGHT = 10;
+
+const flameUniforms = { uTime: { value: 0 } };
+
+function flameMaterial(seed: number): ShaderMaterial {
+  return new ShaderMaterial({
+    uniforms: { uTime: flameUniforms.uTime, uSeed: { value: seed } },
+    vertexShader: /* glsl */ `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      uniform float uSeed;
+      varying vec2 vUv;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+      }
+      float fbm(vec2 p) {
+        float s = 0.0; float a = 0.5;
+        for (int i = 0; i < 4; i++) { s += noise(p) * a; p *= 2.1; a *= 0.5; }
+        return s;
+      }
+      void main() {
+        vec2 uv = vUv;
+        float t = uTime * 1.7 + uSeed * 13.0;
+        float n = fbm(vec2(uv.x * 4.0 + uSeed * 5.0, uv.y * 3.0 - t));
+        float n2 = fbm(vec2(uv.x * 9.0 - uSeed, uv.y * 6.0 - t * 1.6));
+        // Tongues of flame: wide at the base, licking up to a ragged tip.
+        float sway = (n - 0.5) * 0.35 * uv.y;
+        float width = mix(0.42, 0.03, pow(uv.y, 0.75));
+        float dx = abs(uv.x - 0.5 + sway);
+        float body = smoothstep(width, width * 0.25, dx);
+        body *= smoothstep(1.0, 0.2, uv.y + (n2 - 0.5) * 0.55);
+        body *= smoothstep(0.0, 0.05, uv.y);
+        float heat = clamp(body * (1.25 - uv.y) + (n2 - 0.5) * 0.2, 0.0, 1.0);
+        vec3 col = mix(vec3(0.9, 0.18, 0.02), vec3(1.0, 0.62, 0.15), smoothstep(0.15, 0.55, heat));
+        col = mix(col, vec3(1.0, 0.95, 0.75), smoothstep(0.6, 0.95, heat));
+        gl_FragColor = vec4(col * 2.2, clamp(body * 1.4, 0.0, 1.0));
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    // Normal blending keeps the fire readable even against bright snow and sky.
+    side: DoubleSide,
+    fog: false,
+  });
+}
+
+/** Simple rising particle pool (sparks or smoke). */
+class Plume {
+  readonly points: Points;
+  private readonly pos: Float32Array;
+  private readonly alpha: Float32Array;
+  private readonly size: Float32Array;
+  private readonly vel: Float32Array;
+  private readonly life: Float32Array;
+  private readonly maxLife: Float32Array;
+
+  constructor(
+    private readonly count: number,
+    private readonly spawn: (i: number, p: Float32Array, v: Float32Array) => number,
+    private readonly step: (dt: number, i: number, p: Float32Array, v: Float32Array, t: number) => void,
+    private readonly fade: (t: number) => number,
+    private readonly grow: (t: number) => number,
+    color: Color,
+    additive: boolean,
+  ) {
+    this.pos = new Float32Array(count * 3);
+    this.alpha = new Float32Array(count);
+    this.size = new Float32Array(count);
+    this.vel = new Float32Array(count * 3);
+    this.life = new Float32Array(count);
+    this.maxLife = new Float32Array(count);
+    for (let i = 0; i < count; i++) this.life[i] = -Math.random() * 3;
+    const geometry = new BufferGeometry();
+    geometry.setAttribute('position', new BufferAttribute(this.pos, 3));
+    geometry.setAttribute('aAlpha', new BufferAttribute(this.alpha, 1));
+    geometry.setAttribute('aSize', new BufferAttribute(this.size, 1));
+    this.points = new Points(
+      geometry,
+      new ShaderMaterial({
+        uniforms: { uColor: { value: color } },
+        vertexShader: /* glsl */ `
+          attribute float aAlpha;
+          attribute float aSize;
+          varying float vAlpha;
+          void main() {
+            vec4 mv = modelViewMatrix * vec4(position, 1.0);
+            gl_Position = projectionMatrix * mv;
+            gl_PointSize = min(aSize * 900.0 / max(-mv.z, 0.1), 256.0);
+            vAlpha = aAlpha;
+          }
+        `,
+        fragmentShader: /* glsl */ `
+          uniform vec3 uColor;
+          varying float vAlpha;
+          void main() {
+            float a = smoothstep(0.5, 0.0, length(gl_PointCoord - 0.5)) * vAlpha;
+            if (a < 0.01) discard;
+            gl_FragColor = vec4(uColor, a);
+            #include <tonemapping_fragment>
+            #include <colorspace_fragment>
+          }
+        `,
+        transparent: true,
+        depthWrite: false,
+        blending: additive ? AdditiveBlending : NormalBlending,
+      }),
+    );
+    this.points.frustumCulled = false;
+  }
+
+  update(dt: number): void {
+    for (let i = 0; i < this.count; i++) {
+      this.life[i] += dt;
+      if (this.life[i] < 0) {
+        this.alpha[i] = 0;
+        continue;
+      }
+      if (this.life[i] >= this.maxLife[i]) {
+        this.maxLife[i] = this.spawn(i, this.pos, this.vel);
+        this.life[i] = 0;
+      }
+      const t = this.life[i] / Math.max(this.maxLife[i], 1e-3);
+      this.step(dt, i, this.pos, this.vel, t);
+      this.alpha[i] = this.fade(t);
+      this.size[i] = this.grow(t);
+    }
+    const geo = this.points.geometry;
+    geo.getAttribute('position').needsUpdate = true;
+    geo.getAttribute('aAlpha').needsUpdate = true;
+    geo.getAttribute('aSize').needsUpdate = true;
+  }
+}
+
+function glowTexture(): CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,225,150,1)');
+  g.addColorStop(0.2, 'rgba(255,150,50,0.7)');
+  g.addColorStop(1, 'rgba(255,90,20,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  const texture = new CanvasTexture(canvas);
+  texture.colorSpace = SRGBColorSpace;
+  return texture;
+}
+
+function buildBonfire(): Group {
+  const fire = new Group();
+  fire.name = 'Bonfire';
+  const bark = new MeshStandardMaterial({ map: buildBarkTexture(), roughness: 0.9 });
+  const charred = new MeshStandardMaterial({ color: 0x1c1410, roughness: 1 });
+  const stone = new MeshStandardMaterial({ color: 0x5a5856, roughness: 0.95 });
+  // A towering teepee of logs over a charred core.
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    const log = new Mesh(new CylinderGeometry(0.2, 0.28, 4.6, 8), i % 2 ? bark : charred);
+    log.position.set(Math.cos(a) * 1.1, 1.8, Math.sin(a) * 1.1);
+    // lean the tops in toward the centre
+    log.rotation.set(-Math.sin(a) * 0.45, 0, Math.cos(a) * 0.45);
+    log.castShadow = true;
+    fire.add(log);
+  }
+  // Ring of stones.
+  for (let i = 0; i < 26; i++) {
+    const a = (i / 26) * Math.PI * 2;
+    const rock = new Mesh(new IcosahedronGeometry(0.38, 1), stone);
+    rock.position.set(Math.cos(a) * 3.6, 0.15, Math.sin(a) * 3.6);
+    rock.scale.set(1.2, 0.7, 1);
+    rock.rotation.y = a * 3;
+    fire.add(rock);
+  }
+  return fire;
+}
+
+function buildCampEdge(): Group {
+  const camp = new Group();
+  camp.name = 'Camp';
+  const bark = new MeshStandardMaterial({ map: buildBarkTexture(), roughness: 0.9 });
+  // Log benches in a wide ring.
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + 0.2;
+    const bench = new Mesh(new CylinderGeometry(0.24, 0.24, 2.8, 10), bark);
+    bench.position.set(Math.cos(a) * 10, 0.24, Math.sin(a) * 10);
+    bench.rotation.set(0, -a, Math.PI / 2);
+    bench.castShadow = true;
+    bench.receiveShadow = true;
+    camp.add(bench);
+  }
+  // Expedition tents around the edge (leaving the glide-in side open).
+  const fabrics = [0xd8452b, 0xe8b13a, 0x2f6fb5, 0x3f9a5a, 0xb53f8f];
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + 0.9 + (i / 4) * (Math.PI * 2 - 1.8);
+    const tent = new Mesh(
+      new ConeGeometry(1.7, 2.3, 4, 1),
+      new MeshStandardMaterial({ color: fabrics[i], roughness: 0.75, side: DoubleSide }),
+    );
+    tent.position.set(Math.cos(a) * PARTY_RADIUS, 1.15, Math.sin(a) * PARTY_RADIUS);
+    tent.rotation.y = a + Math.PI / 4;
+    tent.castShadow = true;
+    tent.receiveShadow = true;
+    camp.add(tent);
+  }
+  return camp;
+}
+
+/** Strings of coloured bulbs swagged between poles around the party. */
+function buildFestoonLights(): Group {
+  const group = new Group();
+  group.name = 'FestoonLights';
+  const poleMat = new MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.9 });
+  const wireMat = new MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
+  const poles = 10;
+  const radius = 12.5;
+  const height = 4.2;
+  const bulbsPerSpan = 14;
+  const bulbGeo = new IcosahedronGeometry(0.09, 1);
+  const bulbs = new InstancedMesh(
+    bulbGeo,
+    new MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 2.2 }),
+    poles * bulbsPerSpan,
+  );
+  const palette = [
+    new Color(1, 0.75, 0.3),
+    new Color(1, 0.3, 0.25),
+    new Color(0.35, 0.9, 0.45),
+    new Color(0.35, 0.6, 1),
+    new Color(1, 0.45, 0.85),
+  ];
+  const m = new Matrix4();
+  const a = new Vector3();
+  const b = new Vector3();
+  const p = new Vector3();
+  let k = 0;
+  for (let i = 0; i < poles; i++) {
+    const ang = (i / poles) * Math.PI * 2;
+    const pole = new Mesh(new CylinderGeometry(0.06, 0.08, height, 6), poleMat);
+    pole.position.set(Math.cos(ang) * radius, height / 2, Math.sin(ang) * radius);
+    pole.castShadow = true;
+    group.add(pole);
+    const next = ((i + 1) / poles) * Math.PI * 2;
+    a.set(Math.cos(ang) * radius, height - 0.1, Math.sin(ang) * radius);
+    b.set(Math.cos(next) * radius, height - 0.1, Math.sin(next) * radius);
+    // sagging wire
+    const wirePts: Vector3[] = [];
+    for (let j = 0; j <= bulbsPerSpan; j++) {
+      const t = j / bulbsPerSpan;
+      p.lerpVectors(a, b, t);
+      p.y -= Math.sin(Math.PI * t) * 0.9;
+      wirePts.push(p.clone());
+      if (j < bulbsPerSpan) {
+        m.makeTranslation(p.x, p.y - 0.12, p.z);
+        bulbs.setMatrixAt(k, m);
+        bulbs.setColorAt(k, palette[(i * 3 + j) % palette.length]);
+        k++;
+      }
+    }
+    for (let j = 0; j < wirePts.length - 1; j++) {
+      const seg = new Mesh(new CylinderGeometry(0.012, 0.012, 1, 4), wireMat);
+      seg.matrixAutoUpdate = false;
+      seg.matrix.copy(segmentMatrix(wirePts[j], wirePts[j + 1]));
+      group.add(seg);
+    }
+  }
+  bulbs.instanceMatrix.needsUpdate = true;
+  if (bulbs.instanceColor) bulbs.instanceColor.needsUpdate = true;
+  group.add(bulbs);
+  return group;
+}
+
+interface Dancer {
+  root: Group;
+  phase: number;
+  speed: number;
+  baseYaw: number;
+  arms: Mesh[];
+}
+
+/** A simple partygoer in a winter jacket and beanie, facing the fire. */
+function buildDancer(jacket: number, hat: number, skin: number): { root: Group; arms: Mesh[] } {
+  const root = new Group();
+  const jacketMat = new MeshStandardMaterial({ color: jacket, roughness: 0.8 });
+  const trousers = new MeshStandardMaterial({ color: 0x23262d, roughness: 0.9 });
+  const skinMat = new MeshStandardMaterial({ color: skin, roughness: 0.7 });
+  const hatMat = new MeshStandardMaterial({ color: hat, roughness: 0.9 });
+  const legs = new Mesh(new CapsuleGeometry(0.16, 0.6, 4, 8), trousers);
+  legs.position.y = 0.46;
+  legs.scale.set(1.15, 1, 0.9);
+  const body = new Mesh(new CapsuleGeometry(0.24, 0.5, 4, 10), jacketMat);
+  body.position.y = 1.2;
+  const head = new Mesh(new IcosahedronGeometry(0.13, 2), skinMat);
+  head.position.y = 1.72;
+  const beanie = new Mesh(new IcosahedronGeometry(0.135, 2), hatMat);
+  beanie.position.y = 1.78;
+  beanie.scale.set(1, 0.75, 1);
+  const arms: Mesh[] = [];
+  for (const side of [-1, 1]) {
+    const arm = new Mesh(new CapsuleGeometry(0.07, 0.5, 4, 6), jacketMat);
+    arm.geometry.translate(0, -0.3, 0); // pivot at the shoulder
+    arm.position.set(side * 0.3, 1.45, 0);
+    arms.push(arm);
+    root.add(arm);
+  }
+  for (const part of [legs, body, head, beanie]) {
+    part.castShadow = true;
+    root.add(part);
+  }
+  return { root, arms };
+}
+
+export class CampfireSystem extends createSystem({}) {
+  private light!: PointLight;
+  private glow!: Sprite;
+  private sparks!: Plume;
+  private smoke!: Plume;
+  private dancers: Dancer[] = [];
+  private readonly head = new Vector3();
+
+  init(): void {
+    const add = (object: Parameters<typeof this.world.createTransformEntity>[0]) =>
+      this.world.createTransformEntity(object, { persistent: true });
+
+    for (const build of [buildBonfire, buildCampEdge, buildFestoonLights]) {
+      const group = build();
+      group.position.copy(FIRE_POS);
+      add(group);
+    }
+
+    // Partygoers in a loose ring, facing the fire.
+    const jackets = [0xd8452b, 0x2f6fb5, 0xe8b13a, 0x3f9a5a, 0xb53f8f, 0xf06a2a, 0x22a3a3];
+    const hats = [0xf2f2f2, 0xc9302c, 0x1d3b6e, 0xe0b23a, 0x2e2e2e];
+    const skins = [0xf1c7a5, 0xd9a47a, 0xa86f4a, 0x7a4b2e, 0xe6b991];
+    const count = 16;
+    for (let i = 0; i < count; i++) {
+      // leave a gap on the side the glider comes in from (-Z)
+      const ang = -Math.PI / 2 + 0.6 + (i / (count - 1)) * (Math.PI * 2 - 1.2);
+      const r = 6.2 + ((i * 37) % 10) / 10 * 1.8;
+      const { root, arms } = buildDancer(jackets[i % jackets.length], hats[i % hats.length], skins[i % skins.length]);
+      root.position.set(FIRE_POS.x + Math.cos(ang) * r, FIRE_POS.y, FIRE_POS.z + Math.sin(ang) * r);
+      const baseYaw = Math.atan2(-Math.cos(ang), -Math.sin(ang));
+      root.rotation.y = baseYaw;
+      root.name = `Partygoer${i}`;
+      add(root);
+      this.dancers.push({ root, arms, phase: i * 1.7, speed: 2.4 + (i % 4) * 0.35, baseYaw });
+    }
+
+    const flames = new Group();
+    flames.name = 'Flames';
+    flames.position.copy(FIRE_POS);
+    for (let i = 0; i < 5; i++) {
+      const plane = new Mesh(new PlaneGeometry(7.5, FLAME_HEIGHT), flameMaterial(i * 0.37));
+      plane.position.y = FLAME_HEIGHT / 2 + 0.1;
+      plane.rotation.y = (i / 5) * Math.PI;
+      plane.scale.x = i % 2 ? 0.75 : 1;
+      flames.add(plane);
+    }
+    add(flames);
+
+    this.light = new PointLight(new Color(1, 0.55, 0.22), 3500, 160, 2);
+    this.light.position.set(FIRE_POS.x, FIRE_POS.y + 4, FIRE_POS.z);
+    this.light.name = 'Firelight';
+    add(this.light);
+
+    // From afar a warm halo marks the party as a beacon.
+    this.glow = new Sprite(
+      new SpriteMaterial({
+        map: glowTexture(),
+        depthWrite: false,
+        transparent: true,
+        fog: false,
+        opacity: 0,
+      }),
+    );
+    this.glow.position.set(FIRE_POS.x, FIRE_POS.y + 4, FIRE_POS.z);
+    add(this.glow);
+
+    const fx = FIRE_POS.x;
+    const fy = FIRE_POS.y;
+    const fz = FIRE_POS.z;
+    this.sparks = new Plume(
+      320,
+      (i, p, v) => {
+        p[i * 3] = fx + (Math.random() - 0.5) * 2.5;
+        p[i * 3 + 1] = fy + 1.5 + Math.random() * 2;
+        p[i * 3 + 2] = fz + (Math.random() - 0.5) * 2.5;
+        v[i * 3] = (Math.random() - 0.5) * 2;
+        v[i * 3 + 1] = 4 + Math.random() * 7;
+        v[i * 3 + 2] = (Math.random() - 0.5) * 2;
+        return 1.5 + Math.random() * 2.5;
+      },
+      (dt, i, p, v, t) => {
+        v[i * 3] += Math.sin(t * 20 + i) * dt * 4;
+        v[i * 3 + 1] -= dt * 1.2;
+        p[i * 3] += v[i * 3] * dt;
+        p[i * 3 + 1] += v[i * 3 + 1] * dt;
+        p[i * 3 + 2] += v[i * 3 + 2] * dt;
+      },
+      (t) => (1 - t) * (0.7 + 0.3 * Math.sin(t * 40)),
+      () => 0.06,
+      new Color(1.6, 0.6, 0.15),
+      true,
+    );
+    add(this.sparks.points);
+
+    this.smoke = new Plume(
+      90,
+      (i, p, v) => {
+        p[i * 3] = fx + (Math.random() - 0.5) * 1.5;
+        p[i * 3 + 1] = fy + FLAME_HEIGHT * 0.75;
+        p[i * 3 + 2] = fz + (Math.random() - 0.5) * 1.5;
+        v[i * 3] = 0.5 + Math.random() * 0.5;
+        v[i * 3 + 1] = 3.5 + Math.random() * 1.5;
+        v[i * 3 + 2] = (Math.random() - 0.5) * 0.5;
+        return 18 + Math.random() * 6;
+      },
+      (dt, i, p, v) => {
+        p[i * 3] += v[i * 3] * dt;
+        p[i * 3 + 1] += v[i * 3 + 1] * dt;
+        p[i * 3 + 2] += v[i * 3 + 2] * dt;
+      },
+      (t) => Math.min(1, t * 5) * (1 - t) * 0.6,
+      (t) => 2.2 + t * 16,
+      new Color(0.16, 0.15, 0.15),
+      false,
+    );
+    add(this.smoke.points);
+  }
+
+  update(delta: number, time: number): void {
+    const dt = Math.min(delta, 0.1);
+    flameUniforms.uTime.value = time;
+    const flicker =
+      0.8 + 0.2 * Math.sin(time * 13.1) * Math.sin(time * 7.3 + 1.7) + 0.08 * Math.sin(time * 31);
+    this.light.intensity = 3500 * flicker;
+    this.sparks.update(dt);
+    this.smoke.update(dt);
+
+    // Dancers bob, sway and throw their arms up.
+    for (const d of this.dancers) {
+      const t = time * d.speed + d.phase;
+      d.root.position.y = FIRE_POS.y + Math.abs(Math.sin(t)) * 0.12;
+      d.root.rotation.y = d.baseYaw + Math.sin(t * 0.5) * 0.35;
+      d.root.rotation.z = Math.sin(t) * 0.08;
+      const raise = 0.5 + 0.5 * Math.sin(t * 0.5 + d.phase);
+      d.arms[0].rotation.z = -(0.3 + raise * 2.4) + Math.sin(t * 2) * 0.2;
+      d.arms[1].rotation.z = 0.3 + raise * 2.4 + Math.sin(t * 2 + 1) * 0.2;
+    }
+
+    getHeadWorld(this.world, this.head);
+    const dist = this.head.distanceTo(FIRE_POS);
+    // From afar the fire reads as a warm beacon; up close the flames speak
+    // for themselves.
+    const beacon = Math.min(1, Math.max(0, (dist - 30) / 70));
+    (this.glow.material as SpriteMaterial).opacity = beacon * (0.8 + 0.2 * flicker);
+    this.glow.scale.setScalar((12 + beacon * 18) * (0.9 + 0.1 * flicker));
+
+    // Crackle and roar grow as you approach.
+    const level = Math.pow(Math.max(0, 1 - dist / 90), 1.5);
+    audio.setFire(level);
+    if (level > 0.02 && Math.random() < dt * 14 * level) audio.crackle(level);
+  }
+}

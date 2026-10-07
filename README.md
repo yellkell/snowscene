@@ -20,9 +20,11 @@ shadowed snow and granite, a snow-laden spruce forest and a horizon of
 Music: "By the River" accompanies the ascent and crossfades into "Night
 Catch" once the glider is assembled (`public/audio/`).
 
-The weather follows the journey: light snow at the trailhead thickens into a
-gusty blizzard with blowing ground snow on the cliff, then the sky clears at
-the summit for a golden glide home.
+The weather follows the journey: you pole up through a proper blizzard
+(driving, wind-streaked snow, whiteout and howling gusts) that peaks on the
+cliff. As you haul over the top the storm breaks into a dusk sky, revealing a
+party bonfire on the frozen lake far below. Glide down to join it; a gentle
+approach assist lines you up to land at the edge of the party.
 
 ## Input
 
@@ -61,7 +63,8 @@ and press **Enter VR**.
 - `src/game/climb-system.ts`: hold grabbing, pulling and mantling
 - `src/game/glider-build-system.ts`: summit kit assembly
 - `src/game/glide-system.ts`: launch, flight and landing
-- `src/game/weather-system.ts`: snowfall, spindrift, fog, clouds and wind
+- `src/game/weather-system.ts`: blizzard snowfall, spindrift, fog and wind
+- `src/game/campfire.ts`: the bonfire party on the lake
 - `src/game/guide-system.ts`: guide panel (`public/ui/guide.uikitml`)
 - Tuning constants (pole gain, grab radii, glide speeds) sit at the top of
   each system file.

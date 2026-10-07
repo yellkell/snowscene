@@ -162,13 +162,13 @@ export class GuideSystem extends createSystem({}) {
         return {
           step: 'STEP 3 OF 4',
           title: 'Take off',
-          body: immersive ? 'Grab the bar with both hands.' : 'Press Space to launch.',
+          body: immersive ? 'Grab the bar. Fly to the fire.' : 'Space to launch. Fly to the fire.',
           hint: game.barHeld.peek() ? 'Hold on...' : '',
         };
       case Phase.Gliding:
         return {
           step: 'STEP 4 OF 4',
-          title: 'Fly!',
+          title: 'Fly to the campfire',
           body: immersive ? 'Tilt the bar to turn. Pull in to dive.' : 'A / D steer. W dive, S float.',
           hint: '',
         };
@@ -177,7 +177,7 @@ export class GuideSystem extends createSystem({}) {
         return {
           step: 'COMPLETE',
           title: 'Thanks for playing!',
-          body: 'Summit to valley. Well flown.',
+          body: 'Warm up by the fire. Well flown.',
           hint: '',
         };
     }
