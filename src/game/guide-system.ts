@@ -125,56 +125,46 @@ export class GuideSystem extends createSystem({}) {
     switch (phase) {
       case Phase.Poling:
         return {
-          step: 'STEP 1 OF 4  -  THE TRAIL',
-          title: 'Pole up the mountain',
-          body: immersive
-            ? 'Make a fist to grip each walking pole. Plant the tip in the snow, then pull your hand back to push yourself up the trail. Alternate arms, or push with both at once for a big stride.'
-            : 'Hold W or the Up arrow to pole up the trail. Drag the mouse to look around. For the full experience, enter VR and use hand tracking.',
+          step: 'STEP 1 OF 4',
+          title: 'Pole up the trail',
+          body: immersive ? 'Fist to grip. Plant, then pull back.' : 'Hold W to pole. Drag to look.',
           hint: `${game.distanceToCliff.peek()} m to the cliff`,
         };
       case Phase.Climbing:
         return {
-          step: 'STEP 2 OF 4  -  THE CLIFF',
-          title: 'Climb the last stretch',
-          body: immersive
-            ? 'Reach for a glowing hold and make a fist to grab it. Pull down to lift yourself, then reach higher with your other hand. Haul yourself over the top.'
-            : 'Hold W or the Up arrow to climb the rock wall.',
-          hint: 'Let go of everything and you will slide gently back down.',
+          step: 'STEP 2 OF 4',
+          title: 'Climb',
+          body: immersive ? 'Grab a glowing hold. Pull down.' : 'Hold W to climb.',
+          hint: '',
         };
       case Phase.Building:
         return {
-          step: 'STEP 3 OF 4  -  THE SUMMIT',
+          step: 'STEP 3 OF 4',
           title: 'Build your glider',
-          body: immersive
-            ? 'Grab each loose part with a fist, carry it to its glowing outline on the frame and open your hand to fit it.'
-            : 'Press E to fit the next part onto the glider frame.',
-          hint: `${game.partsPlaced.peek()} of 3 parts fitted`,
+          body: immersive ? 'Carry each part to its outline.' : 'Press E to fit a part.',
+          hint: `${game.partsPlaced.peek()} of 3 fitted`,
         };
       case Phase.Launch:
         return {
-          step: 'STEP 3 OF 4  -  THE SUMMIT',
-          title: 'Ready for take-off',
-          body: immersive
-            ? 'Close both hands around the control bar in front of you to launch off the edge.'
-            : 'Press Space to launch off the edge.',
-          hint: game.barHeld.peek() ? 'Hold on...' : 'Both hands on the bar.',
+          step: 'STEP 3 OF 4',
+          title: 'Take off',
+          body: immersive ? 'Grab the bar with both hands.' : 'Press Space to launch.',
+          hint: game.barHeld.peek() ? 'Hold on...' : '',
         };
       case Phase.Gliding:
         return {
-          step: 'STEP 4 OF 4  -  THE DESCENT',
+          step: 'STEP 4 OF 4',
           title: 'Fly!',
-          body: immersive
-            ? 'Tilt the bar like a steering wheel to turn. Pull it in to dive, push it out to float. Glide down to the valley.'
-            : 'A and D to steer, W to dive, S to float. Glide down to the valley.',
-          hint: 'Land anywhere in the valley.',
+          body: immersive ? 'Tilt the bar to turn. Pull in to dive.' : 'A / D steer. W dive, S float.',
+          hint: '',
         };
       case Phase.Landed:
       default:
         return {
-          step: 'SUMMIT TO VALLEY  -  COMPLETE',
+          step: 'COMPLETE',
           title: 'Thanks for playing!',
-          body: 'You poled up the mountain, scaled the cliff, built a glider and soared home on the evening wind.',
-          hint: 'Snow Scene  -  made with the Immersive Web SDK',
+          body: 'Summit to valley. Well flown.',
+          hint: '',
         };
     }
   }
@@ -187,7 +177,7 @@ export class GuideSystem extends createSystem({}) {
     this.stepText.setProperties({ text: copy.step });
     this.titleText.setProperties({ text: copy.title });
     this.bodyText.setProperties({ text: copy.body });
-    this.hintText.setProperties({ text: copy.hint });
+    this.hintText.setProperties({ text: copy.hint, display: copy.hint ? 'flex' : 'none' });
     this.xrButton.setProperties({
       display: !immersive && this.world.xrEnabled ? 'flex' : 'none',
     });

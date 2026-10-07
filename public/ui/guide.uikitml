@@ -7,7 +7,7 @@
 <style>
   .panel-root {
     flex-direction: column;
-    width: 380px;
+    width: 300px;
   }
 
   .panel-content {
@@ -86,13 +86,10 @@
       <Mountain width="14" height="14" color="#3b6ea8"></Mountain>
       <span id="guide-step" class="step">STEP 1 OF 4</span>
     </div>
-    <span id="guide-title" class="heading">Pole up the mountain</span>
+    <span id="guide-title" class="heading">Pole up the trail</span>
     <Divider></Divider>
-    <span id="guide-body" class="body">
-      Make a fist to grip each walking pole. Plant the tip in the snow and push
-      back to stride up the trail.
-    </span>
-    <span id="guide-hint" class="hint">Hand tracking recommended.</span>
+    <span id="guide-body" class="body">Fist to grip. Plant, then pull back.</span>
+    <span id="guide-hint" class="hint">72 m to the cliff</span>
   </div>
   <Button id="xr-button" class="button">
     <ButtonIcon>
