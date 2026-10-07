@@ -9,7 +9,7 @@
  *  - view-dependent glints on sunlit snow.
  */
 
-import { MeshStandardMaterial, type Texture, Vector3 } from '@iwsdk/core';
+import { Color, MeshStandardMaterial, type Texture, Vector3 } from '@iwsdk/core';
 import { FAR_DEPTH_GLSL, FAR_VERTEX_DEPTH } from './far-layer.js';
 import { CLOUD_SEA_Y } from './terrain.js';
 import { landTextures } from './textures.js';
@@ -36,7 +36,31 @@ export interface LandMaterialOptions {
 export const landUniforms = {
   uSunDir: { value: new Vector3(0, 1, 0) },
   uSparkle: { value: 3.0 },
+  // Expedition cloud-deck mist band: land fades into the deck within
+  // uDeckBelow metres under it and uDeckAbove over it. Strength 0 (the
+  // default) leaves every land material exactly as it was.
+  uDeckY: { value: 0 },
+  uDeckBelow: { value: 90 },
+  uDeckAbove: { value: 50 },
+  uDeckMist: { value: new Color(1, 1, 1) },
+  uDeckMistStrength: { value: 0 },
 };
+
+const DECK_MIST_PARS = /* glsl */ `
+uniform float uDeckY;
+uniform float uDeckBelow;
+uniform float uDeckAbove;
+uniform vec3 uDeckMist;
+uniform float uDeckMistStrength;
+`;
+
+const DECK_MIST = /* glsl */ `
+if (uDeckMistStrength > 0.0) {
+  float deckD = vLandWorld.y - uDeckY;
+  float deckBand = 1.0 - smoothstep(0.0, deckD < 0.0 ? uDeckBelow : uDeckAbove, abs(deckD));
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, uDeckMist, deckBand * uDeckMistStrength);
+}
+`;
 
 export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandardMaterial {
   const tex = landTextures();
@@ -178,6 +202,15 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
         }
         #endif`,
       );
+    // Expedition cloud-deck mist (off unless uDeckMistStrength > 0).
+    shader.uniforms.uDeckY = landUniforms.uDeckY;
+    shader.uniforms.uDeckBelow = landUniforms.uDeckBelow;
+    shader.uniforms.uDeckAbove = landUniforms.uDeckAbove;
+    shader.uniforms.uDeckMist = landUniforms.uDeckMist;
+    shader.uniforms.uDeckMistStrength = landUniforms.uDeckMistStrength;
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\n${DECK_MIST_PARS}`)
+      .replace('#include <premultiplied_alpha_fragment>', `${DECK_MIST}\n#include <premultiplied_alpha_fragment>`);
   };
   material.customProgramCacheKey = () =>
     `land:${rockScale}:${snowScale}:${opts.rockBias ?? 0}:${opts.snowCling ?? 0}:${opts.cloudMist ? 1 : 0}:${opts.sparkle ? 1 : 0}:${opts.vertexColors ? 1 : 0}:${opts.farLayer ? 1 : 0}`;

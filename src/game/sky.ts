@@ -37,6 +37,12 @@ export const skyUniforms = {
   mieDirectionalG: { value: 0.82 },
   uStorm: { value: 0 },
   uStormColor: { value: new Color(0.78, 0.81, 0.87) },
+  // Night / twilight hook for the expedition's day-night cycle. The defaults
+  // (gain 1, black) leave the tutorial sky exactly as it was.
+  uSkyGain: { value: 1 },
+  uNightZenith: { value: new Color(0, 0, 0) },
+  uNightHorizon: { value: new Color(0, 0, 0) },
+  uTwilightGlow: { value: new Color(0, 0, 0) },
 };
 
 const SKY_VERTEX = /* glsl */ `
@@ -91,6 +97,10 @@ uniform float mieDirectionalG;
 uniform vec3 up;
 uniform float uStorm;
 uniform vec3 uStormColor;
+uniform float uSkyGain;
+uniform vec3 uNightZenith;
+uniform vec3 uNightHorizon;
+uniform vec3 uTwilightGlow;
 const float pi = 3.141592653589793238462643383279502884197169;
 const float rayleighZenithLength = 8.4E3;
 const float mieZenithLength = 1.25E3;
@@ -124,6 +134,11 @@ void main() {
   L0 += (vSunE * 19000.0 * Fex) * sundisk;
   vec3 texColor = (Lin + L0) * 0.04 + vec3(0.0, 0.0003, 0.00075);
   vec3 retColor = pow(texColor, vec3(1.0 / (1.2 + (1.2 * vSunfade))));
+  // Night and twilight (expedition hook; a no-op with the default uniforms).
+  float skyUp = clamp(direction.y, 0.0, 1.0);
+  float toSun = max(dot(normalize(direction.xz + 1e-5), normalize(vSunDirection.xz + 1e-5)) * 0.5 + 0.5, 0.0);
+  retColor = retColor * uSkyGain + mix(uNightHorizon, uNightZenith, sqrt(skyUp))
+    + uTwilightGlow * (toSun * toSun * toSun) * (1.0 - smoothstep(0.0, 0.3, skyUp));
   // Overcast: flatten toward a luminous grey, brighter toward the horizon.
   float horizon = 1.0 - smoothstep(0.0, 0.5, direction.y);
   vec3 overcast = uStormColor * (0.75 + 0.35 * horizon);
@@ -193,6 +208,10 @@ export const cloudSeaUniforms = {
   uHazeNear: { value: 400 },
   uHazeFar: { value: 24000 },
   uStorm: { value: 0 },
+  /** Time-of-day tint/brightness of the deck (expedition hook; white = unchanged). */
+  uTint: { value: new Color(1, 1, 1) },
+  /** Skip this radius around the viewer where a near-layer deck covers it (0 = off). */
+  uInnerRadius: { value: 0 },
 };
 
 const CLOUD_VERTEX = /* glsl */ `
@@ -220,6 +239,8 @@ uniform vec3 uHazeColor;
 uniform float uHazeNear;
 uniform float uHazeFar;
 uniform float uStorm;
+uniform vec3 uTint;
+uniform float uInnerRadius;
 uniform sampler2D uNoise;
 varying vec3 vWorld;
 varying float vViewZ;
@@ -232,6 +253,8 @@ float billow(vec2 p) {
   return a * 0.65 + b * 0.35;
 }
 void main() {
+  vec2 rel = vWorld.xz - cameraPosition.xz;
+  if (dot(rel, rel) < uInnerRadius * uInnerRadius) discard;
   vec2 p = vWorld.xz;
   float h = billow(p);
   // Soft sunlit tops and blue-grey troughs, like a cumulus deck from above.
@@ -242,6 +265,7 @@ void main() {
   vec3 top = vec3(1.0) + uSunColor * 0.35;
   vec3 col = mix(uShadowColor * 0.95, top, lit * 0.8 + 0.2) * mix(0.82, 1.02, cavity);
   col = mix(col, uShadowColor * 0.6 + 0.2, uStorm * 0.7);
+  col *= uTint;
   float dist = length(vWorld - cameraPosition);
   col = mix(col, uHazeColor, smoothstep(uHazeNear, uHazeFar, dist) * 0.85);
   gl_FragColor = vec4(col, 1.0);
