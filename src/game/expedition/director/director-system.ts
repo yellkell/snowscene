@@ -31,6 +31,7 @@ import {
   baseStormAt,
   CAMPS,
   campCentre,
+  EXP_CLOUD_DECK_Y,
   ICE_WALL,
   ROCK_BAND,
   ROPE_START_S,
@@ -56,6 +57,7 @@ import {
   skipTarget,
 } from './checkpoints.js';
 import { coldAt, daylightAt, SQUALL, squallEnvelope, squallGap, WARMTH_DRAIN_AT_FULL_COLD } from './climate.js';
+import { expSound } from '../audio/expedition-sound-system.js';
 import { expControl } from './exp-control.js';
 import { formatAltitude, formatDistance, pointAt, type RoutePos, routeYaw, yawOf } from './route-math.js';
 import { prepareTopo, warmTopo } from './topo-map.js';
@@ -133,6 +135,7 @@ export class ExpeditionDirectorSystem extends createSystem({}) {
   private frostApplied = 0;
 
   private camp = -1;
+  private brokeOut = false;
   private maxSection = -1;
   private hintTimer = 0;
   private rescueTimer = -1;
@@ -558,6 +561,7 @@ export class ExpeditionDirectorSystem extends createSystem({}) {
     if (!exp.finished.peek()) exp.finished.value = true;
     this.clearSave();
     this.queueToast('Welcome home. Thanks for playing!', 6);
+    expSound.sting('finale');
   }
 
   private markSummit(announce: boolean): void {
@@ -568,6 +572,7 @@ export class ExpeditionDirectorSystem extends createSystem({}) {
     if (index > exp.checkpoint.peek()) this.setCheckpoint(index, false);
     if (announce) {
       audio.fanfare();
+      expSound.sting('summit');
       this.queueToast(`Summit · ${formatAltitude(SUMMIT_ELEV)}`, 6);
       this.queueToast('Take the glider from your pack and drop it', 6);
     }
@@ -687,6 +692,7 @@ export class ExpeditionDirectorSystem extends createSystem({}) {
       this.warmingToasted = false;
       if (inCamp > 0 && phase === Phase.Poling && !exp.summited.peek()) {
         this.queueToast(CAMPS[inCamp].name, 3);
+        expSound.sting('camp');
         this.queueToast('Rest by the fire: hold your hands to it to warm up', 5);
         if (game.thermosSips < 4) {
           game.thermosSips = 4;
@@ -769,6 +775,14 @@ export class ExpeditionDirectorSystem extends createSystem({}) {
     while (index + 1 < CHECKPOINTS.length && CHECKPOINTS[index + 1].s <= s + 0.5) index++;
     if (index !== before && Math.abs(expFrame.d) < 40) {
       this.setCheckpoint(index, !CHECKPOINTS[index].camp && CHECKPOINTS[index].id !== 'summit');
+    }
+    // Breaking out above the sea of clouds.
+    if (!this.brokeOut && this.player.position.y > EXP_CLOUD_DECK_Y + 40 && s < ICE_WALL.s) {
+      this.brokeOut = true;
+      expSound.sting('breakout');
+      this.queueToast('Above the clouds', 4);
+    } else if (this.player.position.y < EXP_CLOUD_DECK_Y - 40) {
+      this.brokeOut = false;
     }
     // The summit.
     if (!exp.summited.peek() && s >= SUMMIT_S - 2 && this.player.position.y > ROCK_BAND.topY) {

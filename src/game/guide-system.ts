@@ -60,6 +60,8 @@ export class GuideSystem extends createSystem({}) {
   init(): void {
     // Score: "By the River" for the ascent, "Night Catch" once the glider is built.
     const updateMusic = () => {
+      // On the expedition the soundscape system owns the score.
+      if (exp.active.peek()) return;
       const phase = game.phase.peek();
       const built =
         exp.summited.peek() ||

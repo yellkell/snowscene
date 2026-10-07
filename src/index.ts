@@ -12,6 +12,7 @@ import { CampfireSystem } from './game/campfire.js';
 import { ClimbSystem } from './game/climb-system.js';
 import { DesktopLookSystem } from './game/desktop-look-system.js';
 import { ExpeditionDirectorSystem } from './game/expedition/director/director-system.js';
+import { ExpeditionSoundSystem } from './game/expedition/audio/expedition-sound-system.js';
 import { WristHudSystem } from './game/expedition/director/wrist-hud.js';
 import { CrossingGuardSystem } from './game/expedition/mechanics/crossing-guard-system.js';
 import { LadderSystem } from './game/expedition/mechanics/ladder-system.js';
@@ -55,7 +56,8 @@ World.create(
     // Expedition crossings: Rope < Ladder < Pole (10) < Guard < Climb (11).
     .registerSystem(RopeSystem, { priority: 9 })
     .registerSystem(LadderSystem, { priority: 9.5 })
-    .registerSystem(CrossingGuardSystem, { priority: 10.5 });
+    .registerSystem(CrossingGuardSystem, { priority: 10.5 })
+    .registerSystem(ExpeditionSoundSystem, { priority: 32 });
 
   // Dev-only handle for automated checks and quick phase skipping.
   if (import.meta.env.DEV) {
