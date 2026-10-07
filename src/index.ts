@@ -13,6 +13,9 @@ import { ClimbSystem } from './game/climb-system.js';
 import { DesktopLookSystem } from './game/desktop-look-system.js';
 import { ExpeditionDirectorSystem } from './game/expedition/director/director-system.js';
 import { WristHudSystem } from './game/expedition/director/wrist-hud.js';
+import { CrossingGuardSystem } from './game/expedition/mechanics/crossing-guard-system.js';
+import { LadderSystem } from './game/expedition/mechanics/ladder-system.js';
+import { RopeSystem } from './game/expedition/mechanics/rope-system.js';
 import { GlideSystem } from './game/glide-system.js';
 import { GliderBuildSystem } from './game/glider-build-system.js';
 import { GuideSystem } from './game/guide-system.js';
@@ -48,7 +51,11 @@ World.create(
     // The expedition (?expedition / ?expedition&s=5000 start it directly).
     // The director must be registered before other expedition systems.
     .registerSystem(ExpeditionDirectorSystem, { priority: 5 })
-    .registerSystem(WristHudSystem, { priority: 31 });
+    .registerSystem(WristHudSystem, { priority: 31 })
+    // Expedition crossings: Rope < Ladder < Pole (10) < Guard < Climb (11).
+    .registerSystem(RopeSystem, { priority: 9 })
+    .registerSystem(LadderSystem, { priority: 9.5 })
+    .registerSystem(CrossingGuardSystem, { priority: 10.5 });
 
   // Dev-only handle for automated checks and quick phase skipping.
   if (import.meta.env.DEV) {
