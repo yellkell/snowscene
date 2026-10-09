@@ -1,5 +1,5 @@
 /**
- * The backpack, a wooden tackle-box tray after gamblefish's: turn your LEFT
+ * The backpack, a wooden tackle-box tray after gamblefish's: turn either
  * palm up and look at it (or press A / X on a controller) and the tray comes
  * up in front of you at waist height, tipped toward you, lid open with your
  * notes on it and your gear lying in its felt-lined slots. Reach in with
@@ -17,8 +17,8 @@
  *   flare     raise it above your head and squeeze to fire it
  *   glider    drop it on the summit to unpack it
  *
- * RECENTRE: a brass button standing off the tray's left rim. Poke it with
- * an index finger to re-centre yourself: back to the middle of the deck
+ * RECENTRE: a big brass push button on a bracket off the tray's near-left
+ * corner. Touch its cap with any fingertip (or your palm) to re-centre: back to the middle of the deck
  * you're on in the cave, your lean on the chute, facing up the trail, back
  * at the workbench, or facing the fire once you've landed.
  *
@@ -29,7 +29,9 @@ import {
   Box3,
   CanvasTexture,
   BoxGeometry,
+  CircleGeometry,
   createSystem,
+  CylinderGeometry,
   Group,
   InputComponent,
   Matrix4,
@@ -43,6 +45,7 @@ import {
   Sprite,
   SpriteMaterial,
   SRGBColorSpace,
+  TorusGeometry,
   Vector3,
 } from '@iwsdk/core';
 import { audio } from './audio.js';
@@ -79,9 +82,9 @@ const CLOSE_HOLD = 1.0;
 /** Every slot icon is scaled to fit this size (metres). */
 const ICON_SIZE = 0.078;
 const SLOT_REACH = 0.08;
-/** Poke radii for the recentre button. */
-const BUTTON_PRESS = 0.028;
-const BUTTON_REARM = 0.06;
+/** The recentre button's cap radius and the height of its top (button axis frame). */
+const BUTTON_R = 0.034;
+const BUTTON_TOP = 0.045;
 
 type SlotId = ItemId | 'headlamp-worn';
 
@@ -111,7 +114,7 @@ export class BackpackSystem extends createSystem({}) {
   /** The tray's pose relative to the rig while it is open (it travels with you). */
   private readonly localPos = new Vector3();
   private readonly localQuat = new Quaternion();
-  private palmWasUp = false;
+  private readonly palmWasUp: Record<Handedness, boolean> = { left: false, right: false };
   private slots = new Map<SlotId, Slot>();
   private held: Record<Handedness, { item: ItemId | null; model: Object3D | null }> = {
     left: { item: null, model: null },
@@ -123,7 +126,7 @@ export class BackpackSystem extends createSystem({}) {
   private mapTimer = 0;
   private flareLight!: PointLight;
   private flareTime = -1;
-  private poseFor = 0;
+  private readonly poseFor: Record<Handedness, number> = { left: 0, right: 0 };
   private lostFor = 0;
   private scale = 0;
   private desktopOpen = false;
@@ -132,7 +135,9 @@ export class BackpackSystem extends createSystem({}) {
   private squeezeTime = 0;
   private builtVersion = -1;
   private button!: Group;
-  private buttonCap!: Mesh;
+  private buttonCap!: Group;
+  private buttonAxis!: Group;
+  private buttonRing!: Mesh;
   private buttonArmed = true;
   private buttonPush = 0;
   private readonly head = new Vector3();
@@ -183,64 +188,124 @@ export class BackpackSystem extends createSystem({}) {
     );
   }
 
-  /** A round brass button with a circling-arrow face. */
+  /**
+   * The recentre button: a big brass push button in a wooden housing on a
+   * bracket off the tray's near-left corner, tipped up to face you, with a
+   * ring that glows as a finger comes near and a name plate beneath.
+   */
   private buildButton(): Group {
     const group = new Group();
     group.name = 'RecentreButton';
+    const wood = new MeshStandardMaterial({ color: 0x4a3020, roughness: 0.8 });
+    const brass = new MeshStandardMaterial({ color: 0xc9a040, roughness: 0.35, metalness: 0.7 });
+    // The bracket out from the rim.
+    const bracket = new Mesh(new BoxGeometry(0.07, 0.014, 0.08), wood);
+    bracket.position.set(0.02, 0.006, 0);
+    group.add(bracket);
+    // Everything above sits on an axis tipped up toward your eyes.
+    const axis = new Group();
+    axis.rotation.x = -(Math.PI / 2 - TRAY_TILT) * 0.55;
+    axis.position.y = 0.014;
+    group.add(axis);
+    this.buttonAxis = axis;
+    const housing = new Mesh(new CylinderGeometry(BUTTON_R + 0.012, BUTTON_R + 0.016, 0.026, 28), wood);
+    housing.position.y = 0.013;
+    axis.add(housing);
+    this.buttonRing = new Mesh(
+      new TorusGeometry(BUTTON_R + 0.004, 0.0045, 8, 36),
+      new MeshBasicMaterial({ color: 0x3a2a12, toneMapped: false }),
+    );
+    this.buttonRing.rotation.x = Math.PI / 2;
+    this.buttonRing.position.y = 0.027;
+    axis.add(this.buttonRing);
+    // The cap: a brass drum with the circling-arrow face on top.
+    const cap = new Group();
+    cap.position.y = BUTTON_TOP - 0.009;
+    const drum = new Mesh(new CylinderGeometry(BUTTON_R, BUTTON_R, 0.018, 28), brass);
+    cap.add(drum);
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = 128;
     const ctx = canvas.getContext('2d')!;
-    ctx.fillStyle = '#d8b23a';
+    ctx.fillStyle = '#e2bd4c';
     ctx.beginPath();
-    ctx.arc(64, 64, 62, 0, Math.PI * 2);
+    ctx.arc(64, 64, 63, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#2b2116';
-    ctx.lineWidth = 11;
+    ctx.lineWidth = 12;
     ctx.beginPath();
-    ctx.arc(64, 60, 30, -0.4, Math.PI * 1.55);
+    ctx.arc(64, 66, 34, -0.35, Math.PI * 1.6);
     ctx.stroke();
     ctx.fillStyle = '#2b2116';
     ctx.beginPath();
-    ctx.moveTo(98, 34);
-    ctx.lineTo(98, 66);
-    ctx.lineTo(70, 50);
+    ctx.moveTo(104, 40);
+    ctx.lineTo(104, 76);
+    ctx.lineTo(72, 56);
     ctx.closePath();
     ctx.fill();
-    ctx.font = '700 17px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('RECENTRE', 64, 118);
     const texture = new CanvasTexture(canvas);
     texture.colorSpace = SRGBColorSpace;
-    this.buttonCap = new Mesh(
-      new PlaneGeometry(0.056, 0.056),
-      new MeshBasicMaterial({ map: texture, transparent: true, alphaTest: 0.5 }),
-    );
-    // Stand the face up toward your eyes (the tray tips toward you).
-    const face = new Group();
-    face.rotation.x = -(Math.PI / 2 - TRAY_TILT) * 0.75;
-    face.position.y = 0.035;
-    face.add(this.buttonCap);
-    group.add(face);
-    const post = new Mesh(new BoxGeometry(0.012, 0.04, 0.012), new MeshStandardMaterial({ color: 0x4a3422, roughness: 0.8 }));
-    post.position.y = 0.012;
-    group.add(post);
+    const face = new Mesh(new CircleGeometry(BUTTON_R * 0.96, 32), new MeshBasicMaterial({ map: texture }));
+    face.rotation.x = -Math.PI / 2;
+    // Turned so the arrow reads upright from where you stand.
+    face.rotation.z = Math.PI;
+    face.position.y = 0.0095;
+    cap.add(face);
+    axis.add(cap);
+    this.buttonCap = cap;
+    // Name plate on the bracket's near edge.
+    const plateCanvas = document.createElement('canvas');
+    plateCanvas.width = 256;
+    plateCanvas.height = 64;
+    const pc = plateCanvas.getContext('2d')!;
+    pc.fillStyle = '#c9a040';
+    pc.fillRect(0, 0, 256, 64);
+    pc.fillStyle = '#2b2116';
+    pc.font = '700 38px Georgia, serif';
+    pc.textAlign = 'center';
+    pc.textBaseline = 'middle';
+    pc.fillText('RECENTRE', 128, 34);
+    const plateTexture = new CanvasTexture(plateCanvas);
+    plateTexture.colorSpace = SRGBColorSpace;
+    const plate = new Mesh(new PlaneGeometry(0.068, 0.017), new MeshBasicMaterial({ map: plateTexture }));
+    plate.rotation.x = -Math.PI / 2 + 0.6;
+    plate.position.set(0.02, 0.016, 0.048);
+    group.add(plate);
     return group;
   }
 
-  /** Right index fingertip poking the recentre button. */
+  /** Any fingertip or palm touching the cap presses it. */
   private updateButton(dt: number, presenting: boolean): void {
-    this.buttonPush = Math.max(0, this.buttonPush - dt * 4);
-    this.buttonCap.position.z = -0.008 * this.buttonPush;
-    if (!presenting || this.scale < 1) return;
-    this.buttonCap.getWorldPosition(tmpA);
-    let d = Infinity;
-    for (const hand of HANDS) if (hand.tracked) d = Math.min(d, tmpA.distanceTo(hand.indexTip));
-    if (this.buttonArmed && d < BUTTON_PRESS) {
+    this.buttonPush = Math.max(0, this.buttonPush - dt * 3);
+    this.buttonCap.position.y = BUTTON_TOP - 0.009 - 0.012 * this.buttonPush;
+    let near = 0;
+    let touching = false;
+    let clear = true;
+    if (presenting && this.scale >= 1) {
+      this.buttonAxis.updateWorldMatrix(true, false);
+      for (const hand of HANDS) {
+        if (!hand.tracked) continue;
+        for (const p of [hand.indexTip, hand.position]) {
+          tmpA.copy(p);
+          this.buttonAxis.worldToLocal(tmpA);
+          const radial = Math.hypot(tmpA.x, tmpA.z);
+          const above = tmpA.y - BUTTON_TOP;
+          if (radial < BUTTON_R + 0.025 && above < 0.025 && above > -0.04) touching = true;
+          if (radial < BUTTON_R + 0.05 && above < 0.07 && above > -0.05) clear = false;
+          const d = Math.hypot(radial, Math.max(0, above));
+          near = Math.max(near, 1 - Math.min(1, d / 0.12));
+        }
+      }
+    }
+    if (this.buttonArmed && touching) {
       this.buttonArmed = false;
       this.pressButton();
-    } else if (!this.buttonArmed && d > BUTTON_REARM) {
+    } else if (!this.buttonArmed && clear) {
       this.buttonArmed = true;
     }
+    // Ring: dark at rest, amber as a finger comes near, green as it fires.
+    const ring = this.buttonRing.material as MeshBasicMaterial;
+    if (this.buttonPush > 0.05) ring.color.setRGB(0.3, 1.6 * this.buttonPush + 0.3, 0.4);
+    else ring.color.setRGB(0.23 + 1.3 * near, 0.16 + 0.75 * near, 0.07 + 0.1 * near);
   }
 
   private pressButton(): void {
@@ -389,18 +454,23 @@ export class BackpackSystem extends createSystem({}) {
   }
 
   private updateGesture(dt: number): void {
-    const h = hands.left;
     this.viewDirection(this.gaze);
-    tmpA.subVectors(h.position, this.head).normalize();
-    const palmUp = h.tracked && !h.grip && h.palmNormal.y > OPEN_UP && this.gaze.dot(tmpA) > OPEN_GAZE_COS;
-    // Palm up (held briefly) toggles the tray; so does A or X on a controller.
-    this.poseFor = palmUp ? this.poseFor + dt : 0;
+    // Either palm up (held briefly, while you look at it) toggles the tray;
+    // so does A or X on a controller. Once a toggle fires, every palm that is
+    // up has to come down again before it counts, so both palms up at once
+    // only toggle it once.
     let toggle = false;
-    if (this.poseFor >= OPEN_HOLD && !this.palmWasUp) {
-      this.palmWasUp = true;
-      toggle = true;
+    for (const h of HANDS) {
+      const side = h.handedness;
+      tmpA.subVectors(h.position, this.head).normalize();
+      const palmUp = h.tracked && !h.grip && h.palmNormal.y > OPEN_UP && this.gaze.dot(tmpA) > OPEN_GAZE_COS;
+      this.poseFor[side] = palmUp ? this.poseFor[side] + dt : 0;
+      if (this.poseFor[side] >= OPEN_HOLD && !this.palmWasUp[side]) toggle = true;
+      if (!palmUp && h.palmNormal.y < STAY_UP) this.palmWasUp[side] = false;
     }
-    if (!palmUp && h.palmNormal.y < STAY_UP) this.palmWasUp = false;
+    if (toggle) {
+      for (const h of HANDS) if (this.poseFor[h.handedness] > 0) this.palmWasUp[h.handedness] = true;
+    }
     const pads = this.input.xr.gamepads;
     if (pads.right?.getButtonDown(InputComponent.A_Button) || pads.left?.getButtonDown(InputComponent.X_Button)) toggle = true;
     const open = game.packOpen.peek();

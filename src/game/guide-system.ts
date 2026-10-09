@@ -380,7 +380,7 @@ export class GuideSystem extends createSystem({}) {
     // While the panel still floats with you, teach the pack gesture: a
     // third of the way up the first slope the panel moves into the pack.
     if (immersive && !this.panelInPack() && phase === Phase.Poling) {
-      hint = hint || 'Soon these notes go in your pack: turn your left palm up to open it';
+      hint = hint || 'Soon these notes go in your pack: turn a palm up to open it';
     }
     this.hintText.setProperties({ text: hint, display: hint ? 'flex' : 'none' });
     const metric = copy.metric ?? '';

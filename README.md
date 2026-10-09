@@ -53,7 +53,7 @@ approach assist lines you up to land at the edge of the party.
 Drag the mouse to look around on desktop.
 
 Lost your bearings, or drifted towards the edge of your room? Open the
-backpack (left palm up, or A / X on a controller: a wooden tackle-box tray
+backpack (either palm up, or A / X on a controller: a wooden tackle-box tray
 rises in front of you, your gear in its felt-lined slots and your notes on its
 open lid) and poke the brass **recentre** button standing off its left rim
 with an index finger (R on desktop). In the cave it puts you back on

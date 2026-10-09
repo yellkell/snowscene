@@ -121,6 +121,6 @@ export function buildPackTray(): PackTray {
   return {
     group,
     notes,
-    sideButton: new Vector3(-w / 2 - RIM - 0.055, 0.03, h / 2 - 0.05),
+    sideButton: new Vector3(-w / 2 - RIM - 0.055, 0, h / 2 - 0.035),
   };
 }

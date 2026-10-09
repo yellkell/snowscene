@@ -250,7 +250,7 @@ export class RopeSystem extends createSystem({}) {
         this.gateToastShown = true;
         say(
           presenting
-            ? 'Exposed ledge ahead. Clip in: open your pack (left palm up), take the carabiner and touch it to the rope'
+            ? 'Exposed ledge ahead. Clip in: open your pack (palm up), take the carabiner and touch it to the rope'
             : 'Exposed ledge ahead. Press C at the rope to clip in',
           7,
         );
