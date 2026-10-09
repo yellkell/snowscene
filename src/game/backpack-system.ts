@@ -57,6 +57,7 @@ import {
   type ItemId,
   packCount,
   PAIRED,
+  PART_ITEMS,
   stow,
   take,
 } from './equipment.js';
@@ -127,6 +128,7 @@ export class BackpackSystem extends createSystem({}) {
   private flareLight!: PointLight;
   private flareTime = -1;
   private readonly poseFor: Record<Handedness, number> = { left: 0, right: 0 };
+  private clock = 0;
   private lostFor = 0;
   private scale = 0;
   private desktopOpen = false;
@@ -413,13 +415,16 @@ export class BackpackSystem extends createSystem({}) {
       this.builtVersion = key;
       for (const [id, slot] of this.slots) slot.root.visible = ids.includes(id);
     }
+    const building = game.phase.peek() === Phase.Building;
     // One item per slot, filling the grid row by row from the far side;
     // the one under your hand lifts out of its slot.
     ids.forEach((id, i) => {
       const slot = this.ensureSlot(id);
       slot.root.visible = i < COLS * ROWS;
       cellCentre(i % COLS, Math.floor(i / COLS), slot.root.position, 0.006 + slot.hover * 0.03);
-      slot.root.scale.setScalar(1 + slot.hover * 0.25);
+      // While you build, the glider parts pulse in their slots.
+      const beat = building && id !== 'headlamp-worn' && PART_ITEMS.has(id) ? 0.08 * (0.5 + 0.5 * Math.sin(this.clock * 4.2)) : 0;
+      slot.root.scale.setScalar(1 + slot.hover * 0.25 + beat);
       this.drawLabel(slot, this.labelFor(id), slot.hover > 0.5);
     });
   }
@@ -428,6 +433,7 @@ export class BackpackSystem extends createSystem({}) {
 
   update(delta: number, time: number): void {
     const dt = Math.min(delta, 0.1);
+    this.clock = time;
     getHeadWorld(this.world, this.head);
     const presenting = this.world.renderer.xr.isPresenting;
     this.takeCooldown = Math.max(0, this.takeCooldown - dt);
@@ -615,6 +621,9 @@ export class BackpackSystem extends createSystem({}) {
     else if (id === 'flare') toast('Raise it high and squeeze');
     else if (id === 'glider') toast('Drop it at the launch to unpack');
     else if (id === 'carabiner') toast('Touch the rope to clip in');
+    else if (id !== 'headlamp-worn' && PART_ITEMS.has(id)) {
+      toast(game.phase.peek() === Phase.Building ? 'Carry it to its outline on the frame' : 'Keep it for the build up top');
+    }
   }
 
   private stowHand(side: Handedness): void {

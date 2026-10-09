@@ -21,14 +21,15 @@ shadowed snow and granite, a snow-laden spruce forest and a horizon of
    lamps go out one per beat before it leaves, and red means it is moving.
    No room to walk? Reach over the green deck and close your hand to be
    carried onto it. Take the left wing, right wing and control bar from their
-   racks on the way up (they pulse; reach in with a closed hand to take one,
-   and a deck leaving a rack waits until you have).
+   racks on the way up (they pulse; reach in with a closed hand to take one
+   and it goes into your backpack; a deck leaving a rack waits until you have).
 4. **Light the beacon.** At the top of the chimney, take the torch off its
    hook and hold it to the brazier. The beacon on top of the bluff tells the
    party on the lake that you are on your way.
 5. **Build a glider.** You come up out of the chimney onto the beacon deck
-   on top of the bluff. Carry each part you recovered to its glowing outline
-   on the workbench kit.
+   on top of the bluff. Open your pack, take out each part you recovered and
+   carry it to its glowing outline on the workbench kit (let go anywhere else
+   and it goes back in the pack).
 6. **Glide home.** Close both hands on the control bar to launch. Tilt the bar
    like a steering wheel to turn; pull it in to dive, push it out to float.
    Land in the valley. Thanks for playing!

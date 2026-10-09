@@ -23,6 +23,7 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import type { ItemId } from './equipment.js';
+import { buildGlider, type GliderPartId } from './glider-model.js';
 import { GeometryBuilder, segmentMatrix } from './mesh-utils.js';
 import { buildPole } from './world-builders.js';
 
@@ -225,10 +226,27 @@ export function buildHeldItem(item: ItemId): Object3D | null {
       return buildFlare();
     case 'glider':
       return buildPackedGlider();
+    case 'leftWing':
+      return buildGliderPart('LeftWing', 0.5);
+    case 'rightWing':
+      return buildGliderPart('RightWing', 0.5);
+    case 'controlBar':
+      return buildGliderPart('ControlBar', 0.5);
     case 'poles':
     default:
       return null; // poles are drawn by the pole system
   }
+}
+
+/** One part of the tutorial glider on its own, at `scale`. */
+function buildGliderPart(id: GliderPartId, scale: number): Object3D {
+  const part = buildGlider().parts[id];
+  part.removeFromParent();
+  part.position.set(0, 0, 0);
+  const holder = new Group();
+  holder.add(part);
+  holder.scale.setScalar(scale);
+  return holder;
 }
 
 /** Small icon model for a backpack slot (roughly 8-10 cm across). */
@@ -267,6 +285,15 @@ export function buildSlotIcon(item: ItemId): Object3D {
       icon.rotation.x = -Math.PI / 2;
       icon.scale.setScalar(0.5);
       break;
+    case 'leftWing':
+    case 'rightWing':
+      // Lying flat in the slot, so you see the wing's shape from above.
+      icon = buildGliderPart(item === 'leftWing' ? 'LeftWing' : 'RightWing', 1);
+      icon.position.y = 0.01;
+      break;
+    case 'controlBar':
+      icon = buildGliderPart('ControlBar', 1);
+      break;
     case 'glider':
     default:
       icon = buildPackedGlider();
@@ -278,7 +305,6 @@ export function buildSlotIcon(item: ItemId): Object3D {
   return holder;
 }
 
-/** The open backpack: a rucksack body with its lid flipped back. */
 export function disposeIcon(object: Object3D): void {
   object.traverse((child) => {
     const mesh = child as Mesh;

@@ -251,7 +251,7 @@ export class GuideSystem extends createSystem({}) {
         return {
           step: 'STEP 5 OF 6',
           title: 'Build your glider',
-          body: immersive ? 'Carry each part to its outline.' : 'Press E to fit a part.',
+          body: immersive ? 'Take each part from your pack. Fit it to its outline.' : 'Press E to fit a part from your pack.',
           hint: `${game.partsPlaced.peek()} of 3 fitted`,
         };
       case Phase.Launch:

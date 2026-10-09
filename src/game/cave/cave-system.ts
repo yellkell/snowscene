@@ -22,6 +22,7 @@
 
 import { Box3, Color, createSystem, Matrix4, Vector3 } from '@iwsdk/core';
 import { audio } from '../audio.js';
+import { addToPack, PART_ITEM } from '../equipment.js';
 import { Bonfire, fires } from '../campfire.js';
 import { HANDS, type Handedness } from '../hand-input.js';
 import { BUILD_STAND } from '../cave-bluff.js';
@@ -450,9 +451,12 @@ export class CaveSystem extends createSystem({}) {
     this.collected.add(part);
     holder.visible = false;
     this.v.partGlow[part].visible = false;
+    // Into the pack it goes, to come out again on top for the build.
+    addToPack(PART_ITEM[part]);
     game.partsFound.value = this.collected.size;
     audio.chime();
-    toast(`${PART_LABEL[part]} recovered: ${this.collected.size} of 3`, 3.5);
+    audio.zip();
+    toast(`${PART_LABEL[part]} into your pack: ${this.collected.size} of 3`, 3.5);
     return true;
   }
 
@@ -518,7 +522,7 @@ export class CaveSystem extends createSystem({}) {
     placeHeadAt(this.world, BUILD_STAND.x, BUILD_STAND.z, BUILD_STAND.y);
     game.velocity.set(0, 0, 0);
     setPhase(Phase.Building);
-    toast('Out on top of the rock! Build the glider and fly down to the party.', 5);
+    toast('Out on top! Take the glider parts from your pack and fit them to the frame.', 5);
   }
 
   private light(): void {

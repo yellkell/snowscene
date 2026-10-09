@@ -18,6 +18,10 @@ export const ItemIds = [
   'map',
   'flare',
   'glider',
+  // The tutorial glider's parts, recovered from the cave.
+  'leftWing',
+  'rightWing',
+  'controlBar',
 ] as const;
 export type ItemId = (typeof ItemIds)[number];
 
@@ -34,7 +38,19 @@ export const ITEM_LABELS: Record<ItemId, string> = {
   map: 'Map',
   flare: 'Flare',
   glider: 'Glider',
+  leftWing: 'Left wing',
+  rightWing: 'Right wing',
+  controlBar: 'Control bar',
 };
+
+/** The pack item for each glider part (see glider-model.ts). */
+export const PART_ITEM = {
+  LeftWing: 'leftWing',
+  RightWing: 'rightWing',
+  ControlBar: 'controlBar',
+} as const satisfies Record<string, ItemId>;
+export type PartItem = (typeof PART_ITEM)[keyof typeof PART_ITEM];
+export const PART_ITEMS: ReadonlySet<ItemId> = new Set(Object.values(PART_ITEM));
 
 export const equipment = {
   inHand: { left: null as ItemId | null, right: null as ItemId | null },
@@ -54,6 +70,22 @@ function changed(): void {
 
 export function packCount(item: ItemId): number {
   return equipment.pack.get(item) ?? 0;
+}
+
+/** Put an item straight into the pack (found on the way, not from a hand). */
+export function addToPack(item: ItemId, count = 1): void {
+  equipment.pack.set(item, packCount(item) + count);
+  changed();
+}
+
+/** Take an item out of the pack without putting it in a hand (used up in place). */
+export function removeFromPack(item: ItemId): boolean {
+  const n = packCount(item);
+  if (n <= 0) return false;
+  if (n > 1) equipment.pack.set(item, n - 1);
+  else equipment.pack.delete(item);
+  changed();
+  return true;
 }
 
 export function setPack(contents: Partial<Record<ItemId, number>>): void {
