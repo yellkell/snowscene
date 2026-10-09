@@ -243,9 +243,9 @@ export class GuideSystem extends createSystem({}) {
           body: game.beaconLit.peek()
             ? 'The party below has seen you. Up and out to the top!'
             : immersive
-              ? 'Grab the torch. Hold it to the brazier.'
+              ? 'Squeeze to take the glowing torch off its post. Hold its flame in the iron basket.'
               : 'Press E to light the beacon.',
-          hint: '',
+          hint: game.beaconLit.peek() ? '' : 'The basket glows where the flame must go',
         };
       case Phase.Building:
         return {

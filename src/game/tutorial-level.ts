@@ -128,11 +128,11 @@ export const tutorialLevel: Level = {
 
   fogRange(storm: number, out: FogRange): FogRange {
     // A little haze even on a clear day, closing in fast as the snow
-    // thickens: thick fog from the trailhead (about 110 m), about 70 m on
-    // the cliff, a few kilometres of haze once you are above the storm.
-    const t = Math.pow(Math.min(1, storm / 0.65), 0.6);
-    out.near = 140 + (3 - 140) * t;
-    out.far = Math.exp(Math.log(9000) + (Math.log(70) - Math.log(9000)) * t);
+    // thickens: thick fog from the trailhead (about 55 m), about 40 m on
+    // the cliff, a couple of kilometres of haze once you are above the storm.
+    const t = Math.pow(Math.min(1, storm / 0.6), 0.55);
+    out.near = 120 + (2 - 120) * t;
+    out.far = Math.exp(Math.log(9000) + (Math.log(38) - Math.log(9000)) * t);
     return out;
   },
 

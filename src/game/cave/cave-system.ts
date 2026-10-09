@@ -68,11 +68,13 @@ const PART_LABEL: Record<GliderPartId, string> = {
 /** Seconds of summit view before the fade into the cave. */
 const PREROLL = 3.4;
 /** Close a hand within this of the torch to take it. */
-const TAKE_RADIUS = 0.3;
+const TAKE_RADIUS = 0.4;
 /** A closed hand within this of a glider part (its bounds) takes it. */
 const PART_REACH = 0.28;
 /** How close the torch's head must come to the brazier. */
-const LIGHT_RADIUS = 0.42;
+const LIGHT_RADIUS = 0.55;
+/** The brazier's target glow starts to swell inside this. */
+const LIGHT_HINT = 1.6;
 /** A missed step burns the deck that left without you for this long. */
 const SLIP_FLASH = 0.6;
 /** The ice walls' own glow, and how warm it turns once the beacon burns. */
@@ -100,6 +102,8 @@ export class CaveSystem extends createSystem({}) {
   private slipFlash = 0;
   private flow = 0;
   private torchHand: Handedness | null = null;
+  /** How near the held torch's head is to the brazier (1 = touching). */
+  private torchNear = 0;
   private beaconTimer = -1;
   private waitHintAt = 0;
 
@@ -172,6 +176,7 @@ export class CaveSystem extends createSystem({}) {
       this.v.partGlow[id].visible = true;
     }
     this.torchHand = null;
+    this.torchNear = 0;
     this.v.torch.position.copy(this.v.torchHome);
     this.v.torch.quaternion.identity();
     this.v.torch.visible = true;
@@ -298,7 +303,15 @@ export class CaveSystem extends createSystem({}) {
     this.updateBeats();
     if (this.slipFlash > 0) this.slipFlash = Math.max(0, this.slipFlash - dt);
 
-    if (this.tracked === BEACON_INDEX && phase === Phase.Cave) setPhase(Phase.Beacon);
+    if (this.tracked === BEACON_INDEX && phase === Phase.Cave) {
+      setPhase(Phase.Beacon);
+      toast(
+        this.world.renderer.xr.isPresenting
+          ? 'The top deck! Take the glowing torch off its post.'
+          : 'The top deck! Press E to light the beacon.',
+        4,
+      );
+    }
     this.updateVisuals(time);
   }
 
@@ -492,6 +505,8 @@ export class CaveSystem extends createSystem({}) {
         if (hand.gripDown && hand.position.distanceTo(this.m) < TAKE_RADIUS) {
           this.torchHand = hand.handedness;
           audio.clack();
+          this.pulse(hand.handedness, 0.5, 40);
+          toast('Now hold the flame in the glowing basket.', 4);
           return true;
         }
       }
@@ -508,8 +523,20 @@ export class CaveSystem extends createSystem({}) {
     torch.position.copy(hand.position).sub(CAVE_ORIGIN);
     torch.quaternion.identity();
     this.n.set(0, 0.32, 0).add(torch.position);
-    if (this.n.distanceTo(this.v.brazier) < LIGHT_RADIUS) this.light();
+    const d = this.n.distanceTo(this.v.brazier);
+    this.torchNear = Math.max(0, Math.min(1, (LIGHT_HINT - d) / (LIGHT_HINT - LIGHT_RADIUS)));
+    if (d < LIGHT_RADIUS) {
+      this.pulse(hand.handedness, 1, 140);
+      this.light();
+    }
     return true;
+  }
+
+  private pulse(side: Handedness, value: number, ms: number): void {
+    const actuator = this.input.xr.gamepads[side]?.gamepad?.hapticActuators?.[0] as
+      | { pulse?: (value: number, duration: number) => void }
+      | undefined;
+    actuator?.pulse?.(value, ms);
   }
 
   /** Under the fade: out of the chimney onto the beacon deck, facing the kit. */
@@ -529,6 +556,7 @@ export class CaveSystem extends createSystem({}) {
     if (game.beaconLit.peek()) return;
     game.beaconLit.value = true;
     this.torchHand = null;
+    this.torchNear = 0;
     this.v.torch.position.copy(this.v.torchHome);
     this.v.torch.quaternion.identity();
     this.caveFire.setVisible(true);
@@ -676,7 +704,23 @@ export class CaveSystem extends createSystem({}) {
       v.partGlow[id].scale.setScalar(here ? 1.1 + 0.5 * beat : 1.1);
       v.parts[id].scale.setScalar(1 + (here ? 0.1 : 0.04) * beat);
     }
-    v.torchFlame.visible = !game.beaconLit.peek();
+    // The beacon: the torch glows on its post until taken; then the basket
+    // glows, swelling as the flame comes near, so you can see where it goes.
+    const lit = game.beaconLit.peek();
+    const held = this.torchHand !== null;
+    const near = held ? this.torchNear : 0;
+    v.torchFlame.visible = !lit;
+    v.torchFlame.scale.setScalar(0.28 * (1 + 0.9 * near) * (0.92 + 0.08 * Math.sin(time * 23)));
+    v.torchHalo.visible = !lit && !held;
+    v.torchHalo.material.opacity = 0.6 + 0.4 * beat;
+    v.torchHalo.scale.setScalar(0.9 + 0.5 * beat);
+    v.brazierRing.visible = !lit;
+    const ringBeat = 0.5 + 0.5 * Math.sin(time * (held ? 6 : 3));
+    (v.brazierRing.material as { opacity: number }).opacity = held ? 0.45 + 0.4 * ringBeat + 0.3 * near : 0.12 + 0.12 * ringBeat;
+    v.brazierRing.scale.setScalar(1 + (held ? 0.12 : 0.05) * ringBeat);
+    v.brazierTarget.visible = !lit && held;
+    v.brazierTarget.material.opacity = 0.25 + 0.2 * ringBeat + 0.5 * near;
+    v.brazierTarget.scale.setScalar(0.7 + 0.6 * near + 0.15 * ringBeat);
 
     const shaft = v.shaft.material as { opacity: number };
     shaft.opacity = 0.07 + 0.02 * Math.sin(time * 0.6);

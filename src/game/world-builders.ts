@@ -499,59 +499,156 @@ export function buildSummitSign(): Group {
 
 // --------------------------------------------------------------- cabin -----
 
+/**
+ * A snowed-in log cabin: round logs with notched, overhanging corners on a
+ * stone footing, log gables under a pitched roof with a thick snow cap and
+ * icicles, a stone chimney, a framed door with a lantern, shuttered windows
+ * glowing warm, a woodpile and drifts against the walls. Two draws.
+ */
 export function buildCabin(x: number, z: number, rotY: number): Group {
   const group = new Group();
   group.name = 'Cabin';
   const y = terrainHeight(x, z);
   group.position.set(x, y - 0.1, z);
   group.rotation.y = rotY;
-  const builder = new GeometryBuilder();
-  const log = new Color(0.45, 0.28, 0.16);
-  const logDark = new Color(0.33, 0.2, 0.11);
-  const snow = new Color(0.95, 0.97, 1);
-  const stone = new Color(0.45, 0.44, 0.46);
-  // stacked logs
-  for (let i = 0; i < 9; i++) {
-    const c = i % 2 === 0 ? log : logDark;
-    builder.add(new BoxGeometry(4.2, 0.26, 3.2), placed(0, 0.13 + i * 0.26, 0), c);
+  const rand = mulberry32(Math.round(x * 31 + z * 17));
+  const b = new GeometryBuilder();
+  const glow = new GeometryBuilder();
+  const logTone = (k: number) => new Color(0.42, 0.27, 0.15).multiplyScalar(0.82 + 0.3 * k);
+  const logEnd = new Color(0.62, 0.46, 0.3);
+  const darkWood = new Color(0.22, 0.14, 0.08);
+  const trim = new Color(0.72, 0.62, 0.48);
+  const snow = new Color(0.93, 0.96, 1.0);
+  const iron = new Color(0.12, 0.12, 0.13);
+  const shutter = new Color(0.36, 0.12, 0.1);
+  const stoneTone = () => new Color(0.4, 0.39, 0.4).multiplyScalar(0.8 + 0.4 * rand());
+  const W = 4.2;
+  const D = 3.2;
+  const R = 0.14;
+  const COURSES = 9;
+  const PITCH = 0.27;
+  const BASE = 0.3;
+  const wallTop = BASE + COURSES * PITCH;
+  const alongX = (len: number, px: number, py: number, pz: number, r: number, c: Color) =>
+    b.add(new CylinderGeometry(r, r, len, 8), new Matrix4().makeRotationZ(Math.PI / 2).setPosition(px, py, pz), c);
+  const alongZ = (len: number, px: number, py: number, pz: number, r: number, c: Color) =>
+    b.add(new CylinderGeometry(r, r, len, 8), new Matrix4().makeRotationX(Math.PI / 2).setPosition(px, py, pz), c);
+
+  // Stone footing.
+  for (let i = 0; i < 18; i++) {
+    const t = i / 18;
+    const px = t < 0.5 ? -W / 2 + t * 2 * W : W / 2 - (t - 0.5) * 2 * W;
+    const pz = t < 0.5 ? D / 2 - 0.05 : -D / 2 + 0.05;
+    b.add(new BoxGeometry(0.5, BASE, 0.32), placed(px, BASE / 2, pz), stoneTone());
   }
-  // roof: two slabs, each with a snow layer offset along the slab normal
+  b.add(new BoxGeometry(0.32, BASE, D), placed(-W / 2 + 0.05, BASE / 2, 0), stoneTone());
+  b.add(new BoxGeometry(0.32, BASE, D), placed(W / 2 - 0.05, BASE / 2, 0), stoneTone());
+  // Log courses: front and back logs, then side logs half a course up, each
+  // running past the corners like a notched cabin.
+  for (let i = 0; i < COURSES; i++) {
+    const yy = BASE + R + i * PITCH;
+    for (const sz of [-1, 1]) alongX(W + 0.5, 0, yy, sz * (D / 2 - R), R, logTone(rand()));
+    for (const sx of [-1, 1]) alongZ(D + 0.5, sx * (W / 2 - R), yy + PITCH / 2, 0, R, logTone(rand()));
+    // Pale sawn ends at the corners.
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        b.add(new CylinderGeometry(R * 0.9, R * 0.9, 0.02, 8), new Matrix4().makeRotationZ(Math.PI / 2).setPosition(sx * (W / 2 + 0.25), yy, sz * (D / 2 - R)), logEnd);
+      }
+    }
+  }
+  // Gables front and back: shortening logs up to the ridge.
   const roofPitch = 0.62;
+  const ridgeY = wallTop + Math.tan(roofPitch) * (W / 2);
+  for (const sz of [-1, 1]) {
+    for (let k = 0; ; k++) {
+      const yy = wallTop + R + k * PITCH;
+      const half = (ridgeY - yy) / Math.tan(roofPitch);
+      if (half < 0.3) break;
+      alongX(half * 2, 0, yy, sz * (D / 2 - R), R * 0.95, logTone(rand()));
+    }
+  }
+  // Roof: slabs with an overhang, a deep snow cap, a rounded snow lip on the
+  // eaves and a ridge cap.
+  const slope = (W / 2 + 0.35) / Math.cos(roofPitch);
   for (const side of [-1, 1]) {
     const m = new Matrix4()
       .makeRotationZ(side * -roofPitch)
-      .setPosition(side * 1.15, 2.95, 0);
-    builder.add(new BoxGeometry(2.75, 0.18, 3.9), m, logDark);
-    const ms = m.clone().multiply(new Matrix4().makeTranslation(-side * 0.02, 0.15, 0));
-    builder.add(new BoxGeometry(2.85, 0.12, 4.0), ms, snow);
+      .setPosition(side * (slope / 2) * Math.cos(roofPitch), ridgeY - (slope / 2) * Math.sin(roofPitch) + 0.1, 0);
+    b.add(new BoxGeometry(slope, 0.16, D + 0.9), m, darkWood);
+    b.add(new BoxGeometry(slope + 0.06, 0.24, D + 1.0), m.clone().multiply(new Matrix4().makeTranslation(0, 0.19, 0)), snow);
+    const eaveX = side * (W / 2 + 0.35);
+    const eaveY = ridgeY - Math.tan(roofPitch) * (W / 2 + 0.35) + 0.22;
+    alongZ(D + 1.0, eaveX, eaveY, 0, 0.13, snow);
+    // Icicles hanging from the eaves.
+    for (let k = 0; k < 9; k++) {
+      const len = 0.15 + rand() * 0.45;
+      const iz = -D / 2 - 0.4 + (k + rand() * 0.6) * ((D + 0.8) / 9);
+      b.add(new ConeGeometry(0.035, len, 5), new Matrix4().makeRotationX(Math.PI).setPosition(eaveX, eaveY - 0.12 - len / 2, iz), new Color(0.8, 0.9, 1.0));
+    }
   }
-  // gable fill
-  builder.add(new BoxGeometry(3.4, 0.9, 3.0), placed(0, 2.6, 0), log);
-  // chimney
-  builder.add(new BoxGeometry(0.5, 1.6, 0.5), placed(1.2, 3.4, -0.6), stone);
-  builder.add(new BoxGeometry(0.6, 0.12, 0.6), placed(1.2, 4.26, -0.6), snow);
-  // door
-  builder.add(new BoxGeometry(0.8, 1.6, 0.08), placed(-0.9, 0.95, 1.64), logDark);
-  // snow drift around the base
-  builder.add(new BoxGeometry(4.7, 0.2, 3.7), placed(0, 0.03, 0), snow);
-  const body = new Mesh(
-    builder.build(),
-    new MeshStandardMaterial({ vertexColors: true, roughness: 0.9, flatShading: true }),
-  );
+  alongZ(D + 1.0, 0, ridgeY + 0.3, 0, 0.16, snow);
+  // Stone chimney through the back of the roof, capped with snow.
+  for (let k = 0; k < 7; k++) {
+    b.add(new BoxGeometry(0.62 - (k % 2) * 0.04, 0.32, 0.62 - ((k + 1) % 2) * 0.04), placed(1.15, 2.6 + k * 0.32, -0.75), stoneTone());
+  }
+  b.add(new BoxGeometry(0.72, 0.14, 0.72), placed(1.15, 2.6 + 7 * 0.32 - 0.08, -0.75), snow);
+  b.add(new BoxGeometry(0.4, 0.06, 0.4), placed(1.15, 2.6 + 7 * 0.32 - 0.14, -0.75), new Color(0.05, 0.05, 0.05));
+  // Door: frame, planks, handle, a step and a lantern.
+  const front = D / 2 + 0.01;
+  const dx = -0.95;
+  b.add(new BoxGeometry(0.95, 1.85, 0.06), placed(dx, BASE + 0.92, front + 0.02), darkWood);
+  for (let k = -1; k <= 1; k++) b.add(new BoxGeometry(0.02, 1.8, 0.07), placed(dx + k * 0.26, BASE + 0.92, front + 0.03), new Color(0.15, 0.09, 0.05));
+  b.add(new BoxGeometry(0.08, 2.0, 0.1), placed(dx - 0.52, BASE + 0.98, front + 0.04), trim);
+  b.add(new BoxGeometry(0.08, 2.0, 0.1), placed(dx + 0.52, BASE + 0.98, front + 0.04), trim);
+  b.add(new BoxGeometry(1.12, 0.1, 0.12), placed(dx, BASE + 1.93, front + 0.04), trim);
+  b.add(new SphereGeometry(0.035, 6, 4), placed(dx + 0.33, BASE + 0.9, front + 0.08), new Color(0.75, 0.58, 0.25));
+  b.add(new BoxGeometry(1.2, 0.16, 0.5), placed(dx, 0.08, front + 0.3), darkWood);
+  b.add(new BoxGeometry(1.25, 0.08, 0.52), placed(dx, 0.2, front + 0.3), snow);
+  // Lantern by the door.
+  b.add(new BoxGeometry(0.04, 0.3, 0.04), placed(dx + 0.7, BASE + 2.0, front + 0.12), iron);
+  b.add(new BoxGeometry(0.16, 0.02, 0.16), placed(dx + 0.7, BASE + 1.88, front + 0.2), iron);
+  glow.add(new SphereGeometry(0.06, 8, 6), placed(dx + 0.7, BASE + 1.78, front + 0.2), new Color(1, 0.7, 0.35));
+  // Windows: frame, cross mullions, a snowy sill, shutters, a warm pane.
+  const windowAt = (m: Matrix4) => {
+    const at = (px: number, py: number, pz: number) => m.clone().multiply(new Matrix4().makeTranslation(px, py, pz));
+    glow.add(new PlaneGeometry(0.66, 0.72), at(0, 0, 0.005), new Color(1, 0.72, 0.38));
+    b.add(new BoxGeometry(0.8, 0.07, 0.08), at(0, 0.39, 0.03), trim);
+    b.add(new BoxGeometry(0.8, 0.07, 0.08), at(0, -0.39, 0.03), trim);
+    b.add(new BoxGeometry(0.07, 0.84, 0.08), at(-0.37, 0, 0.03), trim);
+    b.add(new BoxGeometry(0.07, 0.84, 0.08), at(0.37, 0, 0.03), trim);
+    b.add(new BoxGeometry(0.04, 0.72, 0.05), at(0, 0, 0.03), trim);
+    b.add(new BoxGeometry(0.66, 0.04, 0.05), at(0, 0, 0.03), trim);
+    b.add(new BoxGeometry(0.92, 0.07, 0.2), at(0, -0.45, 0.08), snow);
+    for (const side of [-1, 1]) b.add(new BoxGeometry(0.34, 0.86, 0.05), at(side * 0.6, 0, 0.04), shutter);
+  };
+  windowAt(new Matrix4().makeTranslation(1.0, BASE + 1.35, front));
+  windowAt(new Matrix4().makeRotationY(Math.PI / 2).setPosition(W / 2 + 0.01, BASE + 1.35, 0.1));
+  windowAt(new Matrix4().makeRotationY(-Math.PI / 2).setPosition(-W / 2 - 0.01, BASE + 1.35, 0.6));
+  // Woodpile against the left wall.
+  for (let row = 0; row < 3; row++) {
+    for (let k = 0; k < 6 - row; k++) {
+      const pz = -1.2 + (k + row * 0.5) * 0.26;
+      alongX(0.6, -W / 2 - 0.45, 0.12 + row * 0.22, pz, 0.11, logTone(rand()));
+      b.add(new CylinderGeometry(0.1, 0.1, 0.02, 8), new Matrix4().makeRotationZ(Math.PI / 2).setPosition(-W / 2 - 0.76, 0.12 + row * 0.22, pz), logEnd);
+    }
+  }
+  b.add(new BoxGeometry(0.66, 0.08, 1.5), placed(-W / 2 - 0.45, 0.72, -0.6), snow);
+  // Drifts banked against the walls.
+  for (let k = 0; k < 10; k++) {
+    const a = (k / 10) * Math.PI * 2;
+    const r = 1 + 0.4 * rand();
+    const px = Math.cos(a) * (W / 2 + 0.2);
+    const pz = Math.sin(a) * (D / 2 + 0.2);
+    if (pz > D / 2 && Math.abs(px - dx) < 0.9) continue; // keep the door clear
+    b.add(new SphereGeometry(0.7, 10, 6), new Matrix4().makeScale(r * 1.4, 0.45, r).setPosition(px, 0.02, pz), snow);
+  }
+  const body = new Mesh(b.build(), new MeshStandardMaterial({ vertexColors: true, roughness: 0.88 }));
   body.castShadow = true;
   body.receiveShadow = true;
   group.add(body);
-
-  const glow = new MeshBasicMaterial({ color: new Color(1.0, 0.72, 0.36) });
-  for (const wx of [0.7, 1.55]) {
-    const win = new Mesh(new PlaneGeometry(0.55, 0.6), glow);
-    win.position.set(wx, 1.35, 1.65);
-    group.add(win);
-  }
-  const sideWin = new Mesh(new PlaneGeometry(0.6, 0.6), glow);
-  sideWin.position.set(2.14, 1.35, 0);
-  sideWin.rotation.y = Math.PI / 2;
-  group.add(sideWin);
+  const lights = new Mesh(glow.build(), new MeshBasicMaterial({ vertexColors: true, toneMapped: false }));
+  lights.name = 'CabinWindows';
+  group.add(lights);
   return group;
 }
 

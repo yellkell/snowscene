@@ -26,12 +26,20 @@ import { sceneRefs } from './scene-system.js';
 import { game, Phase } from './state.js';
 import { clamp } from './terrain.js';
 
-const GRAB_RADIUS = 0.17;
-const HIGHLIGHT_RADIUS = 0.35;
+/** Close a hand this close to a hold to take it (or reach in with it already closed). */
+const GRAB_RADIUS = 0.24;
+const CATCH_RADIUS = 0.16;
+const HIGHLIGHT_RADIUS = 0.5;
+/** Pulling down lifts you a little more than your hand moves: less arm work. */
+const PULL_GAIN = 1.2;
+/** Let go of everything and you hang on for this long before sliding... */
+const HANG_GRACE = 0.9;
+/** ...and then slide down no faster than this (m/s). */
+const MAX_SLIDE = 1.3;
 /** Distance from the hand to the pick of a held ice axe. */
 const AXE_REACH = 0.42;
 /** Minimum swing speed toward the ice for a pick to bite (m/s). */
-const AXE_BITE_SPEED = 0.9;
+const AXE_BITE_SPEED = 0.7;
 
 interface Grab {
   /** The hold grabbed, or null for an axe placement. */
@@ -100,6 +108,13 @@ export class ClimbSystem extends createSystem({
         }
       }),
     );
+  }
+
+  private pulse(side: Handedness, value: number, ms: number): void {
+    const actuator = this.input.xr.gamepads[side]?.gamepad?.hapticActuators?.[0] as
+      | { pulse?: (value: number, duration: number) => void }
+      | undefined;
+    actuator?.pulse?.(value, ms);
   }
 
   private releaseAll(): void {
@@ -177,8 +192,8 @@ export class ClimbSystem extends createSystem({
 
     // Hanging on nothing: after a short grace period, slide down gently.
     const ground = this.wall.baseY;
-    if (!this.active && this.airTime > 0.45 && rig.position.y > ground) {
-      this.fallSpeed = Math.min(2.2, this.fallSpeed + dt * 4);
+    if (!this.active && this.airTime > HANG_GRACE && rig.position.y > ground) {
+      this.fallSpeed = Math.min(MAX_SLIDE, this.fallSpeed + dt * 2.5);
       rig.position.y = Math.max(ground, rig.position.y - this.fallSpeed * dt);
     }
     if (rig.position.y <= ground) this.fallSpeed = 0;
@@ -214,8 +229,10 @@ export class ClimbSystem extends createSystem({
       if (grab.active) continue;
 
       if (wall.mode === 'holds') {
-        if (!hand.gripDown) continue;
-        const hold = this.nearestHold(hand.position, GRAB_RADIUS);
+        // Close the hand on a hold, or reach onto one with it already closed.
+        const hold = hand.gripDown
+          ? this.nearestHold(hand.position, GRAB_RADIUS)
+          : this.nearestHold(hand.position, CATCH_RADIUS);
         if (!hold) continue;
         grab.hold = hold;
         grab.active = true;
@@ -223,6 +240,7 @@ export class ClimbSystem extends createSystem({
         this.active = side;
         hold.setValue(ClimbHold, 'glow', 1);
         audio.clack();
+        this.pulse(side, 0.45, 35);
         const mesh = hold.object3D as Mesh;
         sceneRefs.puffs?.emit(mesh.getWorldPosition(this.holdPos), 3, 0.4);
         continue;
@@ -248,6 +266,7 @@ export class ClimbSystem extends createSystem({
         grab.anchor.copy(hand.position);
         this.active = side;
         audio.axeBite();
+        this.pulse(side, 0.7, 50);
         climbEvents.onAxeBite?.(this.pick);
         sceneRefs.puffs?.emit(this.pick, 5, 0.5);
       }
@@ -256,6 +275,14 @@ export class ClimbSystem extends createSystem({
     if (this.active) {
       const grab = this.grabs[this.active];
       this.delta.subVectors(grab.anchor, hands[this.active].position);
+      // Hauling yourself up goes a little further than the pull itself. The
+      // hand rides up with the body by that extra too, so move the anchor
+      // with it (otherwise the next frame would pull you back down).
+      if (this.delta.y > 0) {
+        const extra = this.delta.y * (PULL_GAIN - 1);
+        this.delta.y += extra;
+        grab.anchor.y += extra;
+      }
       this.player.position.add(this.delta);
       this.player.updateMatrixWorld(true);
       this.airTime = 0;
@@ -375,7 +402,7 @@ export class ClimbSystem extends createSystem({
         this.grabs.left.hold === entity || this.grabs.right.hold === entity ? 1 : 0;
       const pulse = climbing ? 0.22 + 0.12 * Math.sin(time * 3 + mesh.position.y * 2) : 0.12;
       const material = mesh.material as MeshStandardMaterial;
-      material.emissiveIntensity = pulse + near * 0.7 + glow * 0.6 + held * 0.5;
+      material.emissiveIntensity = pulse + near * 1.1 + glow * 0.8 + held * 0.5;
     }
   }
 }

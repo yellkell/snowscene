@@ -39,6 +39,8 @@ import {
   SpriteMaterial,
   SRGBColorSpace,
   Vector3,
+  CircleGeometry,
+  MeshBasicMaterial,
 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { landUniforms } from './land-material.js';
@@ -56,20 +58,29 @@ export const PARTY_RADIUS = 16;
 
 const flameUniforms = { uTime: { value: 0 } };
 
-function flameMaterial(seed: number): ShaderMaterial {
+/**
+ * Flame sheets: tongues that lick up from a blue root through a white-hot
+ * core, orange and yellow, to deep red ragged tips, with a warped, turbulent
+ * body. Each sheet carries its own seed (vertex attribute), so a whole fire's
+ * crossed sheets are one draw.
+ */
+function flameMaterial(): ShaderMaterial {
   return new ShaderMaterial({
-    uniforms: { uTime: flameUniforms.uTime, uSeed: { value: seed } },
+    uniforms: { uTime: flameUniforms.uTime },
     vertexShader: /* glsl */ `
+      attribute float aSeed;
       varying vec2 vUv;
+      varying float vSeed;
       void main() {
         vUv = uv;
+        vSeed = aSeed;
         gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,
     fragmentShader: /* glsl */ `
       uniform float uTime;
-      uniform float uSeed;
       varying vec2 vUv;
+      varying float vSeed;
       float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       float noise(vec2 p) {
         vec2 i = floor(p); vec2 f = fract(p);
@@ -83,20 +94,29 @@ function flameMaterial(seed: number): ShaderMaterial {
       }
       void main() {
         vec2 uv = vUv;
-        float t = uTime * 1.7 + uSeed * 13.0;
-        float n = fbm(vec2(uv.x * 4.0 + uSeed * 5.0, uv.y * 3.0 - t));
-        float n2 = fbm(vec2(uv.x * 9.0 - uSeed, uv.y * 6.0 - t * 1.6));
-        // Tongues of flame: wide at the base, licking up to a ragged tip.
-        float sway = (n - 0.5) * 0.35 * uv.y;
-        float width = mix(0.42, 0.03, pow(uv.y, 0.75));
+        float t = uTime * 1.6 + vSeed * 13.0;
+        // Domain-warped turbulence rising through the sheet.
+        vec2 q = vec2(uv.x * 3.0 + vSeed * 5.0, uv.y * 2.2 - t);
+        float w = fbm(q + vec2(fbm(q * 1.7 + t * 0.3), 0.0));
+        float n2 = fbm(vec2(uv.x * 8.0 - vSeed, uv.y * 5.0 - t * 1.7));
+        float sway = (w - 0.5) * 0.45 * uv.y;
+        // Separate tongues along the top edge.
+        float lobes = 0.5 + 0.5 * sin((uv.x + sway) * 17.0 + vSeed * 7.0 + t * 1.3);
+        float width = mix(0.44, 0.02, pow(uv.y, 0.7));
         float dx = abs(uv.x - 0.5 + sway);
-        float body = smoothstep(width, width * 0.25, dx);
-        body *= smoothstep(1.0, 0.2, uv.y + (n2 - 0.5) * 0.55);
-        body *= smoothstep(0.0, 0.05, uv.y);
-        float heat = clamp(body * (1.25 - uv.y) + (n2 - 0.5) * 0.2, 0.0, 1.0);
-        vec3 col = mix(vec3(0.9, 0.18, 0.02), vec3(1.0, 0.62, 0.15), smoothstep(0.15, 0.55, heat));
-        col = mix(col, vec3(1.0, 0.95, 0.75), smoothstep(0.6, 0.95, heat));
-        gl_FragColor = vec4(col * 2.2, clamp(body * 1.4, 0.0, 1.0));
+        float body = smoothstep(width, width * 0.5, dx);
+        float top = 0.62 + 0.38 * lobes;
+        body *= smoothstep(top, top * 0.6, uv.y + (n2 - 0.5) * 0.5);
+        body *= smoothstep(0.0, 0.06, uv.y);
+        float heat = clamp(body * (1.3 - uv.y * 1.1) + (n2 - 0.5) * 0.25, 0.0, 1.0);
+        vec3 col = mix(vec3(0.5, 0.05, 0.01), vec3(1.0, 0.36, 0.04), smoothstep(0.05, 0.4, heat));
+        col = mix(col, vec3(1.0, 0.76, 0.28), smoothstep(0.4, 0.75, heat));
+        col = mix(col, vec3(1.0, 0.97, 0.86), smoothstep(0.8, 1.0, heat));
+        // A blue root where the gas first catches.
+        col += vec3(0.08, 0.22, 0.9) * smoothstep(0.14, 0.0, uv.y) * body * 0.7;
+        float a = clamp(body * 1.6, 0.0, 1.0) * smoothstep(0.0, 0.25, heat + 0.15);
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(col * 1.7, a);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
       }
@@ -107,6 +127,87 @@ function flameMaterial(seed: number): ShaderMaterial {
     side: DoubleSide,
     fog: false,
   });
+}
+
+/** `count` crossed flame sheets merged into one geometry, each with its own seed. */
+function flameSheets(count: number, width: number, height: number, seed0: number): BufferGeometry {
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const seeds: number[] = [];
+  const indices: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * Math.PI;
+    const w = (i % 2 ? 0.75 : 1) * width * 0.5;
+    const ca = Math.cos(a) * w;
+    const sa = Math.sin(a) * w;
+    const base = positions.length / 3;
+    // Corners: bottom-left, bottom-right, top-right, top-left (uv 0..1).
+    for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+      const k = u * 2 - 1;
+      positions.push(k * ca, v * height, -k * sa);
+      uvs.push(u, v);
+      seeds.push(seed0 + i * 0.37);
+    }
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  const g = new BufferGeometry();
+  g.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+  g.setAttribute('uv', new BufferAttribute(new Float32Array(uvs), 2));
+  g.setAttribute('aSeed', new BufferAttribute(new Float32Array(seeds), 1));
+  g.setIndex(indices);
+  g.computeBoundingSphere();
+  return g;
+}
+
+/** A glowing bed of embers and coals under the logs (two draws). */
+function buildEmbers(scale: number): Group {
+  const group = new Group();
+  group.name = 'Embers';
+  const size = 128;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const c = size / 2;
+  const g = ctx.createRadialGradient(c, c, 0, c, c, c);
+  g.addColorStop(0, 'rgba(255,190,90,1)');
+  g.addColorStop(0.35, 'rgba(255,90,20,0.85)');
+  g.addColorStop(0.7, 'rgba(120,20,5,0.35)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  // Hot spots in the bed.
+  for (let i = 0; i < 60; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * c * 0.6;
+    ctx.fillStyle = `rgba(255,${180 + Math.random() * 60},${60 + Math.random() * 80},${0.3 + Math.random() * 0.5})`;
+    ctx.beginPath();
+    ctx.arc(c + Math.cos(a) * r, c + Math.sin(a) * r, 1 + Math.random() * 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const texture = new CanvasTexture(canvas);
+  texture.colorSpace = SRGBColorSpace;
+  const bed = new Mesh(
+    new CircleGeometry(2.3 * scale, 24).rotateX(-Math.PI / 2),
+    new MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, blending: AdditiveBlending, toneMapped: false }),
+  );
+  bed.position.y = 0.06 * scale + 0.02;
+  bed.name = 'EmberBed';
+  group.add(bed);
+  // Coals glowing among the ash.
+  const coals = new GeometryBuilder();
+  const m = new Matrix4();
+  for (let i = 0; i < 40; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * 1.6 * scale;
+    const sz = (0.08 + Math.random() * 0.14) * Math.max(0.4, scale);
+    m.makeRotationY(Math.random() * 6).scale(new Vector3(1.3, 0.6, 1)).setPosition(Math.cos(a) * r, sz * 0.3, Math.sin(a) * r);
+    const hot = Math.random();
+    coals.add(new IcosahedronGeometry(sz, 0), m, new Color(1.6 * hot + 0.25, 0.35 * hot * hot + 0.04, 0.02));
+  }
+  const coalMesh = new Mesh(coals.build(), new MeshBasicMaterial({ vertexColors: true, toneMapped: false }));
+  coalMesh.name = 'Coals';
+  group.add(coalMesh);
+  return group;
 }
 
 /** Simple rising particle pool (sparks or smoke). */
@@ -395,6 +496,7 @@ export class Bonfire {
   private dancers: Dancer[] = [];
   private readonly flameHeight: number;
   private flames!: Group;
+  private embers!: Group;
   /** Seconds since ignite() (Infinity = fully lit). */
   private igniteAge = Infinity;
   visible = true;
@@ -439,16 +541,13 @@ export class Bonfire {
 
     const flames = new Group();
     flames.name = 'Flames';
-    const planes = scale > 0.6 ? 5 : 3;
-    for (let i = 0; i < planes; i++) {
-      const plane = new Mesh(new PlaneGeometry(7.5 * scale, this.flameHeight), flameMaterial(i * 0.37 + position.x));
-      plane.position.y = this.flameHeight / 2 + 0.1 * scale;
-      plane.rotation.y = (i / planes) * Math.PI;
-      plane.scale.x = i % 2 ? 0.75 : 1;
-      flames.add(plane);
-    }
+    const sheets = new Mesh(flameSheets(scale > 0.6 ? 6 : 4, 7.5 * scale, this.flameHeight, position.x), flameMaterial());
+    sheets.position.y = 0.1 * scale;
+    flames.add(sheets);
     place(flames);
     this.flames = flames;
+    this.embers = buildEmbers(scale);
+    place(this.embers);
 
     if (options.light) {
       this.light = new PointLight(new Color(1, 0.55, 0.22), 3500 * scale * scale, 160 * scale, 2);
@@ -550,6 +649,9 @@ export class Bonfire {
       this.flames.scale.setScalar(0.08 + 0.92 * this.blaze);
     }
     if (this.light) this.light.intensity = 3500 * scale * scale * flicker;
+    // The ember bed breathes with the flames.
+    const bed = this.embers.children[0] as Mesh;
+    (bed.material as MeshBasicMaterial).opacity = (0.75 + 0.25 * flicker) * (0.3 + 0.7 * this.blaze);
     this.sparks.update(dt);
     this.smoke.update(dt);
 

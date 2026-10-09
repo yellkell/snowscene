@@ -146,11 +146,16 @@ export interface CaveVisuals {
   /** The torch on its hook at the beacon and its flame. */
   torch: Group;
   torchFlame: Sprite;
+  /** Warm halo round the torch on its post: take me. */
+  torchHalo: Sprite;
   torchHome: Vector3;
   /** Where the torch must touch to light the beacon (course space). */
   brazier: Vector3;
   /** Light and fire effects for the lit beacon. */
   beaconGlow: Sprite;
+  /** Ring on the brazier's rim and a glow in its basket: the flame goes here. */
+  brazierRing: Mesh;
+  brazierTarget: Sprite;
   lights: Object3D[];
   /** The ice walls' material: it warms when the beacon is lit (no real lights). */
   shell: MeshStandardMaterial;
@@ -1230,9 +1235,24 @@ export function buildCave(): CaveVisuals {
   const torchFlame = glowSprite(flameTex, 0.28, 0.9);
   torchFlame.position.set(0, 0.36, 0);
   torch.add(torchFlame);
+  const torchHalo = glowSprite(partGlowTex, 1.1, 0.7);
+  torchHalo.position.set(0, 0.12, 0);
+  torch.add(torchHalo);
   const beaconGlow = glowSprite(flameTex, 3.2, 0);
   beaconGlow.position.copy(brazier).add(new Vector3(0, 0.4, 0));
   root.add(beaconGlow);
+  // The target: a glowing ring round the basket's rim and a soft glow inside.
+  const brazierRing = new Mesh(
+    new TorusGeometry(0.31, 0.022, 6, 40),
+    new MeshBasicMaterial({ color: 0xffa040, transparent: true, opacity: 0.3, blending: AdditiveBlending, depthWrite: false, fog: false }),
+  );
+  brazierRing.name = 'BrazierRing';
+  brazierRing.rotation.x = Math.PI / 2;
+  brazierRing.position.copy(brazierGroup.position).add(new Vector3(0, 1.3, 0));
+  root.add(brazierRing);
+  const brazierTarget = glowSprite(flameTex, 0.9, 0);
+  brazierTarget.position.copy(brazier).add(new Vector3(0, -0.05, 0));
+  root.add(brazierTarget);
 
   // One cheap fill light; lanterns, lamps, crystals and the beacon glow are
   // emissive, so no light costs a pixel more than this (Quest budget).
@@ -1260,9 +1280,12 @@ export function buildCave(): CaveVisuals {
     partGlow,
     torch,
     torchFlame,
+    torchHalo,
     torchHome: hook.clone(),
     brazier,
     beaconGlow,
+    brazierRing,
+    brazierTarget,
     lights,
     shell: shellMesh.material as MeshStandardMaterial,
     shaft,
