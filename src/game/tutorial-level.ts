@@ -107,7 +107,9 @@ export const tutorialLevel: Level = {
         // A proper blizzard that worsens as you climb.
         return 0.55 + 0.4 * smoothstep(5, 60, s);
       case Phase.Climbing:
-        return 1;
+        // Still a blizzard, a notch short of the worst: the wall fills your
+        // view and every flake in front of it is drawn over it.
+        return 0.85;
       case Phase.Cave:
       case Phase.Beacon:
       case Phase.Building:
@@ -126,9 +128,10 @@ export const tutorialLevel: Level = {
 
   fogRange(storm: number, out: FogRange): FogRange {
     // A little haze even on a clear day, closing in fast as the snow
-    // thickens: about 450 m at the trailhead, under 100 m on the cliff.
-    const t = Math.pow(storm, 0.8);
-    out.near = 140 + (2 - 140) * storm;
+    // thickens: thick fog from the trailhead (about 110 m), about 70 m on
+    // the cliff, a few kilometres of haze once you are above the storm.
+    const t = Math.pow(Math.min(1, storm / 0.65), 0.6);
+    out.near = 140 + (3 - 140) * t;
     out.far = Math.exp(Math.log(9000) + (Math.log(70) - Math.log(9000)) * t);
     return out;
   },

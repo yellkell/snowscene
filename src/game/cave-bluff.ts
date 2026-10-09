@@ -96,7 +96,7 @@ function buildFace(): Mesh {
     pos.setXYZ(v, x, lip > 0 ? top + 0.25 - lip * 0.3 : y, z);
   }
   geometry.computeVertexNormals();
-  const face = new Mesh(geometry, createLandMaterial({ rockScale: 4.5, snowScale: 1.5 }));
+  const face = new Mesh(geometry, createLandMaterial({ rockScale: 4.5, snowScale: 1.5, lite: true }));
   face.name = 'BluffFace';
   face.castShadow = true;
   face.receiveShadow = true;

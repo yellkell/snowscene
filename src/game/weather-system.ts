@@ -22,6 +22,7 @@ import {
 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { landUniforms } from './land-material.js';
+import { fogCullables } from './fog-cull.js';
 import { currentLevel, type FogRange } from './level.js';
 import { getHeadWorld } from './rig.js';
 import { sceneRefs } from './scene-system.js';
@@ -144,7 +145,7 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
 export class WeatherSystem extends createSystem({}) {
   private snow!: Points;
   private drift!: Points;
-  private storm = 0.25;
+  private storm = -1;
   private gustWasHigh = false;
   private readonly head = new Vector3();
   private readonly snowOffset = new Vector3();
@@ -187,6 +188,7 @@ export class WeatherSystem extends createSystem({}) {
     getHeadWorld(this.world, this.head);
 
     if (game.stormOverride !== null) this.storm = game.stormOverride;
+    else if (this.storm < 0) this.storm = currentLevel().stormTarget(this.head); // start in the weather, not clear air
     else this.storm += (currentLevel().stormTarget(this.head) - this.storm) * (1 - Math.exp(-dt / 3.2));
     const storm = this.storm;
     weatherHooks.storm = storm;
@@ -238,7 +240,12 @@ export class WeatherSystem extends createSystem({}) {
       near = this.fogRange.near;
       far = this.fogRange.far;
     }
-    // Ranges lost in the fog cost a lot of triangles for nothing: skip them.
+    // Scenery wholly inside the fog costs triangles for nothing: skip it.
+    for (const item of fogCullables) {
+      const d = item.center.distanceTo(this.head) - item.radius;
+      item.object.visible = d < far + 10;
+    }
+    // Ranges lost in the fog likewise.
     const ranges = sceneRefs.farRanges;
     if (ranges) {
       const toRanges = RANGES_INNER_RADIUS - Math.hypot(this.head.x - TUTORIAL_CENTER_X, this.head.z - TUTORIAL_CENTER_Z);

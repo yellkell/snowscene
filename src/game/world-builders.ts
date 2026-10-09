@@ -297,9 +297,11 @@ export function buildCliff(): Group {
     pos.setXYZ(v, x, y, CLIFF_FACE_Z + cliffDisplacement(x, y));
   }
   plane.computeVertexNormals();
-  const face = new Mesh(plane, createLandMaterial({ rockScale: 4.5, snowScale: 1.5 }));
+  // The wall fills your whole view while you climb: the lite land shader and
+  // no shadow lookups keep those pixels cheap (its relief is in the mesh).
+  const face = new Mesh(plane, createLandMaterial({ rockScale: 4.5, snowScale: 1.5, lite: true }));
   face.castShadow = true;
-  face.receiveShadow = true;
+  face.receiveShadow = false;
   face.name = 'CliffFace';
   group.add(face);
 

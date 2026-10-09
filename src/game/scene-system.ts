@@ -37,6 +37,7 @@ import { SnowPuffs } from './snow-puffs.js';
 import { game } from './state.js';
 import { LAKE_CENTER_Z } from './terrain.js';
 import { buildForest } from './trees.js';
+import { chunkInstanced } from './fog-cull.js';
 import {
   buildCabin,
   buildCliff,
@@ -144,7 +145,7 @@ export class SceneSetupSystem extends createSystem({}) {
     sceneRefs.farRanges = farRanges;
     addTutorial(farRanges);
     addTutorial(buildForest());
-    addTutorial(buildRocks());
+    addTutorial(chunkInstanced([buildRocks()], 100, 'Rocks'));
     addTutorial(buildCliff());
     addTutorial(buildTrailMarkers());
     addTutorial(buildTrailSign());

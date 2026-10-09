@@ -72,6 +72,9 @@ const WHEEL_X = WHEEL_C.x + GRID.pitch + 0.62;
 const HEADFRAME = 3.1;
 /** Height of the ropeway cable above its deck. */
 const CABLE_H = 2.5;
+/** Heights of the yokes hoists and swings hang from (clear of your head). */
+const HOIST_YOKE = 2.25;
+const SWING_YOKE = 2.4;
 
 const TILE = GRID.tile;
 const HALF = TILE / 2;
@@ -330,6 +333,40 @@ function buildShell(): Mesh {
   return mesh;
 }
 
+/** Every deck tile's centre over each machine's whole cycle (course space). */
+let worksSamples: V3[] | null = null;
+function worksPoints(): V3[] {
+  if (worksSamples) return worksSamples;
+  const out: V3[] = [];
+  const a = { x: 0, y: 0, z: 0 };
+  for (const spec of PLATFORMS) {
+    const span = spec.loopBars ?? 1;
+    const step = spec.loopBars ? 0.125 : 1;
+    for (let t = 0; t < span; t += step) {
+      anchorAt(spec, spec.keys[0].bar + t, a);
+      for (const sq of spec.claim) {
+        const o = sqOffset(sq);
+        out.push({ x: a.x + o.x, y: a.y, z: a.z + o.z });
+      }
+    }
+  }
+  worksSamples = out;
+  return out;
+}
+
+/**
+ * True if something spanning heights y0..y1 at (x, z) stays at least `reach`
+ * (horizontally) from every deck it could meet: from just under the deck to
+ * well over a standing head.
+ */
+function clearOfWorks(x: number, z: number, y0: number, y1: number, reach: number): boolean {
+  for (const p of worksPoints()) {
+    if (y1 < p.y - 0.6 || y0 > p.y + 2.6) continue;
+    if (Math.abs(p.x - x) < reach + HALF && Math.abs(p.z - z) < reach + HALF) return false;
+  }
+  return true;
+}
+
 /** Icicles fringing the walls and glowing ice crystals on the floor. */
 function buildIce(): Group {
   const group = new Group();
@@ -350,16 +387,26 @@ function buildIce(): Group {
   const m = new Matrix4();
   const q = new Matrix4();
   for (let i = 0; i < 260; i++) {
-    const y = 2 + rand() * 27;
-    const f = shellFrame(y);
-    const a = rand() * Math.PI * 2;
-    const r = 0.86 + rand() * 0.06;
-    const len = 0.4 + rand() * rand() * 2.6;
-    const w = 0.6 + rand() * 1.2;
-    m.makeScale(w, len, w);
-    q.makeRotationX(Math.PI); // point down
-    m.premultiply(q);
-    m.setPosition(f.cx + Math.cos(a) * f.rx * r, y - len / 2, f.cz + Math.sin(a) * f.rz * r);
+    // Nothing hangs into a deck or the head room over one.
+    let placedOk = false;
+    for (let tries = 0; tries < 10 && !placedOk; tries++) {
+      const y = 2 + rand() * 27;
+      const f = shellFrame(y);
+      const a = rand() * Math.PI * 2;
+      const r = 0.86 + rand() * 0.06;
+      const len = 0.4 + rand() * rand() * 2.6;
+      const w = 0.6 + rand() * 1.2;
+      const x = f.cx + Math.cos(a) * f.rx * r;
+      const z = f.cz + Math.sin(a) * f.rz * r;
+      if (clearOfWorks(x, z, y - len, y, 0.75)) {
+        m.makeScale(w, len, w);
+        q.makeRotationX(Math.PI); // point down
+        m.premultiply(q);
+        m.setPosition(x, y - len / 2, z);
+        placedOk = true;
+      }
+    }
+    if (!placedOk) m.makeScale(0, 0, 0);
     icicles.setMatrixAt(i, m);
   }
   icicles.name = 'Icicles';
@@ -371,15 +418,27 @@ function buildIce(): Group {
     70,
   );
   for (let i = 0; i < 70; i++) {
-    const y = FLOOR_Y + 1.2 + rand() * 1.4;
-    const f = shellFrame(y);
-    const a = rand() * Math.PI * 2;
-    const r = 0.74 + rand() * 0.14;
-    const s = 0.25 + rand() * 0.8;
-    m.makeRotationY(rand() * 6);
-    m.multiply(q.makeRotationZ((rand() - 0.5) * 0.9));
-    m.multiply(q.makeScale(s * 0.5, s * 1.8, s * 0.5));
-    m.setPosition(f.cx + Math.cos(a) * f.rx * r, y, f.cz + Math.sin(a) * f.rz * r);
+    // Crystals stay clear of the decks (and the rafts' crossing).
+    let placedOk = false;
+    for (let tries = 0; tries < 10 && !placedOk; tries++) {
+      const y = FLOOR_Y + 1.2 + rand() * 1.4;
+      const f = shellFrame(y);
+      const a = rand() * Math.PI * 2;
+      const r = 0.74 + rand() * 0.14;
+      const s = 0.25 + rand() * 0.8;
+      const spinY = rand() * 6;
+      const tilt = (rand() - 0.5) * 0.9;
+      const x = f.cx + Math.cos(a) * f.rx * r;
+      const z = f.cz + Math.sin(a) * f.rz * r;
+      if (clearOfWorks(x, z, y - s * 0.9, y + s * 0.9, 0.55 + s * 0.4)) {
+        m.makeRotationY(spinY);
+        m.multiply(q.makeRotationZ(tilt));
+        m.multiply(q.makeScale(s * 0.5, s * 1.8, s * 0.5));
+        m.setPosition(x, y, z);
+        placedOk = true;
+      }
+    }
+    if (!placedOk) m.makeScale(0, 0, 0);
     crystals.setMatrixAt(i, m);
   }
   crystals.name = 'IceCrystals';
@@ -503,7 +562,32 @@ function addLantern(b: GeometryBuilder, x: number, y: number, z: number) {
   b.add(new SphereGeometry(0.05, 8, 6), placed(x, y, z), new Color(3.2, 2.0, 0.8));
 }
 
-/** A frame that follows its platform: rails, cages, keels, hangers. */
+/**
+ * A hanger for a machine that hangs from above: two posts on the deck's
+ * closed sides (never on an edge you step across) and a crossbar overhead,
+ * so the space you stand in and the way on and off stay clear. Returns the
+ * hook point at the bar's middle (platform-local).
+ */
+function addHanger(b: GeometryBuilder, sq: Sq, gaps: Set<string> | undefined, height: number, color: Color): Vector3 {
+  const o = sqOffset(sq);
+  const open = (edge: Edge) => gaps?.has(`${sq[0]},${sq[1]},${edge}`) ?? false;
+  // Posts on the east and west edges unless one of those is a way on or off.
+  const acrossX = !open('E') && !open('W');
+  // Just outside the deck, clear of the 6 cm seam to a neighbouring deck.
+  const d = HALF + 0.025;
+  for (const side of [-1, 1]) {
+    const px = o.x + (acrossX ? side * d : 0);
+    const pz = o.z + (acrossX ? 0 : side * d);
+    box(b, 0.055, height + 0.1, 0.055, px, (height - 0.1) / 2, pz, color);
+    // A knee brace into the deck frame keeps it from looking flimsy.
+    rod(b, new Vector3(px, height - 0.45, pz), new Vector3(o.x + (acrossX ? side * (d - 0.22) : 0), height, o.z + (acrossX ? 0 : side * (d - 0.22))), 0.018, color, 4);
+  }
+  box(b, acrossX ? d * 2 + 0.06 : 0.07, 0.08, acrossX ? 0.07 : d * 2 + 0.06, o.x, height, o.z, color);
+  b.add(new TorusGeometry(0.05, 0.014, 6, 12), placed(o.x, height + 0.08, o.z), IRON);
+  return new Vector3(o.x, height + 0.12, o.z);
+}
+
+/** A frame that follows its platform: rails, hangers, keels. */
 function buildMachineFrame(spec: PlatformSpec, gaps: Set<string> | undefined): GeometryBuilder {
   const b = new GeometryBuilder();
   const claim = spec.claim;
@@ -533,17 +617,9 @@ function buildMachineFrame(spec: PlatformSpec, gaps: Set<string> | undefined): G
       addRails(b, spec, gaps, 0.6, WOOD_PALE);
       break;
     case 'hoist': {
-      // A cage: corner posts, a crown and a shackle for the rope.
+      // Hung from its rope by a yoke over your head.
       const o = sqOffset(claim[0]);
-      for (const [cx, cz] of CORNERS) box(b, 0.06, 2.2, 0.06, o.x + cx * 0.27, 1.1, o.z + cz * 0.27, WOOD_DARK);
-      for (const edge of EDGES) {
-        const d = EDGE_DIR[edge];
-        const along = d[0] === 0;
-        box(b, along ? 0.6 : 0.06, 0.08, along ? 0.06 : 0.6, o.x + d[0] * 0.27, 2.2, o.z + d[1] * 0.27, WOOD_DARK);
-      }
-      box(b, 0.6, 0.06, 0.06, o.x, 2.2, o.z, IRON);
-      box(b, 0.06, 0.06, 0.6, o.x, 2.2, o.z, IRON);
-      b.add(new TorusGeometry(0.06, 0.015, 6, 10), placed(o.x, 2.3, o.z), IRON);
+      addHanger(b, claim[0], gaps, HOIST_YOKE, WOOD_DARK);
       box(b, 0.62, 0.12, 0.62, o.x, -0.24, o.z, WOOD_DARK);
       addRails(b, spec, gaps, 1.0, WOOD_PALE);
       break;
@@ -565,8 +641,11 @@ function buildMachineFrame(spec: PlatformSpec, gaps: Set<string> | undefined): G
       break;
     }
     case 'swing': {
+      // One rope from the pivot to a yoke over your head (not four ropes
+      // closing in round you from the corners).
       const o = sqOffset(claim[0]);
       box(b, 0.64, 0.1, 0.64, o.x, -0.2, o.z, WOOD_DARK);
+      addHanger(b, claim[0], gaps, SWING_YOKE, WOOD_DARK);
       addRails(b, spec, gaps, 0.9, ROPE);
       break;
     }
@@ -575,12 +654,10 @@ function buildMachineFrame(spec: PlatformSpec, gaps: Set<string> | undefined): G
       const o = sqOffset(claim[0]);
       box(b, 0.64, 0.12, 0.64, o.x, -0.2, o.z, WOOD_DARK);
       addRails(b, spec, gaps, 0.95, WOOD);
+      // A yoke over your head, and an arm from it out to the pin on the rim.
       const pin = new Vector3(o.x + 0.62, GONDOLA_HANG, o.z);
-      for (const s of [-1, 1]) {
-        rod(b, new Vector3(o.x + 0.3, 0.95, o.z + s * 0.28), pin, 0.022, IRON);
-        rod(b, new Vector3(o.x - 0.3, 0.95, o.z + s * 0.28), new Vector3(o.x, GONDOLA_HANG - 0.2, o.z), 0.018, IRON);
-      }
-      box(b, 0.62, 0.05, 0.05, o.x + 0.31, GONDOLA_HANG - 0.2, o.z, IRON);
+      const hook = addHanger(b, claim[0], gaps, GONDOLA_HANG, IRON);
+      rod(b, hook.clone().setY(GONDOLA_HANG), pin, 0.025, IRON);
       b.add(new CylinderGeometry(0.05, 0.05, 0.12, 8), new Matrix4().makeRotationZ(Math.PI / 2).setPosition(pin.x, pin.y, pin.z), BRASS);
       break;
     }
@@ -589,7 +666,8 @@ function buildMachineFrame(spec: PlatformSpec, gaps: Set<string> | undefined): G
       const o = sqOffset(claim[0]);
       box(b, 0.64, 0.12, 0.64, o.x, -0.2, o.z, WOOD_DARK);
       addRails(b, spec, gaps, 1.0, WOOD);
-      for (const s of [-1, 1]) rod(b, new Vector3(o.x + s * 0.3, 1.0, o.z), new Vector3(o.x, CABLE_H - 0.15, o.z), 0.02, IRON);
+      // A yoke over your head carries the car from the carriage on the cable.
+      addHanger(b, claim[0], gaps, CABLE_H - 0.2, IRON);
       box(b, 0.12, 0.16, 0.5, o.x, CABLE_H - 0.08, o.z, IRON);
       for (const s of [-1, 1]) {
         b.add(
@@ -659,6 +737,71 @@ function buildStationFrame(spec: PlatformSpec, index: number, gaps: Set<string> 
   return b;
 }
 
+const GAUGE = 0.22;
+const SLEEPER_GAP = 0.42;
+const TRACK_STEEL = new Color(0.32, 0.31, 0.3);
+
+/**
+ * A mine track along a polyline (course space): a steel rail on a timber
+ * stringer each side, sleepers square to the track at an even spacing, and
+ * braced bents down to the floor. Vertical runs (the trolley's lift) are
+ * left to their guide posts.
+ */
+function addTrack(b: GeometryBuilder, pts: Vector3[], self: number): void {
+  const up = new Vector3(0, 1, 0);
+  const t = new Vector3();
+  const side = new Vector3();
+  const nrm = new Vector3();
+  const basis = new Matrix4();
+  const at = (p: Vector3, s: number, h: number) => p.clone().addScaledVector(side, s).addScaledVector(nrm, h);
+  let carry = 0;
+  for (let k = 0; k < pts.length - 1; k++) {
+    const p = pts[k];
+    const q = pts[k + 1];
+    t.subVectors(q, p);
+    const len = t.length();
+    if (Math.hypot(t.x, t.z) < 1e-3) continue; // vertical
+    t.divideScalar(len);
+    side.crossVectors(t, up).normalize();
+    nrm.crossVectors(side, t).normalize();
+    for (const s of [-1, 1]) {
+      // Stringer, then the rail on it (a flat-topped bar).
+      b.add(new BoxGeometry(0.11, 1, 0.1), segmentMatrix(at(p, s * GAUGE, -0.1), at(q, s * GAUGE, -0.1), new Matrix4()), WOOD_DARK);
+      b.add(new BoxGeometry(0.035, 1, 0.045), segmentMatrix(at(p, s * GAUGE, -0.025), at(q, s * GAUGE, -0.025), new Matrix4()), TRACK_STEEL);
+    }
+    // Sleepers at an even spacing along the track, carried across segments.
+    let d = carry;
+    while (d < len) {
+      const c = p.clone().addScaledVector(t, d).addScaledVector(nrm, -0.07);
+      basis.makeBasis(side, nrm, t).setPosition(c);
+      b.add(new BoxGeometry(GAUGE * 2 + 0.3, 0.05, 0.13), basis, k % 3 === 0 ? WOOD : WOOD_DARK);
+      d += SLEEPER_GAP;
+    }
+    carry = d - len;
+  }
+  // Bents: a pair of posts under the stringers, braced, every couple of metres.
+  let run = 0;
+  for (let k = 1; k < pts.length; k++) {
+    const p = pts[k];
+    const prev = pts[k - 1];
+    run += Math.hypot(p.x - prev.x, p.z - prev.z);
+    if (run < 2.2) continue;
+    run = 0;
+    const h = p.y - FLOOR_Y;
+    if (h < 0.6 || isNearPath(p, self)) continue;
+    t.subVectors(p, prev).setY(0).normalize();
+    side.crossVectors(t, up).normalize();
+    const top = p.y - 0.16;
+    const l = p.clone().addScaledVector(side, -GAUGE).setY(top);
+    const r = p.clone().addScaledVector(side, GAUGE).setY(top);
+    for (const e of [l, r]) b.add(new BoxGeometry(0.1, 1, 0.1), segmentMatrix(e, e.clone().setY(FLOOR_Y), new Matrix4()), WOOD_DARK);
+    b.add(new BoxGeometry(0.08, 1, 0.08), segmentMatrix(l, r, new Matrix4()), WOOD_DARK);
+    const brace = Math.min(h, 2.4);
+    rod(b, l, r.clone().setY(top - brace), 0.025, WOOD_DARK, 4);
+    rod(b, r, l.clone().setY(top - brace), 0.025, WOOD_DARK, 4);
+  }
+}
+
 /** Fixed works: hoist head frames, rails, the wheel's tower, cables. */
 function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
   const b = new GeometryBuilder();
@@ -690,7 +833,7 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
           .setPosition(x, top - 0.25, z),
         IRON,
       );
-      ropes.push({ platform: i, local: new Vector3(o.x, 2.32, o.z), far: new Vector3(x, top - 0.25, z) });
+      ropes.push({ platform: i, local: new Vector3(o.x, HOIST_YOKE + 0.12, o.z), far: new Vector3(x, top - 0.25, z) });
       // The counterweight's rope falls back down beside the cage.
       ropes.push({
         platform: -1,
@@ -698,40 +841,18 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
         far: new Vector3(x + (side === 'x' ? 0.22 : 0), lo.y + 0.4, z + (side === 'z' ? 0.22 : 0)),
       });
     } else if (spec.kind === 'incline' || spec.kind === 'skip' || spec.kind === 'corner') {
-      // Rails along the cart's whole path, on trestle bents.
+      // The track along the cart's whole path: rails on timber stringers,
+      // evenly spaced sleepers square to the track, and braced trestle bents.
       const loop = spec.loopBars ?? 8;
       const t0 = spec.keys[0].bar;
       const pts: Vector3[] = [];
       const a = { x: 0, y: 0, z: 0 };
-      for (let k = 0; k <= 32; k++) {
-        anchorAt(spec, t0 + (k / 32) * (loop / 2), a);
-        pts.push(new Vector3(a.x + o.x, a.y - 0.42, a.z + o.z));
+      for (let k = 0; k <= 96; k++) {
+        anchorAt(spec, t0 + (k / 96) * (loop / 2), a);
+        const p = new Vector3(a.x + o.x, a.y - 0.42, a.z + o.z);
+        if (pts.length === 0 || p.distanceToSquared(pts[pts.length - 1]) > 1e-4) pts.push(p);
       }
-      for (let k = 0; k < pts.length - 1; k++) {
-        const p = pts[k];
-        const q = pts[k + 1];
-        if (p.distanceToSquared(q) < 1e-6) continue;
-        const dx = q.x - p.x;
-        const dz = q.z - p.z;
-        const len = Math.hypot(dx, dz) || 1;
-        const sx = (-dz / len) * 0.22;
-        const sz = (dx / len) * 0.22;
-        if (Math.hypot(dx, dz) < 1e-4) {
-          // Vertical run (the trolley's lift): a pair of guide posts.
-          continue;
-        }
-        for (const s of [-1, 1]) {
-          rod(b, v(p, s * sx, 0, s * sz), v(q, s * sx, 0, s * sz), 0.03, IRON, 4);
-        }
-        box(b, 0.62, 0.05, 0.1, (p.x + q.x) / 2, (p.y + q.y) / 2 - 0.05, (p.z + q.z) / 2, WOOD_DARK);
-      }
-      // Bents under the rails every couple of metres.
-      for (let k = 0; k < pts.length; k += 5) {
-        const p = pts[k];
-        const h = p.y - FLOOR_Y;
-        if (h < 0.5 || isNearPath(p, i)) continue;
-        box(b, 0.12, h, 0.12, p.x, p.y - h / 2 - 0.08, p.z, WOOD_DARK);
-      }
+      addTrack(b, pts, i);
       if (spec.kind === 'corner') {
         // The lift half of the trolley's run rides up between guide posts.
         const lo = pts[0];
@@ -749,13 +870,11 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
           rod(b, new Vector3(pivot.x, pivot.y + 0.2, pz + s * 0.7), new Vector3(pivot.x + t * 2.2, pivot.y + 9, pz + s * 1.4), 0.025, IRON, 4);
         }
       }
-      for (const [cx, cz] of CORNERS) {
-        ropes.push({
-          platform: i,
-          local: new Vector3(o.x + cx * 0.27, 0.9, o.z + cz * 0.27),
-          far: new Vector3(pivot.x + cx * 0.06, pivot.y - 0.1, pz + cz * 0.25),
-        });
-      }
+      ropes.push({
+        platform: i,
+        local: new Vector3(o.x, SWING_YOKE + 0.12, o.z),
+        far: new Vector3(pivot.x, pivot.y - 0.1, pz),
+      });
     } else if (spec.kind === 'ropeway' || spec.kind === 'raft') {
       const ends = berths.map((a) => new Vector3(a.x + o.x, a.y + (spec.kind === 'raft' ? 1.3 : CABLE_H + 0.06), a.z + (spec.kind === 'raft' ? o.z - 0.22 : o.z)));
       // Extend the cable past both berths to anchor posts.

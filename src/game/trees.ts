@@ -22,6 +22,7 @@ import {
   Quaternion,
   Vector3,
 } from '@iwsdk/core';
+import { chunkInstanced } from './fog-cull.js';
 import {
   LAKE_CENTER_X,
   LAKE_CENTER_Z,
@@ -162,6 +163,9 @@ function canGrow(x: number, z: number): boolean {
   return true;
 }
 
+/** Forest chunk size (m). */
+const FOREST_CELL = 100;
+
 export function buildForest(count = 520): Group {
   const rand = mulberry32(42);
   const matrices: Matrix4[] = [];
@@ -235,8 +239,6 @@ export function buildForest(count = 520): Group {
   if (foliage.instanceColor) foliage.instanceColor.needsUpdate = true;
   foliage.name = 'ForestFoliage';
   trunk.name = 'ForestTrunks';
-  const group = new Group();
-  group.name = 'Forest';
-  group.add(trunk, foliage, shadowCaster);
-  return group;
+  // In chunks, so the frustum and the fog can skip the trees you can't see.
+  return chunkInstanced([foliage, trunk, shadowCaster], FOREST_CELL, 'Forest');
 }

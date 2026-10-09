@@ -30,6 +30,11 @@ export interface LandMaterialOptions {
   vertexColors?: boolean;
   /** Draw in the far depth layer (see far-layer.ts). */
   farLayer?: boolean;
+  /**
+   * Skip the rock and snow normal maps (the geometry carries the relief).
+   * For surfaces that fill the whole view up close, like the climbing wall.
+   */
+  lite?: boolean;
 }
 
 /** Uniforms shared by every land material so weather can drive them. */
@@ -191,6 +196,37 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
         roughnessFactor = mix(0.68 + landFine * 0.15, 0.92, landRock);`,
       )
       .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+        #ifdef LAND_SPARKLE
+        {
+          vec3 cell = floor(vLandWorld * 32.0);
+          float h = fract(sin(dot(cell, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
+          vec3 toEye = cameraPosition - vLandWorld;
+          float dist = length(toEye);
+          vec3 R = reflect(-uSunDir, landNW);
+          float glint = step(0.9965, h) * pow(max(dot(R, toEye / dist), 0.0), 5.0);
+          glint *= (1.0 - landRock) * (1.0 - smoothstep(5.0, 22.0, dist)) * step(0.0, uSunDir.y);
+          totalEmissiveRadiance += vec3(1.0, 0.95, 0.85) * glint * uSparkle;
+        }
+        #endif
+        #ifndef LAND_FAR
+        ${FIRE_GLOW_GLSL}
+        #endif`,
+      )
+      .replace(
+        '#include <fog_fragment>',
+        `#include <fog_fragment>
+        #ifdef LAND_MIST
+        {
+          // Cloud tops lap against the mountains, thinning with height.
+          float mist = 1.0 - smoothstep(LAND_CLOUD_Y - 20.0, LAND_CLOUD_Y + 320.0, vLandWorld.y);
+          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.9, 0.91, 0.94), mist * 0.85);
+        }
+        #endif`,
+      );
+    if (!opts.lite) {
+      shader.fragmentShader = shader.fragmentShader.replace(
         '#include <normal_fragment_maps>',
         `#include <normal_fragment_maps>
         {
@@ -223,37 +259,8 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
           vec3 landShadeN = normalize(mix(snowN, rockN, landRock));
           normal = normalize((viewMatrix * vec4(landShadeN, 0.0)).xyz);
         }`,
-      )
-      .replace(
-        '#include <emissivemap_fragment>',
-        `#include <emissivemap_fragment>
-        #ifdef LAND_SPARKLE
-        {
-          vec3 cell = floor(vLandWorld * 32.0);
-          float h = fract(sin(dot(cell, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
-          vec3 toEye = cameraPosition - vLandWorld;
-          float dist = length(toEye);
-          vec3 R = reflect(-uSunDir, landNW);
-          float glint = step(0.9965, h) * pow(max(dot(R, toEye / dist), 0.0), 5.0);
-          glint *= (1.0 - landRock) * (1.0 - smoothstep(5.0, 22.0, dist)) * step(0.0, uSunDir.y);
-          totalEmissiveRadiance += vec3(1.0, 0.95, 0.85) * glint * uSparkle;
-        }
-        #endif
-        #ifndef LAND_FAR
-        ${FIRE_GLOW_GLSL}
-        #endif`,
-      )
-      .replace(
-        '#include <fog_fragment>',
-        `#include <fog_fragment>
-        #ifdef LAND_MIST
-        {
-          // Cloud tops lap against the mountains, thinning with height.
-          float mist = 1.0 - smoothstep(LAND_CLOUD_Y - 20.0, LAND_CLOUD_Y + 320.0, vLandWorld.y);
-          gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(0.9, 0.91, 0.94), mist * 0.85);
-        }
-        #endif`,
       );
+    }
     // Expedition cloud-deck mist (off unless uDeckMistStrength > 0).
     shader.uniforms.uDeckY = landUniforms.uDeckY;
     shader.uniforms.uDeckBelow = landUniforms.uDeckBelow;
@@ -265,6 +272,6 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
       .replace('#include <premultiplied_alpha_fragment>', `${DECK_MIST}\n#include <premultiplied_alpha_fragment>`);
   };
   material.customProgramCacheKey = () =>
-    `land:${rockScale}:${snowScale}:${opts.rockBias ?? 0}:${opts.snowCling ?? 0}:${opts.cloudMist ? 1 : 0}:${opts.sparkle ? 1 : 0}:${opts.vertexColors ? 1 : 0}:${opts.farLayer ? 1 : 0}`;
+    `land:${rockScale}:${snowScale}:${opts.rockBias ?? 0}:${opts.snowCling ?? 0}:${opts.cloudMist ? 1 : 0}:${opts.sparkle ? 1 : 0}:${opts.vertexColors ? 1 : 0}:${opts.farLayer ? 1 : 0}:${opts.lite ? 1 : 0}`;
   return material;
 }

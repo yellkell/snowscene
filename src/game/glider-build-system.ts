@@ -2,15 +2,18 @@
  * Assembly on the beacon deck: put together a half-size hang glider kit.
  *
  * The parts you recovered in the cave are in your pack. Open it, take a part
- * out (it comes up in your hand), carry it to its glowing outline on the
- * frame and open your hand to fit it. Let go of it anywhere else and it goes
- * back in your pack. When every part is fitted the kit "becomes" a
- * full-size glider for the launch.
+ * out (it comes up in your hand) and touch it to its glowing outline on the
+ * frame: it snaps into place (letting go near the frame fits it too). It
+ * stays in your hand anywhere else; let go over the open pack to put it
+ * back. A part that somehow ends up nowhere is returned to the pack, so the
+ * build can always be finished. When every part is fitted the kit "becomes"
+ * a full-size glider for the launch.
  *
  * Desktop fallback: press E to fit the next part from your pack.
  */
 
 import {
+  Box3,
   Color,
   createSystem,
   Entity,
@@ -23,7 +26,7 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import { audio } from './audio.js';
-import { consume, equipment, type ItemId, PART_ITEM, PART_ITEMS, removeFromPack, stow } from './equipment.js';
+import { addToPack, consume, equipment, type ItemId, packCount, PART_ITEM, PART_ITEMS, removeFromPack } from './equipment.js';
 import { GliderPart, GliderPartIds } from './game-components.js';
 import { buildGhost, buildGlider, type GliderPartId } from './glider-model.js';
 import { HANDS, type Handedness } from './hand-input.js';
@@ -41,14 +44,17 @@ import {
 } from './world-builders.js';
 
 const KIT_SCALE = 0.5;
-/** Open your hand this close to a part's outline to fit it. */
-const SNAP_RADIUS = 0.6;
+/** Let go this close to a part's place on the frame to fit it. */
+const SNAP_RADIUS = 0.9;
+/** A part in your hand fits the moment your hand comes this close to its outline. */
+const TOUCH_REACH = 0.18;
 const KEEL_Y = 2.3; // keel height in glider model space
 
 interface PartInfo {
   entity: Entity;
   group: Group;
   ghost: Group;
+  ghostBounds: Box3;
   materials: MeshStandardMaterial[];
   restPos: Vector3;
   restQuat: Quaternion;
@@ -68,6 +74,7 @@ export class GliderBuildSystem extends createSystem({
   private parts = new Map<GliderPartId, PartInfo>();
   private carrying: Record<Handedness, PartInfo | null> = { left: null, right: null };
   private completeTimer = -1;
+  private hintAt = 0;
   private readonly tmp = new Vector3();
   private bench!: Object3D;
   /** The kit has "become" the full-size glider. */
@@ -141,6 +148,7 @@ export class GliderBuildSystem extends createSystem({
         entity,
         group,
         ghost,
+        ghostBounds: new Box3(),
         materials,
         restPos: rest[id].pos.clone(),
         restQuat: rest[id].quat.clone(),
@@ -195,6 +203,7 @@ export class GliderBuildSystem extends createSystem({
     for (const part of this.parts.values()) this.animate(part, dt);
     if (game.phase.peek() !== Phase.Building) return;
 
+    if (this.completeTimer < 0) this.recoverLostParts();
     if (this.world.renderer.xr.isPresenting) this.updateHands();
     else if (this.input.keyboard.getKeyDown('KeyE')) this.placeNext();
 
@@ -222,7 +231,11 @@ export class GliderBuildSystem extends createSystem({
     return this.carrying.left === part || this.carrying.right === part;
   }
 
-  /** A part out of the pack in a hand: open the hand by its outline to fit it. */
+  /**
+   * A part out of the pack in a hand snaps onto the frame as soon as it
+   * touches its outline (or is let go near the frame). Anywhere else it just
+   * stays in your hand; let go over the open pack to put it back.
+   */
   private updateHands(): void {
     for (const hand of HANDS) {
       const side = hand.handedness;
@@ -230,20 +243,31 @@ export class GliderBuildSystem extends createSystem({
       const part = item ? this.partForItem(item) : null;
       this.carrying[side] = part && !this.isPlaced(part) ? part : null;
       const carried = this.carrying[side];
-      if (!carried || !hand.tracked || hand.grip) continue;
-      if (hand.position.distanceTo(carried.slotPos) < SNAP_RADIUS) {
+      if (!carried || !hand.tracked) continue;
+      carried.ghostBounds.setFromObject(carried.ghost);
+      const touching = carried.ghostBounds.distanceToPoint(hand.position) < TOUCH_REACH;
+      const letGoNear = !hand.grip && hand.position.distanceTo(carried.slotPos) < SNAP_RADIUS;
+      if (touching || letGoNear) {
         consume(side);
         this.carrying[side] = null;
         // It leaves your hand where it is and settles onto the frame.
         carried.group.position.copy(hand.position);
         carried.group.quaternion.copy(carried.slotQuat);
         this.fit(carried);
-      } else {
-        stow(side);
-        this.carrying[side] = null;
-        audio.zip();
-        toast('Back in your pack. Carry it to its outline on the frame.', 3);
+      } else if (hand.gripUp && !game.packOpen.peek() && this.hintAt < performance.now()) {
+        this.hintAt = performance.now() + 4000;
+        toast('Bring it to its glowing outline on the frame.', 3);
       }
+    }
+  }
+
+  /** A part that is neither fitted, in a hand nor in the pack goes back in the pack. */
+  private recoverLostParts(): void {
+    for (const [id, part] of this.parts) {
+      if (this.isPlaced(part)) continue;
+      const item = PART_ITEM[id];
+      if (packCount(item) > 0 || equipment.inHand.left === item || equipment.inHand.right === item) continue;
+      addToPack(item);
     }
   }
 
