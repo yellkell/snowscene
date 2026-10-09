@@ -53,8 +53,10 @@ approach assist lines you up to land at the edge of the party.
 Drag the mouse to look around on desktop.
 
 Lost your bearings, or drifted towards the edge of your room? Open the
-backpack (left palm up) and poke the brass **recentre** button on its front
-with your right index finger (R on desktop). In the cave it puts you back on
+backpack (left palm up, or A / X on a controller: a wooden tackle-box tray
+rises in front of you, your gear in its felt-lined slots and your notes on its
+open lid) and poke the brass **recentre** button standing off its left rim
+with an index finger (R on desktop). In the cave it puts you back on
 the middle of the deck you're standing on; on the expedition's chute it
 makes where you stand the middle lane; on the trail it turns you up the trail; at the
 workbench it stands you back at the bench; after landing it faces you to the

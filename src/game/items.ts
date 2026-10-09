@@ -12,14 +12,11 @@ import {
   Color,
   ConeGeometry,
   CylinderGeometry,
-  DoubleSide,
   Group,
   Matrix4,
   Mesh,
   MeshStandardMaterial,
   Object3D,
-  PlaneGeometry,
-  SphereGeometry,
   SRGBColorSpace,
   TorusGeometry,
   BoxGeometry,
@@ -282,30 +279,6 @@ export function buildSlotIcon(item: ItemId): Object3D {
 }
 
 /** The open backpack: a rucksack body with its lid flipped back. */
-export function buildBackpack(): Group {
-  const group = new Group();
-  group.name = 'Backpack';
-  const fabric = new MeshStandardMaterial({ color: 0x2f4f7a, roughness: 0.85 });
-  const trim = new MeshStandardMaterial({ color: 0xd8b23a, roughness: 0.7 });
-  const inside = new MeshStandardMaterial({ color: 0x141820, roughness: 1, side: DoubleSide });
-  const body = new Mesh(new CylinderGeometry(0.075, 0.09, 0.12, 20, 1, true), fabric);
-  body.position.y = -0.06;
-  const bottom = new Mesh(new SphereGeometry(0.09, 20, 8, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), fabric);
-  bottom.position.y = -0.12;
-  bottom.scale.y = 0.4;
-  const mouth = new Mesh(new TorusGeometry(0.075, 0.008, 8, 28), trim);
-  mouth.rotation.x = Math.PI / 2;
-  const hole = new Mesh(new PlaneGeometry(0.15, 0.15), inside);
-  hole.rotation.x = -Math.PI / 2;
-  hole.position.y = -0.02;
-  const lid = new Mesh(new SphereGeometry(0.08, 18, 8, 0, Math.PI * 2, 0, Math.PI / 2), fabric);
-  lid.scale.set(1, 0.35, 1);
-  lid.position.set(0, 0.03, -0.1);
-  lid.rotation.x = -1.1;
-  group.add(body, bottom, mouth, hole, lid);
-  return group;
-}
-
 export function disposeIcon(object: Object3D): void {
   object.traverse((child) => {
     const mesh = child as Mesh;

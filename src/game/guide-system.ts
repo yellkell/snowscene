@@ -491,24 +491,22 @@ export class GuideSystem extends createSystem({}) {
     return game.distanceToCliff.peek() <= (WALL_S * 2) / 3;
   }
 
-  /** Ride just above the open pack, facing you; hidden while it's closed. */
+  /** Rest against the open lid of the pack, facing you; hidden while it's shut. */
   private placeInPack(object: Object3D): void {
     const pack = packRefs.root;
-    const open = game.packOpen.peek() && !!pack && pack.scale.x > 0.15;
+    const notes = packRefs.notes;
+    const open = game.packOpen.peek() && !!pack && !!notes && pack.scale.x > 0.6;
     object.visible = open;
     this.anchored = false;
-    if (!open || !pack) return;
+    if (!open || !pack || !notes) return;
     getHeadWorld(this.world, this.head);
     pack.updateMatrixWorld(true);
-    object.position.copy(PANEL_IN_PACK);
-    pack.localToWorld(object.position);
+    notes.getWorldPosition(object.position);
     const d = object.position.distanceTo(this.head);
-    object.scale.setScalar(((BASE_SCALE * d) / REFERENCE_DISTANCE) * 0.8 * Math.min(1, pack.scale.x));
+    object.scale.setScalar(((BASE_SCALE * d) / REFERENCE_DISTANCE) * 0.62 * Math.min(1, pack.scale.x));
     object.lookAt(this.head);
   }
 }
-
-const PANEL_IN_PACK = new Vector3(0, 0.27, -0.05);
 
 function clampRange(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;

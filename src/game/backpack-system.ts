@@ -1,11 +1,13 @@
 /**
- * The backpack: turn your LEFT palm up and look at it, and your pack opens
- * just above your palm with your gear floating in a ring of slots. Reach in
- * with your RIGHT hand and close it on an item to take it; drop a held item
- * back over the open pack to stow it. Turn the palm over or look away and it
- * closes. (Gesture adapted from the FIRE FIGHT FLUX wrist panel: the pose
- * must be held briefly to open, with looser limits to stay open, so a hand
- * passing palm-up mid-stride doesn't flash it open.)
+ * The backpack, a wooden tackle-box tray after gamblefish's: turn your LEFT
+ * palm up and look at it (or press A / X on a controller) and the tray comes
+ * up in front of you at waist height, tipped toward you, lid open with your
+ * notes on it and your gear lying in its felt-lined slots. Reach in with
+ * either hand and close it on an item to take it; let go of a held item over
+ * the tray to put it back in its slot. The tray travels with you while it is
+ * open. Palm up again, A / X, or look well away from it and it folds away.
+ * (The palm-up pose must be held briefly to open, so a hand passing palm-up
+ * mid-stride doesn't flash it open; from the FIRE FIGHT FLUX wrist panel.)
  *
  * Items in hand also work here:
  *   thermos   bring it to your mouth to sip (warms you)
@@ -15,8 +17,8 @@
  *   flare     raise it above your head and squeeze to fire it
  *   glider    drop it on the summit to unpack it
  *
- * RECENTRE: a brass button on the front of the open pack. Poke it with your
- * right index finger to re-centre yourself: back to the middle of the deck
+ * RECENTRE: a brass button standing off the tray's left rim. Poke it with
+ * an index finger to re-centre yourself: back to the middle of the deck
  * you're on in the cave, your lean on the chute, facing up the trail, back
  * at the workbench, or facing the fire once you've landed.
  *
@@ -26,8 +28,12 @@
 import {
   Box3,
   CanvasTexture,
+  BoxGeometry,
   createSystem,
   Group,
+  InputComponent,
+  Matrix4,
+  MeshStandardMaterial,
   Mesh,
   MeshBasicMaterial,
   Object3D,
@@ -53,7 +59,8 @@ import {
 } from './equipment.js';
 import { headlamp } from './expedition/sky/headlamp.js';
 import { HANDS, hands, type Handedness } from './hand-input.js';
-import { buildBackpack, buildHeldItem, buildSlotIcon } from './items.js';
+import { buildHeldItem, buildSlotIcon } from './items.js';
+import { buildPackTray, CELL, cellCentre, COLS, type PackTray, ROWS, TRAY_H, TRAY_TILT, TRAY_W } from './pack-tray.js';
 import { currentLevel } from './level.js';
 import { sceneRefs } from './scene-system.js';
 import { FIRE_POS } from './campfire.js';
@@ -65,18 +72,14 @@ import { addWarmth, game, Phase, requestRecentre, toast } from './state.js';
 const OPEN_UP = 0.65;
 const STAY_UP = 0.35;
 const OPEN_GAZE_COS = Math.cos((25 * Math.PI) / 180);
-const STAY_GAZE_COS = Math.cos((40 * Math.PI) / 180);
 const OPEN_HOLD = 0.2;
-const CLOSE_HOLD = 0.3;
-/** Pack floats this far above the palm. */
-const LIFT = 0.12;
-const SLOT_RADIUS = 0.24;
+/** Look this far away from the open tray for CLOSE_HOLD seconds and it folds away. */
+const AWAY_COS = Math.cos((70 * Math.PI) / 180);
+const CLOSE_HOLD = 1.0;
 /** Every slot icon is scaled to fit this size (metres). */
-const ICON_SIZE = 0.07;
-const SLOT_REACH = 0.075;
-const STOW_REACH = 0.13;
-/** The recentre button: where it sits on the pack's front, and poke radii. */
-const BUTTON_POS = new Vector3(0, -0.055, 0.1);
+const ICON_SIZE = 0.078;
+const SLOT_REACH = 0.08;
+/** Poke radii for the recentre button. */
 const BUTTON_PRESS = 0.028;
 const BUTTON_REARM = 0.06;
 
@@ -95,14 +98,20 @@ interface Slot {
 const tmpA = new Vector3();
 const tmpB = new Vector3();
 
-/** The pack's root while it's open (the guide panel rides on it in XR). */
+/** The pack's root while it's open (the guide notes rest on its lid in XR). */
 export const packRefs = {
   root: null as Group | null,
+  /** Where the notes rest: in front of the tray's open lid. */
+  notes: null as Object3D | null,
 };
 
 export class BackpackSystem extends createSystem({}) {
   private root = new Group();
-  private pack!: Group;
+  private tray!: PackTray;
+  /** The tray's pose relative to the rig while it is open (it travels with you). */
+  private readonly localPos = new Vector3();
+  private readonly localQuat = new Quaternion();
+  private palmWasUp = false;
   private slots = new Map<SlotId, Slot>();
   private held: Record<Handedness, { item: ItemId | null; model: Object3D | null }> = {
     left: { item: null, model: null },
@@ -134,9 +143,11 @@ export class BackpackSystem extends createSystem({}) {
   init(): void {
     packRefs.root = this.root;
     this.root.name = 'BackpackUI';
-    this.pack = buildBackpack();
-    this.root.add(this.pack);
+    this.tray = buildPackTray();
+    this.root.add(this.tray.group);
+    packRefs.notes = this.tray.notes;
     this.button = this.buildButton();
+    this.button.position.copy(this.tray.sideButton);
     this.root.add(this.button);
     this.root.visible = false;
     this.world.createTransformEntity(this.root, { persistent: true });
@@ -176,7 +187,6 @@ export class BackpackSystem extends createSystem({}) {
   private buildButton(): Group {
     const group = new Group();
     group.name = 'RecentreButton';
-    group.position.copy(BUTTON_POS);
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = 128;
     const ctx = canvas.getContext('2d')!;
@@ -205,7 +215,15 @@ export class BackpackSystem extends createSystem({}) {
       new PlaneGeometry(0.056, 0.056),
       new MeshBasicMaterial({ map: texture, transparent: true, alphaTest: 0.5 }),
     );
-    group.add(this.buttonCap);
+    // Stand the face up toward your eyes (the tray tips toward you).
+    const face = new Group();
+    face.rotation.x = -(Math.PI / 2 - TRAY_TILT) * 0.75;
+    face.position.y = 0.035;
+    face.add(this.buttonCap);
+    group.add(face);
+    const post = new Mesh(new BoxGeometry(0.012, 0.04, 0.012), new MeshStandardMaterial({ color: 0x4a3422, roughness: 0.8 }));
+    post.position.y = 0.012;
+    group.add(post);
     return group;
   }
 
@@ -214,10 +232,9 @@ export class BackpackSystem extends createSystem({}) {
     this.buttonPush = Math.max(0, this.buttonPush - dt * 4);
     this.buttonCap.position.z = -0.008 * this.buttonPush;
     if (!presenting || this.scale < 1) return;
-    const tip = hands.right.indexTip;
-    if (!hands.right.tracked) return;
     this.buttonCap.getWorldPosition(tmpA);
-    const d = tmpA.distanceTo(tip);
+    let d = Infinity;
+    for (const hand of HANDS) if (hand.tracked) d = Math.min(d, tmpA.distanceTo(hand.indexTip));
     if (this.buttonArmed && d < BUTTON_PRESS) {
       this.buttonArmed = false;
       this.pressButton();
@@ -287,8 +304,9 @@ export class BackpackSystem extends createSystem({}) {
     const labelTexture = new CanvasTexture(labelCanvas);
     labelTexture.colorSpace = SRGBColorSpace;
     const label = new Sprite(new SpriteMaterial({ map: labelTexture, depthTest: false, transparent: true }));
+    // A small name tag along the near edge of the slot.
     label.scale.set(0.1, 0.025, 1);
-    label.position.y = -0.055;
+    label.position.set(0, 0.012, CELL * 0.36);
     label.renderOrder = 30;
     root.add(label);
     this.root.add(root);
@@ -316,7 +334,7 @@ export class BackpackSystem extends createSystem({}) {
     ctx.roundRect(4, 8, 248, 48, 22);
     ctx.fill();
     ctx.fillStyle = hover ? '#1b1b1b' : '#f2f5fb';
-    ctx.font = '600 26px Inter, Helvetica, Arial, sans-serif';
+    ctx.font = '600 24px Inter, Helvetica, Arial, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, 128, 33);
@@ -330,17 +348,13 @@ export class BackpackSystem extends createSystem({}) {
       this.builtVersion = key;
       for (const [id, slot] of this.slots) slot.root.visible = ids.includes(id);
     }
-    // An arc of slots behind and above the pack mouth, facing you (+Z).
-    const n = ids.length;
-    const spread = Math.min(2.6, 0.48 * Math.max(1, n - 1));
+    // One item per slot, filling the grid row by row from the far side;
+    // the one under your hand lifts out of its slot.
     ids.forEach((id, i) => {
       const slot = this.ensureSlot(id);
-      slot.root.visible = true;
-      const t = n === 1 ? 0 : i / (n - 1) - 0.5;
-      const a = t * spread;
-      slot.root.position.set(Math.sin(a) * SLOT_RADIUS, 0.07 + Math.cos(a) * 0.04, -Math.cos(a) * SLOT_RADIUS * 0.45);
-      const s = 1 + slot.hover * 0.3;
-      slot.root.scale.setScalar(s);
+      slot.root.visible = i < COLS * ROWS;
+      cellCentre(i % COLS, Math.floor(i / COLS), slot.root.position, 0.006 + slot.hover * 0.03);
+      slot.root.scale.setScalar(1 + slot.hover * 0.25);
       this.drawLabel(slot, this.labelFor(id), slot.hover > 0.5);
     });
   }
@@ -361,7 +375,7 @@ export class BackpackSystem extends createSystem({}) {
     this.scale = Math.min(1, Math.max(0, this.scale + (open ? dt : -dt) / 0.15));
     this.root.visible = this.scale > 0;
     if (this.root.visible) {
-      this.placePack(dt, presenting);
+      this.placePack(presenting);
       this.layoutSlots();
       if (presenting && this.scale >= 1) this.updateReach(dt);
       this.updateButton(dt, presenting);
@@ -378,26 +392,62 @@ export class BackpackSystem extends createSystem({}) {
     const h = hands.left;
     this.viewDirection(this.gaze);
     tmpA.subVectors(h.position, this.head).normalize();
-    const up = h.palmNormal.y;
-    const look = this.gaze.dot(tmpA);
-    const ok = h.tracked && !h.grip;
+    const palmUp = h.tracked && !h.grip && h.palmNormal.y > OPEN_UP && this.gaze.dot(tmpA) > OPEN_GAZE_COS;
+    // Palm up (held briefly) toggles the tray; so does A or X on a controller.
+    this.poseFor = palmUp ? this.poseFor + dt : 0;
+    let toggle = false;
+    if (this.poseFor >= OPEN_HOLD && !this.palmWasUp) {
+      this.palmWasUp = true;
+      toggle = true;
+    }
+    if (!palmUp && h.palmNormal.y < STAY_UP) this.palmWasUp = false;
+    const pads = this.input.xr.gamepads;
+    if (pads.right?.getButtonDown(InputComponent.A_Button) || pads.left?.getButtonDown(InputComponent.X_Button)) toggle = true;
     const open = game.packOpen.peek();
-    const holding = open ? ok && up > STAY_UP && look > STAY_GAZE_COS : ok && up > OPEN_UP && look > OPEN_GAZE_COS;
-    if (holding) {
-      this.poseFor += dt;
-      this.lostFor = 0;
-    } else {
-      this.lostFor += dt;
-      this.poseFor = 0;
+    if (toggle) {
+      this.setOpen(!open);
+      return;
     }
-    if (!open && this.poseFor >= OPEN_HOLD) {
-      game.packOpen.value = true;
-      audio.zip();
-      this.root.position.copy(h.position).y += LIFT;
-    } else if (open && this.lostFor >= CLOSE_HOLD) {
-      game.packOpen.value = false;
-      audio.zip();
-    }
+    if (!open) return;
+    // Look well away from the open tray for a moment and it folds away.
+    this.root.getWorldPosition(tmpB);
+    tmpA.subVectors(tmpB, this.head);
+    const far = tmpA.length() > 1.6;
+    const away = far || this.gaze.dot(tmpA.normalize()) < AWAY_COS;
+    this.lostFor = away ? this.lostFor + dt : 0;
+    if (this.lostFor >= CLOSE_HOLD) this.setOpen(false);
+  }
+
+  private setOpen(open: boolean): void {
+    game.packOpen.value = open;
+    this.lostFor = 0;
+    audio.zip();
+    if (open) this.present();
+  }
+
+  /**
+   * Bring the tray up in front of the viewer: waist height, tipped toward
+   * them. The pose is kept relative to the rig, so it travels with you.
+   */
+  private present(): void {
+    getHeadWorld(this.world, this.head);
+    const d = this.viewDirection(this.gaze);
+    d.y = 0;
+    if (d.lengthSq() < 1e-6) d.set(0, 0, -1);
+    d.normalize();
+    const up = tmpA.set(0, 1, 0);
+    const X = new Vector3().crossVectors(d, up).normalize();
+    const Y = up.clone().multiplyScalar(Math.cos(TRAY_TILT)).addScaledVector(d, -Math.sin(TRAY_TILT));
+    const Z = new Vector3().crossVectors(X, Y);
+    const desktop = !this.world.renderer.xr.isPresenting;
+    this.want.copy(this.head).addScaledVector(d, (desktop ? 0.62 : 0.42) + TRAY_H * 0.2);
+    this.want.y -= desktop ? 0.42 : 0.5;
+    this.quat.setFromRotationMatrix(new Matrix4().makeBasis(X, Y, Z));
+    const rig = this.player;
+    rig.updateMatrixWorld(true);
+    this.localPos.copy(this.want);
+    rig.worldToLocal(this.localPos);
+    rig.getWorldQuaternion(this.localQuat).invert().multiply(this.quat);
   }
 
   /** Unit vector the viewer is looking along. */
@@ -428,57 +478,54 @@ export class BackpackSystem extends createSystem({}) {
     if (kb.getKeyDown('KeyR')) this.pressButton();
   }
 
-  private placePack(dt: number, presenting: boolean): void {
-    if (presenting) {
-      const h = hands.left;
-      if (h.tracked) {
-        this.want.copy(h.position);
-        this.want.y += LIFT;
-        this.root.position.lerp(this.want, Math.min(1, dt * 12));
-      }
-    } else {
-      // Desktop: float the pack low in front of the camera.
-      const yaw = getHeadYaw(this.world);
-      this.root.position.set(
-        this.head.x - Math.sin(yaw) * 0.7,
-        this.head.y - 0.2,
-        this.head.z - Math.cos(yaw) * 0.7,
-      );
-    }
-    tmpA.copy(this.head);
-    tmpA.y = this.root.position.y + 0.05;
-    this.root.lookAt(tmpA);
-    this.root.scale.setScalar(Math.max(0.001, this.scale) * (presenting ? 1 : 1.5));
+  private placePack(presenting: boolean): void {
+    // Desktop: the tray stays low in front of the camera as you look round.
+    if (!presenting) this.present();
+    const rig = this.player;
+    this.root.position.copy(this.localPos);
+    rig.localToWorld(this.root.position);
+    rig.getWorldQuaternion(this.root.quaternion).multiply(this.localQuat);
+    // It rises into place as it opens and sinks as it folds away.
+    const e = this.scale * this.scale * (3 - 2 * this.scale);
+    this.root.position.y -= (1 - e) * 0.18;
+    this.root.scale.setScalar(Math.max(0.001, 0.4 + 0.6 * e) * (presenting ? 1 : 1.35));
   }
 
-  /** Right hand reaching into the open pack: hover, take, stow. */
+  /** Hands reaching into the open tray: hover, take, put back. */
   private updateReach(dt: number): void {
-    const right = hands.right;
-    if (!right.tracked) return;
     let hovered: Slot | null = null;
+    let hoverHand: Handedness = 'right';
     let best = SLOT_REACH;
-    for (const slot of this.slots.values()) {
-      if (!slot.root.visible) continue;
-      slot.root.getWorldPosition(tmpA);
-      const d = Math.min(tmpA.distanceTo(right.position), tmpA.distanceTo(right.indexTip));
-      if (d < best) {
-        best = d;
-        hovered = slot;
+    for (const hand of HANDS) {
+      if (!hand.tracked || equipment.inHand[hand.handedness]) continue;
+      for (const slot of this.slots.values()) {
+        if (!slot.root.visible) continue;
+        slot.root.getWorldPosition(tmpA);
+        const d = Math.min(tmpA.distanceTo(hand.position), tmpA.distanceTo(hand.indexTip));
+        if (d < best) {
+          best = d;
+          hovered = slot;
+          hoverHand = hand.handedness;
+        }
       }
     }
     for (const slot of this.slots.values()) {
       const target = slot === hovered ? 1 : 0;
       slot.hover += (target - slot.hover) * Math.min(1, dt * 14);
     }
-    if (hovered && right.gripDown && this.takeCooldown <= 0) {
-      this.takeSlot(hovered.id, 'right');
+    if (hovered && hands[hoverHand].gripDown && this.takeCooldown <= 0) {
+      this.takeSlot(hovered.id, hoverHand);
       return;
     }
-    // Stow: let go of a held item over the pack mouth.
-    const item = equipment.inHand.right;
-    if (item && right.gripUp && this.takeCooldown <= 0) {
-      this.pack.getWorldPosition(tmpB);
-      if (tmpB.distanceTo(right.position) < STOW_REACH) this.stowHand('right');
+    // Put back: let go of a held item over the tray.
+    for (const hand of HANDS) {
+      const side = hand.handedness;
+      if (!equipment.inHand[side] || !hand.gripUp || this.takeCooldown > 0) continue;
+      tmpB.copy(hand.position);
+      this.root.worldToLocal(tmpB);
+      if (Math.abs(tmpB.x) < TRAY_W / 2 + 0.06 && Math.abs(tmpB.z) < TRAY_H / 2 + 0.06 && tmpB.y > -0.05 && tmpB.y < 0.25) {
+        this.stowHand(side);
+      }
     }
   }
 
