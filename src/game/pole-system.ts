@@ -6,7 +6,8 @@
  * (as if levering yourself along the pole). Pushes feed a smoothed velocity
  * rather than moving you directly, so hand-tracking jitter never jerks the
  * view, and a little momentum carries you between strokes. A planted pole
- * never brakes you. Open the hand or lift the pole to unplant.
+ * never brakes you. Open the hand or lift the pole to unplant. Every plant
+ * leaves a hole in the snow, so your strides leave a trail behind you.
  *
  * In the desktop browser (no headset) hold W / ArrowUp to stride and watch
  * the simulated poles swing.
@@ -18,7 +19,8 @@ import { hands, HANDS, type HandState } from './hand-input.js';
 import { getHeadWorld, getHeadYaw, yawForward } from './rig.js';
 import { sceneRefs } from './scene-system.js';
 import { holding } from './equipment.js';
-import { currentLevel } from './level.js';
+import { currentLevel, level } from './level.js';
+import { PoleMarks } from './pole-marks.js';
 import { game, Phase } from './state.js';
 import { buildPole, POLE_TIP_DISTANCE } from './world-builders.js';
 
@@ -65,8 +67,10 @@ export class PoleSystem extends createSystem({}) {
   private readonly target = new Quaternion();
   private readonly hangTarget = new Quaternion().setFromUnitVectors(Z_AXIS, DOWN);
   private strideClock = 0;
+  private readonly marks = new PoleMarks();
 
   init(): void {
+    this.world.createTransformEntity(this.marks.mesh, { persistent: true });
     const makePole = (): PoleState => {
       const mesh = buildPole();
       mesh.visible = false;
@@ -84,6 +88,9 @@ export class PoleSystem extends createSystem({}) {
     this.poles = { left: makePole(), right: makePole() };
 
     this.cleanupFuncs.push(
+      // A fresh mountain (or a restart) starts with untrodden snow.
+      game.resetCount.subscribe(() => this.marks.clear()),
+      level.subscribe(() => this.marks.clear()),
       game.phase.subscribe((phase) => {
         if (phase !== Phase.Poling) {
           for (const pole of Object.values(this.poles)) {
@@ -169,6 +176,7 @@ export class PoleSystem extends createSystem({}) {
       pole.handVel.set(0, 0, 0);
       audio.crunch(hand.isHand ? 1 : 0.8);
       sceneRefs.puffs?.emit(pole.anchor, 7);
+      this.marks.add(pole.anchor.x, pole.anchor.z, groundHeight);
       this.pulse(hand.handedness);
     } else if (pole.planted) {
       const lifted = this.tip.y > ground + UNPLANT_HEIGHT;
@@ -263,6 +271,7 @@ export class PoleSystem extends createSystem({}) {
       pole.planted = speed > 0.5 && Math.cos(phase) > 0.92;
       if (pole.planted && !wasPlanted) {
         audio.crunch(0.6);
+        this.marks.add(this.tip.x, this.tip.z, groundHeight);
         sceneRefs.puffs?.emit(this.tip.setY(this.tip.y + 0.1), 5, 0.7);
       }
     }
