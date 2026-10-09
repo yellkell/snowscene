@@ -37,6 +37,8 @@ import {
   SpriteMaterial,
   TorusGeometry,
   Vector3,
+  Points,
+  ShaderMaterial,
 } from '@iwsdk/core';
 import { buildGlider, type GliderPartId } from '../glider-model.js';
 import { GeometryBuilder, placed, segmentMatrix } from '../mesh-utils.js';
@@ -154,6 +156,8 @@ export interface CaveVisuals {
   shell: MeshStandardMaterial;
   /** The column of daylight from the chimney. */
   shaft: Mesh;
+  /** Ice glitter drifting in the light (its uTime runs from the system). */
+  glitter: Points;
 }
 
 // ------------------------------------------------------------- textures ---
@@ -471,6 +475,69 @@ function buildIce(): Group {
   sky.name = 'ChimneySky';
   group.add(sky);
   return group;
+}
+
+/**
+ * Ice glitter drifting through the cave, thickest in the column of daylight
+ * from the chimney: one draw of soft additive points, moved in the shader.
+ */
+function buildGlitter(): Points {
+  const count = 420;
+  const rand = mulberry32(5150);
+  const top = shellFrame(SHELL_TOP);
+  const positions = new Float32Array(count * 3);
+  const seeds = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    const y = FLOOR_Y + 1 + rand() * (SHELL_TOP - FLOOR_Y - 2);
+    const f = shellFrame(y);
+    // Two thirds in the light shaft, the rest anywhere in the cave.
+    const inShaft = rand() < 0.66;
+    const a = rand() * Math.PI * 2;
+    const r = inShaft ? Math.sqrt(rand()) * (3 + (SHELL_TOP - y) * 0.12) : Math.sqrt(rand()) * 0.8;
+    positions[i * 3] = inShaft ? top.cx + Math.cos(a) * r : f.cx + Math.cos(a) * f.rx * r;
+    positions[i * 3 + 1] = y;
+    positions[i * 3 + 2] = inShaft ? top.cz + Math.sin(a) * r : f.cz + Math.sin(a) * f.rz * r;
+    seeds[i] = rand();
+  }
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new BufferAttribute(positions, 3));
+  geometry.setAttribute('aSeed', new BufferAttribute(seeds, 1));
+  const material = new ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: /* glsl */ `
+      uniform float uTime;
+      attribute float aSeed;
+      varying float vTwinkle;
+      void main() {
+        vec3 p = position;
+        // Slow fall and a lazy drift, wrapped so the cloud never empties.
+        p.y -= mod(uTime * (0.05 + aSeed * 0.08) + aSeed * 30.0, 30.0) - 15.0;
+        p.x += sin(uTime * 0.21 + aSeed * 40.0) * 0.6;
+        p.z += cos(uTime * 0.17 + aSeed * 23.0) * 0.6;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = clamp(26.0 / max(-mv.z, 0.5), 1.0, 6.0);
+        vTwinkle = 0.35 + 0.65 * pow(0.5 + 0.5 * sin(uTime * (1.5 + aSeed * 3.0) + aSeed * 60.0), 6.0);
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      varying float vTwinkle;
+      void main() {
+        float d = length(gl_PointCoord - 0.5);
+        float a = smoothstep(0.5, 0.0, d) * vTwinkle;
+        if (a < 0.02) discard;
+        gl_FragColor = vec4(vec3(0.75, 0.9, 1.0) * a, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: AdditiveBlending,
+    fog: false,
+  });
+  const points = new Points(geometry, material);
+  points.name = 'IceGlitter';
+  points.frustumCulled = false;
+  return points;
 }
 
 function buildShaft(): Mesh {
@@ -1014,6 +1081,8 @@ export function buildCave(): CaveVisuals {
   root.add(shellMesh);
   root.add(buildIce());
   const shaft = buildShaft();
+  const glitter = buildGlitter();
+  root.add(glitter);
   root.add(shaft);
 
   const gaps = gapEdges();
@@ -1167,7 +1236,9 @@ export function buildCave(): CaveVisuals {
 
   // One cheap fill light; lanterns, lamps, crystals and the beacon glow are
   // emissive, so no light costs a pixel more than this (Quest budget).
-  const hemi = new HemisphereLight(0x9cc0ee, 0x4a3420, 1.7);
+  // Pale ice-blue from above, deep teal from the pool below: the walls read
+  // as ice from every side (a brown ground colour made the chimney muddy).
+  const hemi = new HemisphereLight(0xb4dcff, 0x183a52, 1.7);
   hemi.position.set(0, 20, -9);
   const lights: Object3D[] = [hemi];
   for (const light of lights) {
@@ -1195,6 +1266,7 @@ export function buildCave(): CaveVisuals {
     lights,
     shell: shellMesh.material as MeshStandardMaterial,
     shaft,
+    glitter,
   };
 }
 

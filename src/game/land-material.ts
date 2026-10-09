@@ -41,6 +41,8 @@ export interface LandMaterialOptions {
 export const landUniforms = {
   uSunDir: { value: new Vector3(0, 1, 0) },
   uSparkle: { value: 3.0 },
+  /** Grazing-angle sheen on snow (weather and night turn it down). */
+  uLandSheen: { value: 0.1 },
   /** Warm light pool from a bonfire: xyz = position, w = strength (0 = off). */
   uFireGlow: { value: new Vector4(0, 0, 0, 0) },
   // Expedition cloud-deck mist band: land fades into the deck within
@@ -123,6 +125,7 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
     shader.uniforms.uLandNoise = { value: tex.noise };
     shader.uniforms.uSunDir = landUniforms.uSunDir;
     shader.uniforms.uSparkle = landUniforms.uSparkle;
+    shader.uniforms.uLandSheen = landUniforms.uLandSheen;
     shader.uniforms.uFireGlow = landUniforms.uFireGlow;
 
     shader.vertexShader = shader.vertexShader
@@ -161,6 +164,7 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
         uniform sampler2D uLandNoise;
         uniform vec3 uSunDir;
         uniform float uSparkle;
+        uniform float uLandSheen;
         uniform vec4 uFireGlow;`,
       )
       .replace(
@@ -187,8 +191,11 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
           landRockCol *= 0.75 + 0.5 * landNoise.g;
         }
         // Fresh snow: bright, faintly blue in the large-scale hollows.
-        vec3 landSnow = mix(vec3(0.86, 0.9, 0.97), vec3(0.95, 0.96, 0.98), landNoise.b);
-        diffuseColor.rgb *= mix(landSnow, landRockCol, landRock);`,
+        vec3 landSnow = mix(vec3(0.8, 0.86, 0.95), vec3(0.9, 0.93, 0.97), landNoise.b);
+        diffuseColor.rgb *= mix(landSnow, landRockCol, landRock);
+        // Snow turned away from the sun is lit by the blue sky: cool it.
+        float landSunFace = clamp(dot(landNW, uSunDir) * 1.4 + 0.15, 0.0, 1.0);
+        diffuseColor.rgb *= mix(vec3(0.8, 0.88, 1.0), vec3(1.0), max(landSunFace, landRock * 0.7));`,
       )
       .replace(
         '#include <roughnessmap_fragment>',
@@ -212,6 +219,13 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
         #endif
         #ifndef LAND_FAR
         ${FIRE_GLOW_GLSL}
+        {
+          // A soft sheen where the snow turns away at a grazing angle: the
+          // slopes and drifts keep their shape even in flat light.
+          vec3 landV = normalize(cameraPosition - vLandWorld);
+          float landRim = pow(1.0 - clamp(dot(landNW, landV), 0.0, 1.0), 4.0);
+          totalEmissiveRadiance += vec3(0.78, 0.86, 1.0) * landRim * uLandSheen * (1.0 - landRock);
+        }
         #endif`,
       )
       .replace(
@@ -234,7 +248,7 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
           if (landRock < 0.99) {
             vec2 sa = texture2D(uSnowNormal, vLandWorld.xz * LAND_SNOW_SCALE).xy * 2.0 - 1.0;
             vec2 sb = texture2D(uSnowNormal, vLandWorld.xz * LAND_SNOW_SCALE * 0.13 + 0.37).xy * 2.0 - 1.0;
-            snowN = normalize(landNW + vec3(sa.x * 0.25 + sb.x * 0.4, 0.0, sa.y * 0.25 + sb.y * 0.4));
+            snowN = normalize(landNW + vec3(sa.x * 0.32 + sb.x * 0.5, 0.0, sa.y * 0.32 + sb.y * 0.5));
           }
           vec3 rockN = landNW;
           if (landRock > 0.01) {

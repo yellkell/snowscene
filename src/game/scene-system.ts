@@ -88,7 +88,8 @@ export class SceneSetupSystem extends createSystem({}) {
   init(): void {
     const { renderer, scene } = this.world;
     renderer.toneMapping = ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 0.62;
+    // A touch under the old 0.62: sunlit snow keeps its shape instead of clipping to white.
+    renderer.toneMappingExposure = 0.56;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = PCFShadowMap;
     // Shadows are refreshed only when the frustum moves (see update).

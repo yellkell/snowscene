@@ -20,7 +20,7 @@
  * one square onto it.
  */
 
-import { Box3, Color, createSystem, Matrix4, Vector3 } from '@iwsdk/core';
+import { Box3, Color, createSystem, Matrix4, type ShaderMaterial, Vector3 } from '@iwsdk/core';
 import { audio } from '../audio.js';
 import { addToPack, PART_ITEM } from '../equipment.js';
 import { Bonfire, fires } from '../campfire.js';
@@ -680,5 +680,6 @@ export class CaveSystem extends createSystem({}) {
 
     const shaft = v.shaft.material as { opacity: number };
     shaft.opacity = 0.07 + 0.02 * Math.sin(time * 0.6);
+    (v.glitter.material as ShaderMaterial).uniforms.uTime.value = time;
   }
 }

@@ -163,6 +163,12 @@ function canGrow(x: number, z: number): boolean {
   return true;
 }
 
+/** Wind for the forest crowns (time in seconds, strength 0..1+). */
+export const forestUniforms = {
+  uTime: { value: 0 },
+  uWind: { value: 0.5 },
+};
+
 /** Forest chunk size (m). */
 const FOREST_CELL = 100;
 
@@ -196,18 +202,37 @@ export function buildForest(count = 520): Group {
   }
 
   const branchTexture = buildBranchTexture();
-  const foliage = new InstancedMesh(
-    buildFoliageGeometry(),
-    new MeshStandardMaterial({
-      map: branchTexture,
-      alphaTest: 0.38,
-      alphaToCoverage: true,
-      side: DoubleSide,
-      roughness: 0.92,
-      metalness: 0,
-    }),
-    matrices.length,
-  );
+  const foliageMaterial = new MeshStandardMaterial({
+    map: branchTexture,
+    alphaTest: 0.38,
+    alphaToCoverage: true,
+    side: DoubleSide,
+    roughness: 0.92,
+    metalness: 0,
+  });
+  // Wind: the crowns sway, more toward the top, each tree on its own phase.
+  foliageMaterial.onBeforeCompile = (shader) => {
+    shader.uniforms.uForestTime = forestUniforms.uTime;
+    shader.uniforms.uForestWind = forestUniforms.uWind;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float uForestTime;\nuniform float uForestWind;')
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        {
+          float swayPhase = 0.0;
+          #ifdef USE_INSTANCING
+            swayPhase = dot(instanceMatrix[3].xz, vec2(0.13, 0.17));
+          #endif
+          float h = max(position.y, 0.0);
+          float bend = h * h * uForestWind;
+          transformed.x += sin(uForestTime * 1.3 + swayPhase) * 0.02 * bend + sin(uForestTime * 3.1 + swayPhase * 2.0) * 0.006 * bend;
+          transformed.z += cos(uForestTime * 1.1 + swayPhase * 1.7) * 0.014 * bend;
+        }`,
+      );
+  };
+  foliageMaterial.customProgramCacheKey = () => 'forest-sway';
+  const foliage = new InstancedMesh(buildFoliageGeometry(), foliageMaterial, matrices.length);
   const trunk = new InstancedMesh(
     buildTrunkGeometry(),
     new MeshStandardMaterial({ map: buildBarkTexture(), roughness: 0.95 }),

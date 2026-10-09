@@ -160,9 +160,11 @@ export class ExpeditionSkySystem extends createSystem({}) {
       sunLight.shadow.intensity = 1 - 0.4 * under - 0.4 * whiteout;
     }
     landUniforms.uSunDir.value.copy(this.light);
+    // The snow's grazing sheen fades with the light (a faint moonlit edge at night).
+    landUniforms.uLandSheen.value = 0.03 + 0.07 * pal.daylight;
     landUniforms.uSparkle.value =
       3 * (1 - smooth(0.15, 0.6, storm)) * Math.min(1, lightI / 1.2) * (1 - 0.7 * under);
-    headlamp.gain = Math.max(0.3, Math.min(1, 0.62 / pal.exposure));
+    headlamp.gain = Math.max(0.3, Math.min(1, 0.56 / pal.exposure));
 
     // --- sky dome
     setSunDirection(this.sun);
@@ -329,6 +331,7 @@ export class ExpeditionSkySystem extends createSystem({}) {
     weatherHooks.stormFog = null;
     weatherHooks.snowTint = null;
     landUniforms.uDeckMistStrength.value = 0;
+    landUniforms.uLandSheen.value = 0.1;
     skyUniforms.uSkyGain.value = 1;
     skyUniforms.uNightZenith.value.setRGB(0, 0, 0);
     skyUniforms.uNightHorizon.value.setRGB(0, 0, 0);

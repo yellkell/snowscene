@@ -23,6 +23,7 @@ import {
 import { audio } from './audio.js';
 import { landUniforms } from './land-material.js';
 import { fogCullables } from './fog-cull.js';
+import { forestUniforms } from './trees.js';
 import { currentLevel, type FogRange } from './level.js';
 import { getHeadWorld } from './rig.js';
 import { sceneRefs } from './scene-system.js';
@@ -31,7 +32,9 @@ import { game } from './state.js';
 import { mulberry32, RANGES_INNER_RADIUS, smoothstep, TUTORIAL_CENTER_X, TUTORIAL_CENTER_Z, valueNoise } from './terrain.js';
 import { FOG_COLOR } from './world-builders.js';
 
-const STORM_FOG = new Color(0.7, 0.72, 0.77);
+// Cool blue-grey rather than white: distance reads as depth, not whiteout.
+const STORM_FOG = new Color(0.62, 0.67, 0.76);
+const CAVE_FOG = new Color(0.035, 0.09, 0.16);
 const SUN_BASE = 3.2;
 
 /**
@@ -195,6 +198,8 @@ export class WeatherSystem extends createSystem({}) {
     const gust = 0.5 + 0.5 * valueNoise(time * 0.35, 3.1);
     const windYaw = 0.6 + valueNoise(time * 0.04, 9.7) * 1.3;
     const windSpeed = 0.6 + storm * (3.5 + 8.5 * gust * gust);
+    forestUniforms.uTime.value = time;
+    forestUniforms.uWind.value = 0.35 + windSpeed * 0.12;
     const wx = Math.cos(windYaw) * windSpeed;
     const wz = Math.sin(windYaw) * windSpeed;
 
@@ -240,6 +245,13 @@ export class WeatherSystem extends createSystem({}) {
       near = this.fogRange.near;
       far = this.fogRange.far;
     }
+    // Inside the ice cave: a deep blue haze of its own.
+    if (game.indoors > 0) {
+      const k = game.indoors;
+      this.fogColor.lerp(CAVE_FOG, k);
+      near += (4 - near) * k;
+      far += (48 - far) * k;
+    }
     // Scenery wholly inside the fog costs triangles for nothing: skip it.
     for (const item of fogCullables) {
       const d = item.center.distanceTo(this.head) - item.radius;
@@ -269,7 +281,8 @@ export class WeatherSystem extends createSystem({}) {
       const env = stormLighting ? sceneRefs.stormEnvironment : sceneRefs.clearEnvironment;
       if (env) this.scene.environment = env;
     }
-    this.scene.environmentIntensity = (stormLighting ? 1.25 : 1 + storm * 0.3) * (1 - 0.7 * game.indoors);
+    // Indoors the (warm, outdoor) sky light all but goes: the cave's own icy fill takes over.
+    this.scene.environmentIntensity = (stormLighting ? 1.25 : 1 + storm * 0.3) * (1 - 0.94 * game.indoors);
     const sun = sceneRefs.sunLight;
     if (sun) sun.intensity = SUN_BASE * (1 - 0.8 * smoothstep(0.1, 0.8, storm));
     landUniforms.uSparkle.value = 3 * (1 - smoothstep(0.15, 0.6, storm));

@@ -318,17 +318,17 @@ const SUN_INTENSITY: ReadonlyArray<readonly [number, number]> = [
   [12, 3.3],
   [60, 3.1],
 ];
-/** Tone mapping exposure: the tutorial's 0.62 at a low sun, opened up at night. */
+/** Tone mapping exposure: the tutorial's 0.56 at a low sun, opened up at night. */
 const EXPOSURE: ReadonlyArray<readonly [number, number]> = [
   [-16, 1.75],
   [-10, 1.6],
   [-5, 1.3],
-  [-2, 1.05],
-  [1, 0.8],
-  [3.7, 0.62],
-  [12, 0.6],
-  [30, 0.57],
-  [60, 0.55],
+  [-2, 1.02],
+  [1, 0.74],
+  [3.7, 0.56],
+  [12, 0.54],
+  [30, 0.52],
+  [60, 0.5],
 ];
 /** Overcast sky colour (sky uStormColor), scene-linear. */
 const STORM_SKY: Table = [
@@ -420,7 +420,7 @@ export function createPalette(): SkyPalette {
     lightDir: { x: 0, y: 1, z: 0 },
     lightColor: rgb(1, 1, 1),
     lightIntensity: 3.2,
-    exposure: 0.62,
+    exposure: 0.56,
     envBoost: 1,
     skySun: { x: 0, y: 1, z: 0 },
     skyGain: 1,
@@ -445,8 +445,8 @@ const MOON_LIGHT = 0.3;
 /** Clear-sky fog is pulled this far toward the measured horizon (rest: tutorial look). */
 const FOG_FROM_SKY = 0.5;
 /** The tutorial's fog colours, display space. */
-const TUTORIAL_FOG = rgb(0.55, 0.6, 0.72);
-const TUTORIAL_STORM_FOG = rgb(0.7, 0.72, 0.77);
+const TUTORIAL_FOG = rgb(0.5, 0.58, 0.74);
+const TUTORIAL_STORM_FOG = rgb(0.62, 0.67, 0.76);
 /** The tutorial's IBL ground colour (sky.ts bakeSkyEnvironment). */
 const TUTORIAL_GROUND = rgb(0.55, 0.6, 0.7);
 /** Calibrated so the expedition at the tutorial's sun height matches its fog. */
