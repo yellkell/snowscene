@@ -6,12 +6,16 @@
  * all of them).
  */
 
-import { Group, InstancedBufferAttribute, InstancedMesh, type Object3D, Vector3 } from '@iwsdk/core';
+import { type BufferGeometry, Group, InstancedBufferAttribute, InstancedMesh, type Material, type Object3D, Vector3 } from '@iwsdk/core';
 
 export interface FogCullable {
   object: Object3D;
   center: Vector3;
   radius: number;
+  /** Also hide it beyond this distance, fog or not. */
+  maxDistance?: number;
+  /** Swap `near` for the cheap `far` stand-in beyond `distance`. */
+  lod?: { near: Object3D[]; far: Object3D; distance: number };
 }
 
 /** Everything the weather may hide when the fog closes in. */
@@ -22,7 +26,13 @@ export const fogCullables: FogCullable[] = [];
  * trunk, foliage and shadow caster) into chunks of `cell` metres. Returns a
  * group of chunk groups; each chunk is registered for fog culling.
  */
-export function chunkInstanced(meshes: InstancedMesh[], cell: number, name: string): Group {
+export function chunkInstanced(
+  meshes: InstancedMesh[],
+  cell: number,
+  name: string,
+  /** Optional cheap stand-in for distant chunks (shares the instance transforms). */
+  lod?: { geometry: BufferGeometry; material: Material; distance: number; hides: number[] },
+): Group {
   const first = meshes[0];
   const cells = new Map<string, number[]>();
   const src = first.instanceMatrix.array;
@@ -56,9 +66,25 @@ export function chunkInstanced(meshes: InstancedMesh[], cell: number, name: stri
       part.computeBoundingSphere();
       chunk.add(part);
     }
+    let lodEntry: FogCullable['lod'];
+    if (lod) {
+      const source = meshes[0];
+      const far = new InstancedMesh(lod.geometry, lod.material, list.length);
+      far.name = `${name}-far-${key}`;
+      list.forEach((index, j) => {
+        for (let e = 0; e < 16; e++) far.instanceMatrix.array[j * 16 + e] = source.instanceMatrix.array[index * 16 + e];
+      });
+      const tint = (chunk.children[0] as InstancedMesh).instanceColor;
+      if (tint) far.instanceColor = tint;
+      far.instanceMatrix.needsUpdate = true;
+      far.computeBoundingSphere();
+      far.visible = false;
+      chunk.add(far);
+      lodEntry = { near: lod.hides.map((k) => chunk.children[k]), far, distance: lod.distance };
+    }
     root.add(chunk);
     const sphere = (chunk.children[0] as InstancedMesh).boundingSphere;
-    if (sphere) fogCullables.push({ object: chunk, center: sphere.center.clone(), radius: sphere.radius });
+    if (sphere) fogCullables.push({ object: chunk, center: sphere.center.clone(), radius: sphere.radius, lod: lodEntry });
   }
   return root;
 }

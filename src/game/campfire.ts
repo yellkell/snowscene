@@ -11,6 +11,7 @@
  */
 
 import {
+  Euler,
   AdditiveBlending,
   BufferAttribute,
   BufferGeometry,
@@ -45,7 +46,7 @@ import { getHeadWorld } from './rig.js';
 import { sceneRefs } from './scene-system.js';
 import { game, PART_COUNT, Phase } from './state.js';
 import { LAKE_CENTER_X, LAKE_CENTER_Z, LAKE_Y } from './terrain.js';
-import { segmentMatrix } from './mesh-utils.js';
+import { GeometryBuilder, placed, segmentMatrix } from './mesh-utils.js';
 import { buildBarkTexture } from './textures.js';
 
 /** Base of the bonfire, on the lake ice. */
@@ -224,64 +225,61 @@ export interface BonfireOptions {
 function buildLogStack(scale: number): Group {
   const fire = new Group();
   fire.name = 'Bonfire';
-  const bark = new MeshStandardMaterial({ map: buildBarkTexture(), roughness: 0.9 });
-  const charred = new MeshStandardMaterial({ color: 0x1c1410, roughness: 1 });
-  const stone = new MeshStandardMaterial({ color: 0x5a5856, roughness: 0.95 });
+  // Logs and stones in one draw (vertex-coloured; the flames hide the bark).
+  const bark = new Color(0.36, 0.25, 0.16);
+  const charred = new Color(0.07, 0.05, 0.04);
+  const stone = new Color(0.36, 0.35, 0.34);
+  const b = new GeometryBuilder();
   // A teepee of logs over a charred core.
   const logs = scale > 0.6 ? 10 : 7;
+  const m = new Matrix4();
   for (let i = 0; i < logs; i++) {
     const a = (i / logs) * Math.PI * 2;
-    const log = new Mesh(
-      new CylinderGeometry(0.2 * scale + 0.03, 0.28 * scale + 0.04, 4.6 * scale, 8),
-      i % 2 ? bark : charred,
-    );
-    log.position.set(Math.cos(a) * 1.1 * scale, 1.8 * scale, Math.sin(a) * 1.1 * scale);
     // lean the tops in toward the centre
-    log.rotation.set(-Math.sin(a) * 0.45, 0, Math.cos(a) * 0.45);
-    log.castShadow = true;
-    fire.add(log);
+    m.makeRotationFromEuler(new Euler(-Math.sin(a) * 0.45, 0, Math.cos(a) * 0.45)).setPosition(Math.cos(a) * 1.1 * scale, 1.8 * scale, Math.sin(a) * 1.1 * scale);
+    b.add(new CylinderGeometry(0.2 * scale + 0.03, 0.28 * scale + 0.04, 4.6 * scale, 8), m, i % 2 ? bark : charred);
   }
   // Ring of stones.
   const stones = Math.round(14 + 12 * scale);
   for (let i = 0; i < stones; i++) {
     const a = (i / stones) * Math.PI * 2;
-    const rock = new Mesh(new IcosahedronGeometry(0.2 + 0.18 * scale, 1), stone);
-    rock.position.set(Math.cos(a) * 3.6 * scale, 0.12, Math.sin(a) * 3.6 * scale);
-    rock.scale.set(1.2, 0.7, 1);
-    rock.rotation.y = a * 3;
-    fire.add(rock);
+    m.makeRotationY(a * 3).scale(new Vector3(1.2, 0.7, 1)).setPosition(Math.cos(a) * 3.6 * scale, 0.12, Math.sin(a) * 3.6 * scale);
+    b.add(new IcosahedronGeometry(0.2 + 0.18 * scale, 1), m, stone);
   }
+  const mesh = new Mesh(b.build(), new MeshStandardMaterial({ vertexColors: true, roughness: 0.92 }));
+  mesh.castShadow = true;
+  fire.add(mesh);
   return fire;
 }
 
 function buildCampEdge(approachYaw: number): Group {
   const camp = new Group();
   camp.name = 'Camp';
-  const bark = new MeshStandardMaterial({ map: buildBarkTexture(), roughness: 0.9 });
-  // Log benches in a wide ring.
+  const m = new Matrix4();
+  // Log benches in a wide ring (one draw).
+  const benches = new GeometryBuilder();
+  const bark = new Color(0.36, 0.25, 0.16);
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2 + 0.2;
-    const bench = new Mesh(new CylinderGeometry(0.24, 0.24, 2.8, 10), bark);
-    bench.position.set(Math.cos(a) * 10, 0.24, Math.sin(a) * 10);
-    bench.rotation.set(0, -a, Math.PI / 2);
-    bench.castShadow = true;
-    bench.receiveShadow = true;
-    camp.add(bench);
+    m.makeRotationFromEuler(new Euler(0, -a, Math.PI / 2)).setPosition(Math.cos(a) * 10, 0.24, Math.sin(a) * 10);
+    benches.add(new CylinderGeometry(0.24, 0.24, 2.8, 10), m, bark);
   }
-  // Expedition tents around the edge (leaving the approach side open).
+  const benchMesh = new Mesh(benches.build(), new MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }));
+  benchMesh.castShadow = true;
+  benchMesh.receiveShadow = true;
+  camp.add(benchMesh);
+  // Expedition tents around the edge, leaving the approach side open (one draw).
   const fabrics = [0xd8452b, 0xe8b13a, 0x2f6fb5, 0x3f9a5a, 0xb53f8f];
+  const tents = new GeometryBuilder();
   for (let i = 0; i < 5; i++) {
     const a = approachYaw + 0.9 + (i / 4) * (Math.PI * 2 - 1.8);
-    const tent = new Mesh(
-      new ConeGeometry(1.7, 2.3, 4, 1),
-      new MeshStandardMaterial({ color: fabrics[i], roughness: 0.75, side: DoubleSide }),
-    );
-    tent.position.set(Math.cos(a) * PARTY_RADIUS, 1.15, Math.sin(a) * PARTY_RADIUS);
-    tent.rotation.y = a + Math.PI / 4;
-    tent.castShadow = true;
-    tent.receiveShadow = true;
-    camp.add(tent);
+    m.makeRotationY(a + Math.PI / 4).setPosition(Math.cos(a) * PARTY_RADIUS, 1.15, Math.sin(a) * PARTY_RADIUS);
+    tents.add(new ConeGeometry(1.7, 2.3, 4, 1), m, new Color(fabrics[i]));
   }
+  const tentMesh = new Mesh(tents.build(), new MeshStandardMaterial({ vertexColors: true, roughness: 0.75, side: DoubleSide }));
+  tentMesh.castShadow = true;
+  tentMesh.receiveShadow = true;
+  camp.add(tentMesh);
   return camp;
 }
 
@@ -289,8 +287,6 @@ function buildCampEdge(approachYaw: number): Group {
 function buildFestoonLights(): Group {
   const group = new Group();
   group.name = 'FestoonLights';
-  const poleMat = new MeshStandardMaterial({ color: 0x3a2a1c, roughness: 0.9 });
-  const wireMat = new MeshStandardMaterial({ color: 0x111111, roughness: 0.8 });
   const poles = 10;
   const radius = 12.5;
   const height = 4.2;
@@ -312,12 +308,13 @@ function buildFestoonLights(): Group {
   const b = new Vector3();
   const p = new Vector3();
   let k = 0;
+  // Poles and wires in one draw.
+  const frame = new GeometryBuilder();
+  const poleColor = new Color(0x3a2a1c);
+  const wireColor = new Color(0x111111);
   for (let i = 0; i < poles; i++) {
     const ang = (i / poles) * Math.PI * 2;
-    const pole = new Mesh(new CylinderGeometry(0.06, 0.08, height, 6), poleMat);
-    pole.position.set(Math.cos(ang) * radius, height / 2, Math.sin(ang) * radius);
-    pole.castShadow = true;
-    group.add(pole);
+    frame.add(new CylinderGeometry(0.06, 0.08, height, 6), placed(Math.cos(ang) * radius, height / 2, Math.sin(ang) * radius), poleColor);
     const next = ((i + 1) / poles) * Math.PI * 2;
     a.set(Math.cos(ang) * radius, height - 0.1, Math.sin(ang) * radius);
     b.set(Math.cos(next) * radius, height - 0.1, Math.sin(next) * radius);
@@ -336,12 +333,12 @@ function buildFestoonLights(): Group {
       }
     }
     for (let j = 0; j < wirePts.length - 1; j++) {
-      const seg = new Mesh(new CylinderGeometry(0.012, 0.012, 1, 4), wireMat);
-      seg.matrixAutoUpdate = false;
-      seg.matrix.copy(segmentMatrix(wirePts[j], wirePts[j + 1]));
-      group.add(seg);
+      frame.add(new CylinderGeometry(0.012, 0.012, 1, 4), segmentMatrix(wirePts[j], wirePts[j + 1]), wireColor);
     }
   }
+  const frameMesh = new Mesh(frame.build(), new MeshStandardMaterial({ vertexColors: true, roughness: 0.85 }));
+  frameMesh.castShadow = true;
+  group.add(frameMesh);
   bulbs.instanceMatrix.needsUpdate = true;
   if (bulbs.instanceColor) bulbs.instanceColor.needsUpdate = true;
   group.add(bulbs);
@@ -361,19 +358,13 @@ interface Dancer {
 function buildDancer(jacket: number, hat: number, skin: number): { root: Group; arms: Mesh[] } {
   const root = new Group();
   const jacketMat = new MeshStandardMaterial({ color: jacket, roughness: 0.8 });
-  const trousers = new MeshStandardMaterial({ color: 0x23262d, roughness: 0.9 });
-  const skinMat = new MeshStandardMaterial({ color: skin, roughness: 0.7 });
-  const hatMat = new MeshStandardMaterial({ color: hat, roughness: 0.9 });
-  const legs = new Mesh(new CapsuleGeometry(0.16, 0.6, 4, 8), trousers);
-  legs.position.y = 0.46;
-  legs.scale.set(1.15, 1, 0.9);
-  const body = new Mesh(new CapsuleGeometry(0.24, 0.5, 4, 10), jacketMat);
-  body.position.y = 1.2;
-  const head = new Mesh(new IcosahedronGeometry(0.13, 2), skinMat);
-  head.position.y = 1.72;
-  const beanie = new Mesh(new IcosahedronGeometry(0.135, 2), hatMat);
-  beanie.position.y = 1.78;
-  beanie.scale.set(1, 0.75, 1);
+  // Legs, body, head and beanie in one draw; only the arms move on their own.
+  const fig = new GeometryBuilder();
+  fig.add(new CapsuleGeometry(0.16, 0.6, 4, 8), new Matrix4().makeScale(1.15, 1, 0.9).setPosition(0, 0.46, 0), new Color(0x23262d));
+  fig.add(new CapsuleGeometry(0.24, 0.5, 4, 10), placed(0, 1.2, 0), new Color(jacket));
+  fig.add(new IcosahedronGeometry(0.13, 2), placed(0, 1.72, 0), new Color(skin));
+  fig.add(new IcosahedronGeometry(0.135, 2), new Matrix4().makeScale(1, 0.75, 1).setPosition(0, 1.78, 0), new Color(hat));
+  const figure = new Mesh(fig.build(), new MeshStandardMaterial({ vertexColors: true, roughness: 0.8 }));
   const arms: Mesh[] = [];
   for (const side of [-1, 1]) {
     const arm = new Mesh(new CapsuleGeometry(0.07, 0.5, 4, 6), jacketMat);
@@ -382,10 +373,8 @@ function buildDancer(jacket: number, hat: number, skin: number): { root: Group; 
     arms.push(arm);
     root.add(arm);
   }
-  for (const part of [legs, body, head, beanie]) {
-    part.castShadow = true;
-    root.add(part);
-  }
+  figure.castShadow = true;
+  root.add(figure);
   return { root, arms };
 }
 

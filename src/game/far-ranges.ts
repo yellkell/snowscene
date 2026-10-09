@@ -93,8 +93,9 @@ export function farHeight(x: number, z: number): number {
 }
 
 export function buildFarRanges(): Mesh {
-  const rings = 170;
-  const segments = 480;
+  // ~86k triangles: at 2-8 km a segment is still only a few dozen metres.
+  const rings = 120;
+  const segments = 360;
   // Row 0 is a skirt just inside the inner ring that drops far below the
   // clouds, so no gap shows between the playable terrain and the ranges.
   const rows = rings + 2;

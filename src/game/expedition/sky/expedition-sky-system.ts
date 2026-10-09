@@ -197,6 +197,7 @@ export class ExpeditionSkySystem extends createSystem({}) {
     cloudSeaUniforms.uHazeColor.value.copy(this.hazePre);
     if (fog) {
       fog.color.copy(this.clearFog).lerp(this.stormFog, storm).lerp(this.whiteFog, whiteout);
+      skyUniforms.uFogColor.value.copy(fog.color);
       // The faintest green cast in the air under a strong aurora.
       fog.color.g += 0.014 * this.aurora;
       fog.color.b += 0.004 * this.aurora;

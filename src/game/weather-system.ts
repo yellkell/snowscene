@@ -255,7 +255,12 @@ export class WeatherSystem extends createSystem({}) {
     // Scenery wholly inside the fog costs triangles for nothing: skip it.
     for (const item of fogCullables) {
       const d = item.center.distanceTo(this.head) - item.radius;
-      item.object.visible = d < far + 10;
+      item.object.visible = d < Math.min(far + 10, item.maxDistance ?? Infinity);
+      if (item.lod && item.object.visible) {
+        const distant = d > item.lod.distance;
+        item.lod.far.visible = distant;
+        for (const o of item.lod.near) o.visible = !distant;
+      }
     }
     // Ranges lost in the fog likewise.
     const ranges = sceneRefs.farRanges;
@@ -263,6 +268,9 @@ export class WeatherSystem extends createSystem({}) {
       const toRanges = RANGES_INNER_RADIUS - Math.hypot(this.head.x - TUTORIAL_CENTER_X, this.head.z - TUTORIAL_CENTER_Z);
       ranges.visible = far > toRanges - 20 || game.indoors > 0;
     }
+    // Let the sky take the fog colour as visibility closes in.
+    skyUniforms.uFogColor.value.copy(this.fogColor);
+    skyUniforms.uFogBlend.value = Math.min(1, Math.max(0, (1600 - far) / 1400));
     if (fog) {
       fog.color.copy(this.fogColor);
       fog.near = near;

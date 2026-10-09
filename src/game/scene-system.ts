@@ -37,7 +37,7 @@ import { SnowPuffs } from './snow-puffs.js';
 import { game } from './state.js';
 import { LAKE_CENTER_Z } from './terrain.js';
 import { buildForest } from './trees.js';
-import { chunkInstanced } from './fog-cull.js';
+import { chunkInstanced, fogCullables } from './fog-cull.js';
 import {
   buildCabin,
   buildCliff,
@@ -170,6 +170,8 @@ export class SceneSetupSystem extends createSystem({}) {
         mesh.rotation.set(i * 0.7, i * 1.3, i * 0.4);
       }
       mesh.name = `ClimbHold${i}`;
+      // Thirty separate little draws: only worth it near the cliff.
+      fogCullables.push({ object: mesh, center: mesh.position.clone(), radius: 0.4, maxDistance: 60 });
       addTutorial(mesh).addComponent(ClimbHold, { lip: hold.lip, glow: 0 });
     });
 

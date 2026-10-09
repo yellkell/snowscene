@@ -169,8 +169,9 @@ export const forestUniforms = {
   uWind: { value: 0.5 },
 };
 
-/** Forest chunk size (m). */
+/** Forest chunk size (m), and where chunks switch to stand-in cones. */
 const FOREST_CELL = 100;
+const FOREST_LOD_DISTANCE = 140;
 
 export function buildForest(count = 520): Group {
   const rand = mulberry32(42);
@@ -265,5 +266,15 @@ export function buildForest(count = 520): Group {
   foliage.name = 'ForestFoliage';
   trunk.name = 'ForestTrunks';
   // In chunks, so the frustum and the fog can skip the trees you can't see.
-  return chunkInstanced([foliage, trunk, shadowCaster], FOREST_CELL, 'Forest');
+  // Beyond FOREST_LOD_DISTANCE a chunk's trees are plain dark cones (16
+  // triangles each instead of ~330 for the foliage cards and trunk).
+  const standIn = new ConeGeometry(0.3, 0.92, 8, 1);
+  standIn.translate(0, 0.54, 0);
+  const standInMaterial = new MeshStandardMaterial({ color: 0x2b4634, roughness: 0.95 });
+  return chunkInstanced([foliage, trunk, shadowCaster], FOREST_CELL, 'Forest', {
+    geometry: standIn,
+    material: standInMaterial,
+    distance: FOREST_LOD_DISTANCE,
+    hides: [0, 1],
+  });
 }

@@ -43,6 +43,11 @@ export const skyUniforms = {
   uNightZenith: { value: new Color(0, 0, 0) },
   uNightHorizon: { value: new Color(0, 0, 0) },
   uTwilightGlow: { value: new Color(0, 0, 0) },
+  // The fog the weather is laying down, and how much of the sky it swallows
+  // (0 in clear air .. 1 in thick fog), so fogged land melts into the sky
+  // instead of standing out as pale cut-outs against it.
+  uFogColor: { value: new Color(0.5, 0.58, 0.74) },
+  uFogBlend: { value: 0 },
 };
 
 const SKY_VERTEX = /* glsl */ `
@@ -101,6 +106,8 @@ uniform float uSkyGain;
 uniform vec3 uNightZenith;
 uniform vec3 uNightHorizon;
 uniform vec3 uTwilightGlow;
+uniform vec3 uFogColor;
+uniform float uFogBlend;
 const float pi = 3.141592653589793238462643383279502884197169;
 const float rayleighZenithLength = 8.4E3;
 const float mieZenithLength = 1.25E3;
@@ -143,6 +150,9 @@ void main() {
   float horizon = 1.0 - smoothstep(0.0, 0.5, direction.y);
   vec3 overcast = uStormColor * (0.75 + 0.35 * horizon);
   retColor = mix(retColor, overcast, uStorm);
+  // Thick fog fills the sky from the horizon up.
+  float fogLow = 1.0 - smoothstep(-0.05, 0.25 + 0.75 * uFogBlend, direction.y);
+  retColor = mix(retColor, uFogColor, uFogBlend * max(fogLow, uFogBlend * 0.85));
   gl_FragColor = vec4(retColor, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
