@@ -20,7 +20,8 @@ import {
   Vector3,
 } from '@iwsdk/core';
 
-export const ARM_PIVOT = new Vector3(0.3, 1.45, 0);
+/** The shoulder joint: inside the parka's shoulder, so a raised arm stays attached. */
+export const ARM_PIVOT = new Vector3(0.25, 1.34, 0);
 
 export interface FigureLook {
   jacket: Color;
@@ -60,7 +61,7 @@ export function figureLook(seed: number): FigureLook {
 }
 
 type Templates = Record<
-  'boot' | 'leg' | 'body' | 'hem' | 'placket' | 'scarf' | 'tail' | 'head' | 'eye' | 'nose' | 'cheek' | 'hat' | 'brim' | 'pom' | 'sleeve' | 'cuff' | 'mitt',
+  'boot' | 'leg' | 'body' | 'hem' | 'placket' | 'scarf' | 'tail' | 'head' | 'eye' | 'nose' | 'cheek' | 'hat' | 'brim' | 'pom' | 'shoulder' | 'sleeve' | 'cuff' | 'mitt',
   BufferGeometry
 >;
 let templates: Templates | null = null;
@@ -83,6 +84,7 @@ function shapes(): Templates {
     hat: new SphereGeometry(0.214, 12, 4, 0, Math.PI * 2, 0, Math.PI / 2),
     brim: ring(0.2, 0.055, 12),
     pom: new SphereGeometry(0.078, 7, 5),
+    shoulder: new SphereGeometry(0.105, 8, 6),
     sleeve: new CapsuleGeometry(0.082, 0.36, 2, 6),
     cuff: ring(0.078, 0.032, 8),
     mitt: new SphereGeometry(0.088, 7, 5),
@@ -129,6 +131,9 @@ export function figureParts(look: FigureLook): FigurePart[] {
   for (const side of [-1, 1]) {
     const limb = side < 0 ? 1 : 2;
     const x = side * ARM_PIVOT.x;
+    // A puffy shoulder centred on the joint: it turns in place, so the
+    // seam to the body stays hidden however high the arm goes.
+    add(S.shoulder, m(x, ARM_PIVOT.y, 0), look.jacket, limb);
     add(S.sleeve, m(x, ARM_PIVOT.y - 0.24, 0), look.jacket, limb);
     add(S.cuff, m(x, ARM_PIVOT.y - 0.47, 0), look.knit, limb);
     add(S.mitt, m(x, ARM_PIVOT.y - 0.56, 0.01, 1, 1.15, 0.9), look.knit, limb);
