@@ -12,9 +12,22 @@
     width: 300px;
   }
 
+  .header {
+    flex-direction: column;
+    background-color: #2f6fb5;
+    border-radius: 16px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+    padding-left: 16px;
+    padding-right: 16px;
+    margin-top: 12px;
+    margin-left: 12px;
+    margin-right: 12px;
+  }
+
   .panel-content {
     flex-direction: column;
-    padding-top: 18px;
+    padding-top: 6px;
     padding-left: 26px;
     padding-right: 26px;
     padding-bottom: 6px;
@@ -23,28 +36,30 @@
   .step-row {
     flex-direction: row;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
+    align-self: flex-start;
+    gap: 6px;
+    background-color: #ffd257;
+    border-radius: 10px;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    padding-left: 8px;
+    padding-right: 10px;
+    margin-bottom: 8px;
   }
 
   .step {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
     letter-spacing: 1px;
-    color: #3b6ea8;
+    color: #24324a;
   }
 
   .heading {
     font-size: 26px;
     font-weight: 700;
-    line-height: 1.2;
+    line-height: 1.15;
     letter-spacing: -0.5px;
-    color: #1f2a37;
-    margin-bottom: 10px;
-  }
-
-  .heading:dark {
-    color: rgba(255, 255, 255, 0.92);
+    color: #ffffff;
   }
 
   .body {
@@ -97,13 +112,14 @@
   }
 </style>
 <Panel class="panel-root">
-  <div class="panel-content">
+  <div class="header">
     <div class="step-row">
-      <Mountain width="14" height="14" color="#3b6ea8"></Mountain>
+      <Mountain width="13" height="13" color="#24324a"></Mountain>
       <span id="guide-step" class="step">STEP 1 OF 4</span>
     </div>
     <span id="guide-title" class="heading">Pole up the trail</span>
-    <Divider></Divider>
+  </div>
+  <div class="panel-content">
     <span id="guide-body" class="body">Fist to grip. Plant, then pull back.</span>
     <span id="guide-metric" class="metric" style="display: none">79 m to the summit</span>
     <span id="guide-hint" class="hint"></span>

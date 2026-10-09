@@ -39,6 +39,10 @@ import { game, Phase, setPhase } from './game/state.js';
 import { level } from './game/level.js';
 import { startTutorialKit } from './game/tutorial-kit.js';
 import { tutorialLevel } from './game/tutorial-level.js';
+import { installToonStyle } from './game/toon-style.js';
+
+// The stylised shading must be in place before any material compiles.
+installToonStyle();
 
 // The tutorial is the starting level; the expedition follows it.
 level.value = tutorialLevel;

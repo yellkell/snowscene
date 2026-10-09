@@ -36,7 +36,7 @@ export const skyUniforms = {
   mieCoefficient: { value: 0.004 },
   mieDirectionalG: { value: 0.82 },
   uStorm: { value: 0 },
-  uStormColor: { value: new Color(0.78, 0.81, 0.87) },
+  uStormColor: { value: new Color(0.74, 0.8, 0.9) },
   // Night / twilight hook for the expedition's day-night cycle. The defaults
   // (gain 1, black) leave the tutorial sky exactly as it was.
   uSkyGain: { value: 1 },
@@ -46,7 +46,7 @@ export const skyUniforms = {
   // The fog the weather is laying down, and how much of the sky it swallows
   // (0 in clear air .. 1 in thick fog), so fogged land melts into the sky
   // instead of standing out as pale cut-outs against it.
-  uFogColor: { value: new Color(0.5, 0.58, 0.74) },
+  uFogColor: { value: new Color(0.46, 0.58, 0.82) },
   uFogBlend: { value: 0 },
 };
 

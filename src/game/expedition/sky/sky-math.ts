@@ -445,8 +445,8 @@ const MOON_LIGHT = 0.3;
 /** Clear-sky fog is pulled this far toward the measured horizon (rest: tutorial look). */
 const FOG_FROM_SKY = 0.5;
 /** The tutorial's fog colours, display space. */
-const TUTORIAL_FOG = rgb(0.5, 0.58, 0.74);
-const TUTORIAL_STORM_FOG = rgb(0.62, 0.67, 0.76);
+const TUTORIAL_FOG = rgb(0.46, 0.58, 0.82);
+const TUTORIAL_STORM_FOG = rgb(0.6, 0.68, 0.84);
 /** The tutorial's IBL ground colour (sky.ts bakeSkyEnvironment). */
 const TUTORIAL_GROUND = rgb(0.55, 0.6, 0.7);
 /** Calibrated so the expedition at the tutorial's sun height matches its fog. */

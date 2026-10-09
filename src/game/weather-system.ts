@@ -33,7 +33,7 @@ import { mulberry32, RANGES_INNER_RADIUS, smoothstep, TUTORIAL_CENTER_X, TUTORIA
 import { FOG_COLOR } from './world-builders.js';
 
 // Cool blue-grey rather than white: distance reads as depth, not whiteout.
-const STORM_FOG = new Color(0.62, 0.67, 0.76);
+const STORM_FOG = new Color(0.6, 0.68, 0.84);
 const CAVE_FOG = new Color(0.035, 0.09, 0.16);
 const SUN_BASE = 3.2;
 

@@ -7,12 +7,8 @@
 
 import {
   BufferGeometry,
-  CapsuleGeometry,
-  Color,
-  CylinderGeometry,
   Float32BufferAttribute,
   IcosahedronGeometry,
-  Matrix4,
   Mesh,
   MeshStandardMaterial,
   Sphere,
@@ -21,13 +17,7 @@ import {
 import { Batch, type Fx } from './batch.js';
 import type { DancerSpec } from './layout-camps.js';
 import { worldUniforms } from './materials.js';
-
-const JACKETS = [0xd8452b, 0x2f6fb5, 0xe8b13a, 0x3f9a5a, 0xb53f8f, 0xf06a2a, 0x22a3a3].map((h) => new Color(h));
-const HATS = [0xf2f2f2, 0xc9302c, 0x1d3b6e, 0xe0b23a, 0x2e2e2e].map((h) => new Color(h));
-const SKINS = [0xf1c7a5, 0xd9a47a, 0xa86f4a, 0x7a4b2e, 0xe6b991].map((h) => new Color(h));
-const TROUSERS = new Color(0x23262d);
-const BOOTS = new Color(0x3a2418);
-const MITTS = new Color(0x1a1a1a);
+import { ARM_PIVOT, figureLook, figureParts } from '../../figure.js';
 
 let material: MeshStandardMaterial | null = null;
 
@@ -68,7 +58,7 @@ function dancerMaterial(): MeshStandardMaterial {
         '#include <begin_vertex>',
         `vec3 dP = position;
         if (aAnim.z > 0.5) {
-          vec3 piv = vec3(dSide * 0.3, 1.45, 0.0);
+          vec3 piv = vec3(dSide * ${ARM_PIVOT.x.toFixed(3)}, ${ARM_PIVOT.y.toFixed(3)}, 0.0);
           dP = piv + dArmM * (dP - piv);
         }
         vec3 transformed = dBody * dP + aRoot.xyz + vec3(0.0, dBob, 0.0);`,
@@ -79,33 +69,6 @@ function dancerMaterial(): MeshStandardMaterial {
   return m;
 }
 
-/** Body-part templates, built once and reused for every partygoer. */
-let parts: Record<string, BufferGeometry> | null = null;
-function partGeometries(): Record<string, BufferGeometry> {
-  if (parts) return parts;
-  const arm = new CapsuleGeometry(0.07, 0.5, 2, 5);
-  arm.translate(0, -0.3, 0);
-  const raw: Record<string, BufferGeometry> = {
-    legs: new CapsuleGeometry(0.15, 0.6, 2, 6),
-    body: new CapsuleGeometry(0.24, 0.5, 3, 8),
-    scarf: new CylinderGeometry(0.12, 0.15, 0.09, 8),
-    head: new IcosahedronGeometry(0.13, 1),
-    hat: new IcosahedronGeometry(0.137, 1),
-    pompom: new IcosahedronGeometry(0.045, 0),
-    arm,
-    mitt: new IcosahedronGeometry(0.065, 0),
-  };
-  parts = {};
-  for (const [k, g] of Object.entries(raw)) {
-    parts[k] = g.index ? g.toNonIndexed() : g;
-    if (parts[k] !== g) g.dispose();
-  }
-  return parts;
-}
-
-const at = (x: number, y: number, z: number, sx = 1, sy = sx, sz = sx) =>
-  new Matrix4().makeScale(sx, sy, sz).setPosition(x, y, z);
-
 /** One merged, shader-animated mesh for a set of partygoers (positioned at `origin`). */
 export function* buildPartygoers(dancers: DancerSpec[], origin: Vector3): Generator<void, Mesh | null, unknown> {
   if (!dancers.length) return null;
@@ -113,23 +76,9 @@ export function* buildPartygoers(dancers: DancerSpec[], origin: Vector3): Genera
   const roots: number[] = [];
   for (const d of dancers) {
     const before = b.vertexCount;
-    const jacket = JACKETS[d.look % JACKETS.length];
-    const hat = HATS[(d.look * 3 + 1) % HATS.length];
-    const skin = SKINS[(d.look * 7 + 2) % SKINS.length];
-    const body: Fx = [d.phase, d.speed, 0, d.mode];
-    const P = partGeometries();
-    b.add(P.legs, at(0, 0.46, 0, 1.15, 1, 0.9), (_p, _n, out, l) => {
-      out.copy(l.y < -0.3 ? BOOTS : TROUSERS);
-    }, body, 1, true);
-    b.add(P.body, at(0, 1.2, 0), jacket, body, 1, true);
-    b.add(P.scarf, at(0, 1.56, 0), hat, body, 1, true);
-    b.add(P.head, at(0, 1.72, 0), skin, body, 1, true);
-    b.add(P.hat, at(0, 1.79, 0, 1, 0.75, 1), hat, body, 1, true);
-    b.add(P.pompom, at(0, 1.91, 0), HATS[(d.look + 2) % HATS.length], body, 1, true);
-    for (const side of [-1, 1]) {
-      const arm: Fx = [d.phase, d.speed, side < 0 ? 1 : 2, d.mode];
-      b.add(P.arm, at(side * 0.3, 1.45, 0), jacket, arm, 1, true);
-      b.add(P.mitt, at(side * 0.3, 1.45 - 0.66, 0), MITTS, arm, 1, true);
+    for (const part of figureParts(figureLook(d.look))) {
+      const fx: Fx = [d.phase, d.speed, part.limb, d.mode];
+      b.add(part.geometry, part.matrix, part.color, fx, 1, true);
     }
     const count = b.vertexCount - before;
     for (let i = 0; i < count; i++) roots.push(d.x - origin.x, d.y - origin.y, d.z - origin.z, d.yaw);

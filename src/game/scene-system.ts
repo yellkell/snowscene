@@ -6,9 +6,9 @@
  */
 
 import {
-  ACESFilmicToneMapping,
   Color,
   createSystem,
+  CustomToneMapping,
   DirectionalLight,
   type Entity,
   Fog,
@@ -87,7 +87,8 @@ export class SceneSetupSystem extends createSystem({}) {
 
   init(): void {
     const { renderer, scene } = this.world;
-    renderer.toneMapping = ACESFilmicToneMapping;
+    // ACES with the game's grade on top (toon-style.ts).
+    renderer.toneMapping = CustomToneMapping;
     // A touch under the old 0.62: sunlit snow keeps its shape instead of clipping to white.
     renderer.toneMappingExposure = 0.56;
     renderer.shadowMap.enabled = true;

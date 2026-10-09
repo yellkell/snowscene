@@ -90,10 +90,10 @@ export const LAMP = {
   off: new Color(0.06, 0.045, 0.035),
 };
 
-const WOOD = new Color(0.5, 0.33, 0.19);
-const WOOD_DARK = new Color(0.31, 0.2, 0.12);
+const WOOD = new Color(0.58, 0.38, 0.21);
+const WOOD_DARK = new Color(0.4, 0.26, 0.15);
 const WOOD_PALE = new Color(0.66, 0.48, 0.3);
-const IRON = new Color(0.16, 0.16, 0.17);
+const IRON = new Color(0.2, 0.21, 0.25);
 const ROPE = new Color(0.55, 0.45, 0.3);
 const BRASS = new Color(0.75, 0.55, 0.22);
 
@@ -622,8 +622,25 @@ function addRails(b: GeometryBuilder, spec: PlatformSpec, gaps: Set<string> | un
   }
 }
 
+let sharedFrame: MeshStandardMaterial | null = null;
+/**
+ * The timber works' one material. The cave has no real lights, so the wood
+ * carries a little warm self-light (the lanterns' glow, cartoon-style):
+ * without it the frames read as black cut-outs against the ice.
+ */
 function frameMaterial(): MeshStandardMaterial {
-  return new MeshStandardMaterial({ vertexColors: true, roughness: 0.88, flatShading: true });
+  if (sharedFrame) return sharedFrame;
+  const m = new MeshStandardMaterial({ vertexColors: true, roughness: 0.85, flatShading: true });
+  m.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <emissivemap_fragment>',
+      `#include <emissivemap_fragment>
+      totalEmissiveRadiance += diffuseColor.rgb * vec3(0.34, 0.24, 0.15);`,
+    );
+  };
+  m.customProgramCacheKey = () => 'cave-frame';
+  sharedFrame = m;
+  return m;
 }
 
 /** A hanging lantern: iron cage with a warm glow. */

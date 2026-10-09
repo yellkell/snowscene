@@ -117,6 +117,8 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
     ${opts.farLayer ? '#define LAND_FAR' : ''}
     #define FIRE_GLOW_POS vLandWorld
     #define LAND_CLOUD_Y ${CLOUD_SEA_Y.toFixed(1)}
+    // Land has its own snow sheen; the toon rim would ring every horizon.
+    #define TOON_NO_RIM
   `;
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uSnowNormal = { value: tex.snowNormal as Texture };
@@ -189,6 +191,10 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
           if (landW.y > 0.0) landRockCol += texture2D(uRockAlbedo, vLandWorld.xz * LAND_ROCK_SCALE).rgb * landW.y;
           if (landW.z > 0.0) landRockCol += texture2D(uRockAlbedo, vLandWorld.xy * LAND_ROCK_SCALE).rgb * landW.z;
           landRockCol *= 0.75 + 0.5 * landNoise.g;
+          // Stylised rock: the photo texture's light and dark become a warm
+          // stone and a cool violet shade, detail kept only as shape.
+          float landRockL = dot(landRockCol, vec3(0.3333));
+          landRockCol = mix(vec3(0.2, 0.2, 0.29), vec3(0.56, 0.49, 0.46), smoothstep(0.12, 0.5, landRockL));
         }
         // Fresh snow: bright, faintly blue in the large-scale hollows.
         vec3 landSnow = mix(vec3(0.8, 0.86, 0.95), vec3(0.9, 0.93, 0.97), landNoise.b);

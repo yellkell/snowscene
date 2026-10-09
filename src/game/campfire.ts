@@ -16,7 +16,6 @@ import {
   BufferAttribute,
   BufferGeometry,
   CanvasTexture,
-  CapsuleGeometry,
   Color,
   ConeGeometry,
   createSystem,
@@ -31,7 +30,6 @@ import {
   MeshStandardMaterial,
   NormalBlending,
   Object3D,
-  PlaneGeometry,
   PointLight,
   Points,
   ShaderMaterial,
@@ -49,7 +47,7 @@ import { sceneRefs } from './scene-system.js';
 import { game, PART_COUNT, Phase } from './state.js';
 import { LAKE_CENTER_X, LAKE_CENTER_Z, LAKE_Y } from './terrain.js';
 import { GeometryBuilder, placed, segmentMatrix } from './mesh-utils.js';
-import { buildBarkTexture } from './textures.js';
+import { ARM_PIVOT, figureLook, figureParts, type FigureLook } from './figure.js';
 
 /** Base of the bonfire, on the lake ice. */
 export const FIRE_POS = new Vector3(LAKE_CENTER_X + 2, LAKE_Y + 0.02, LAKE_CENTER_Z - 2);
@@ -456,27 +454,33 @@ interface Dancer {
 }
 
 /** A simple partygoer in a winter jacket and beanie. */
-function buildDancer(jacket: number, hat: number, skin: number): { root: Group; arms: Mesh[] } {
+function buildDancer(look: FigureLook): { root: Group; arms: Mesh[] } {
   const root = new Group();
-  const jacketMat = new MeshStandardMaterial({ color: jacket, roughness: 0.8 });
-  // Legs, body, head and beanie in one draw; only the arms move on their own.
+  // Body, head and hat in one draw; only the arms move on their own.
   const fig = new GeometryBuilder();
-  fig.add(new CapsuleGeometry(0.16, 0.6, 4, 8), new Matrix4().makeScale(1.15, 1, 0.9).setPosition(0, 0.46, 0), new Color(0x23262d));
-  fig.add(new CapsuleGeometry(0.24, 0.5, 4, 10), placed(0, 1.2, 0), new Color(jacket));
-  fig.add(new IcosahedronGeometry(0.13, 2), placed(0, 1.72, 0), new Color(skin));
-  fig.add(new IcosahedronGeometry(0.135, 2), new Matrix4().makeScale(1, 0.75, 1).setPosition(0, 1.78, 0), new Color(hat));
-  const figure = new Mesh(fig.build(), new MeshStandardMaterial({ vertexColors: true, roughness: 0.8 }));
+  const armB = [new GeometryBuilder(), new GeometryBuilder()];
+  const toPivot = [new Matrix4().makeTranslation(ARM_PIVOT.x, -ARM_PIVOT.y, 0), new Matrix4().makeTranslation(-ARM_PIVOT.x, -ARM_PIVOT.y, 0)];
+  for (const part of figureParts(look)) {
+    if (part.limb === 0) fig.add(part.geometry, part.matrix, part.color);
+    else armB[part.limb - 1].add(part.geometry, part.matrix.clone().premultiply(toPivot[part.limb - 1]), part.color);
+  }
+  const material = dancerMaterial();
+  const figure = new Mesh(fig.build(), material);
   const arms: Mesh[] = [];
   for (const side of [-1, 1]) {
-    const arm = new Mesh(new CapsuleGeometry(0.07, 0.5, 4, 6), jacketMat);
-    arm.geometry.translate(0, -0.3, 0); // pivot at the shoulder
-    arm.position.set(side * 0.3, 1.45, 0);
+    const arm = new Mesh(armB[side < 0 ? 0 : 1].build(), material);
+    arm.position.set(side * ARM_PIVOT.x, ARM_PIVOT.y, 0);
     arms.push(arm);
     root.add(arm);
   }
   figure.castShadow = true;
   root.add(figure);
   return { root, arms };
+}
+
+let sharedDancerMaterial: MeshStandardMaterial | null = null;
+function dancerMaterial(): MeshStandardMaterial {
+  return (sharedDancerMaterial ??= new MeshStandardMaterial({ vertexColors: true, roughness: 0.75 }));
 }
 
 /** How long a fire takes to grow from embers to a full blaze. */
@@ -518,18 +522,11 @@ export class Bonfire {
       place(buildCampEdge(approach));
       place(buildFestoonLights());
       // Partygoers in a loose ring, facing the fire, gap on the approach side.
-      const jackets = [0xd8452b, 0x2f6fb5, 0xe8b13a, 0x3f9a5a, 0xb53f8f, 0xf06a2a, 0x22a3a3];
-      const hats = [0xf2f2f2, 0xc9302c, 0x1d3b6e, 0xe0b23a, 0x2e2e2e];
-      const skins = [0xf1c7a5, 0xd9a47a, 0xa86f4a, 0x7a4b2e, 0xe6b991];
       const count = 16;
       for (let i = 0; i < count; i++) {
         const ang = approach + 0.6 + (i / (count - 1)) * (Math.PI * 2 - 1.2);
         const r = 6.2 + (((i * 37) % 10) / 10) * 1.8;
-        const { root, arms } = buildDancer(
-          jackets[i % jackets.length],
-          hats[i % hats.length],
-          skins[i % skins.length],
-        );
+        const { root, arms } = buildDancer(figureLook(i));
         root.position.set(Math.cos(ang) * r, 0, Math.sin(ang) * r);
         const baseYaw = Math.atan2(-Math.cos(ang), -Math.sin(ang));
         root.rotation.y = baseYaw;

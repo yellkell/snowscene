@@ -70,7 +70,7 @@ import {
  */
 export const SUN_DIRECTION = new Vector3(-0.72, 0.065, 0.68).normalize();
 /** Clear-weather aerial haze colour (linear). */
-export const FOG_COLOR = new Color(0.5, 0.58, 0.74);
+export const FOG_COLOR = new Color(0.46, 0.58, 0.82);
 
 // ------------------------------------------------------------- terrain -----
 
