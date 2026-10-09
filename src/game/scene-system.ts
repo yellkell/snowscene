@@ -66,6 +66,8 @@ export const sceneRefs = {
   /** Parent of everything that belongs only to the tutorial mountain. */
   tutorialRoot: null as Entity | null,
   sunLight: null as DirectionalLight | null,
+  /** The tutorial's distant ranges (hidden while fog swallows them). */
+  farRanges: null as Object3D | null,
   clearEnvironment: null as Texture | null,
   stormEnvironment: null as Texture | null,
 };
@@ -80,6 +82,7 @@ export class SceneSetupSystem extends createSystem({}) {
   private readonly head = new Vector3();
   private flagFrame = 0;
   private shadowFrame = 0;
+  private readonly shadowAt = new Vector3(Infinity, 0, 0);
 
   init(): void {
     const { renderer, scene } = this.world;
@@ -87,7 +90,7 @@ export class SceneSetupSystem extends createSystem({}) {
     renderer.toneMappingExposure = 0.62;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = PCFShadowMap;
-    // Shadows are refreshed every other frame (see update).
+    // Shadows are refreshed only when the frustum moves (see update).
     renderer.shadowMap.autoUpdate = false;
     renderer.shadowMap.needsUpdate = true;
     renderer.xr.setFramebufferScaleFactor(XR_RESOLUTION_SCALE);
@@ -137,7 +140,9 @@ export class SceneSetupSystem extends createSystem({}) {
     sceneRefs.sunLight = this.sun;
 
     addTutorial(buildTerrain());
-    addTutorial(buildFarRanges());
+    const farRanges = buildFarRanges();
+    sceneRefs.farRanges = farRanges;
+    addTutorial(farRanges);
     addTutorial(buildForest());
     addTutorial(buildRocks());
     addTutorial(buildCliff());
@@ -184,13 +189,24 @@ export class SceneSetupSystem extends createSystem({}) {
 
     // Keep the shadow frustum on the player, snapped to shadow texels so
     // shadows don't shimmer as you move.
+    // The sun itself never moves here, so the shadow map only needs redrawing
+    // when the snapped frustum does (at most every other frame), plus a slow
+    // refresh for the few things that move on their own (flag, glider parts).
+    // Height snaps to whole metres: climbing a wall no longer redraws the
+    // whole shadow map every other frame.
     const texel = (SHADOW_EXTENT * 2) / this.sun.shadow.mapSize.x;
     const sx = Math.round(this.head.x / texel) * texel;
     const sz = Math.round(this.head.z / texel) * texel;
-    this.sun.target.position.set(sx, this.head.y - 1, sz);
+    const sy = Math.round(this.head.y) - 1;
+    this.sun.target.position.set(sx, sy, sz);
     this.sun.position.copy(this.sun.target.position).addScaledVector(SUN_DIRECTION, 200);
     this.sun.target.updateMatrixWorld();
-    if ((this.shadowFrame++ & 1) === 0) this.world.renderer.shadowMap.needsUpdate = true;
+    const frame = this.shadowFrame++;
+    const moved = !this.shadowAt.equals(this.sun.target.position);
+    if ((moved && (frame & 1) === 0) || frame % 8 === 0) {
+      this.shadowAt.copy(this.sun.target.position);
+      this.world.renderer.shadowMap.needsUpdate = true;
+    }
 
     // The flag only needs a refresh every other frame.
     if ((this.flagFrame++ & 1) === 0) waveFlag(this.flagCloth, time);

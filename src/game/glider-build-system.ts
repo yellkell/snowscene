@@ -1,11 +1,12 @@
 /**
- * Summit assembly: put together a half-size hang glider kit.
+ * Assembly on the beacon deck: put together a half-size hang glider kit.
  *
- * Close a hand anywhere on a loose part to pick it up (parts glow when your
- * hand is close enough), carry it to its glowing outline on the frame and
- * open your hand to fit it. Parts dropped away from their outline float back
- * to where they were resting. When every part is fitted the kit "becomes" a
- * full-size glider for the launch.
+ * Loose parts pulse so they are easy to spot. Close a hand on or near one
+ * (or reach into it with a hand already closed) to pick it up, carry it to
+ * its glowing outline on the frame and open your hand to fit it. Parts
+ * dropped away from their outline float back to where they were resting.
+ * When every part is fitted the kit "becomes" a full-size glider for the
+ * launch.
  *
  * Desktop fallback: press E to fit the next part.
  */
@@ -19,6 +20,7 @@ import {
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  Object3D,
   Quaternion,
   Vector3,
 } from '@iwsdk/core';
@@ -27,8 +29,9 @@ import { GliderPart, GliderPartIds } from './game-components.js';
 import { buildGhost, buildGlider, type GliderPartId } from './glider-model.js';
 import { HANDS, type Handedness } from './hand-input.js';
 import { sceneRefs } from './scene-system.js';
-import { fadeThen, game, PART_COUNT, Phase, setPhase, WORKBENCH_POS } from './state.js';
-import { SUMMIT_Y } from './terrain.js';
+import { WORKBENCH_POS } from './cave-bluff.js';
+import { bluffTopInUse } from './cave-bluff-system.js';
+import { fadeThen, game, PART_COUNT, Phase, setPhase } from './state.js';
 import {
   BAR_CRATE_X,
   BAR_CRATE_Z,
@@ -40,11 +43,13 @@ import {
 
 const KIT_SCALE = 0.5;
 /** Grab when the hand is within this distance of a part's bounding box. */
-const GRAB_MARGIN = 0.1;
-/** Parts glow when a hand is within this distance of them. */
-const HOVER_MARGIN = 0.22;
+const GRAB_MARGIN = 0.24;
+/** Parts glow brightly when a hand is within this distance of them. */
+const HOVER_MARGIN = 0.4;
 /** Fit when the part's centre is this close to its outline. */
-const SNAP_RADIUS = 0.45;
+const SNAP_RADIUS = 0.6;
+/** Loose parts breathe in size by this much so they catch the eye. */
+const PULSE_SCALE = 0.07;
 const KEEL_Y = 2.3; // keel height in glider model space
 
 interface PartInfo {
@@ -76,10 +81,14 @@ export class GliderBuildSystem extends createSystem({
   };
   private completeTimer = -1;
   private readonly tmp = new Vector3();
+  private bench!: Object3D;
+  /** The kit has "become" the full-size glider. */
+  private built = false;
 
   init(): void {
-    const base = new Vector3(WORKBENCH_POS.x, SUMMIT_Y, WORKBENCH_POS.z);
-    this.world.createTransformEntity(buildWorkbench(base), { parent: sceneRefs.tutorialRoot ?? undefined, persistent: true });
+    const base = WORKBENCH_POS.clone();
+    this.bench = buildWorkbench(base);
+    this.world.createTransformEntity(this.bench, { parent: sceneRefs.tutorialRoot ?? undefined, persistent: true });
 
     const kit = buildGlider();
     this.kitRoot = kit.root;
@@ -159,34 +168,37 @@ export class GliderBuildSystem extends createSystem({
       game.resetCount.subscribe(() => this.reset()),
       game.phase.subscribe((phase) => {
         if (phase === Phase.Building) this.completeTimer = -1;
-        // The parts only reach the bench once you bring them down from the cave.
-        const away =
-          phase === Phase.Poling ||
-          phase === Phase.Climbing ||
-          phase === Phase.Cave ||
-          phase === Phase.Beacon ||
-          phase === Phase.Sliding;
-        for (const part of this.parts.values()) {
-          if (!part.entity.getValue(GliderPart, 'placed')) part.group.visible = !away;
-        }
+        this.applyVisibility(phase);
       }),
     );
+    this.applyVisibility(game.phase.peek());
+  }
+
+  /**
+   * The bench, kit and parts sit on the deck on top of the bluff, which only
+   * appears once you come up out of the cave with the parts.
+   */
+  private applyVisibility(phase: Phase): void {
+    const top = bluffTopInUse(phase);
+    this.bench.visible = top;
+    this.kitRoot.visible = top && !this.built;
+    for (const part of this.parts.values()) part.group.visible = top && !this.built;
   }
 
   private reset(): void {
-    this.kitRoot.visible = true;
+    this.built = false;
     this.carrying.left = null;
     this.carrying.right = null;
     this.completeTimer = -1;
     for (const part of this.parts.values()) {
       part.entity.setValue(GliderPart, 'placed', false);
-      part.group.visible = true;
       part.group.position.copy(part.restPos);
       part.group.quaternion.copy(part.restQuat);
       part.ghost.visible = true;
       part.anim = null;
     }
     game.partsPlaced.value = 0;
+    this.applyVisibility(game.phase.peek());
   }
 
   update(delta: number, time: number): void {
@@ -205,8 +217,8 @@ export class GliderBuildSystem extends createSystem({
         this.completeTimer = -1;
         // The kit "grows" into the real glider behind a short white-out.
         fadeThen(() => {
-          this.kitRoot.visible = false;
-          for (const part of this.parts.values()) part.group.visible = false;
+          this.built = true;
+          this.applyVisibility(game.phase.peek());
           setPhase(Phase.Launch);
         });
       }
@@ -244,7 +256,9 @@ export class GliderBuildSystem extends createSystem({
         carried.group.quaternion.slerpQuaternions(carried.restQuat, carried.slotQuat, t);
         continue;
       }
-      if (!hand.gripDown) continue;
+      // A closed hand reaching into a part takes it too, not just one that
+      // closes right on it.
+      if (!hand.grip || !hand.tracked) continue;
       let best: PartInfo | null = null;
       let bestDist = GRAB_MARGIN;
       for (const part of this.parts.values()) {
@@ -257,6 +271,7 @@ export class GliderBuildSystem extends createSystem({
       }
       if (best) {
         best.anim = null;
+        best.group.scale.setScalar(KIT_SCALE);
         this.carrying[side] = best;
         this.offsets[side].subVectors(best.group.position, hand.position);
         audio.clack();
@@ -267,16 +282,23 @@ export class GliderBuildSystem extends createSystem({
   /** Glow parts within reach, and pulse the outline of a carried part. */
   private updateFeedback(part: PartInfo, dt: number, time: number): void {
     let target = 0;
+    const beat = 0.5 + 0.5 * Math.sin(time * 4.2);
+    const free = this.isFree(part) && !part.anim;
     if (this.isCarried(part)) {
       target = 0.25;
-    } else if (this.isFree(part) && this.world.renderer.xr.isPresenting) {
-      for (const hand of HANDS) {
-        if (!hand.tracked) continue;
-        if (this.distanceToPart(part, hand.position) < HOVER_MARGIN) target = 0.45;
+    } else if (free) {
+      // Waiting to be picked up: a slow glowing pulse, brighter in reach.
+      target = 0.12 + 0.3 * beat;
+      if (this.world.renderer.xr.isPresenting) {
+        for (const hand of HANDS) {
+          if (!hand.tracked) continue;
+          if (this.distanceToPart(part, hand.position) < HOVER_MARGIN) target = 0.7;
+        }
       }
     }
     part.glow += (target - part.glow) * (1 - Math.exp(-12 * dt));
     for (const material of part.materials) material.emissiveIntensity = part.glow;
+    part.group.scale.setScalar(free ? KIT_SCALE * (1 + PULSE_SCALE * beat) : KIT_SCALE);
 
     if (part.ghost.visible) {
       const mat = (part.ghost.children[0] as Mesh | undefined)?.material as

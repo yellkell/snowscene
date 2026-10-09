@@ -16,6 +16,7 @@ import {
   SERAC_FIELD,
 } from '../exp-layout.js';
 import { route, smoothstep, SUMMIT_X, SUMMIT_Z } from '../exp-route.js';
+import { CHUTE_HALF, chuteDistance } from '../slide/chute-path.js';
 import {
   baseRadius,
   CORRIDOR_CLEAR,
@@ -277,6 +278,8 @@ export function* ridgeRocks(grid: SpacingGrid): Gen<Item[]> {
       accept: (x, z, size, _h, rand) => {
         if (rand() > 0.3 + 0.7 * smoothstep(-0.3, 0.2, valueNoise(x * 0.03, z * 0.03 + 9))) return false;
         if (inStrip(gully, x, z, 6 + size) || inCamp(x, z, 5)) return false;
+        // Keep the Summit Chute's line clear.
+        if (chuteDistance(x, z) < CHUTE_HALF + 4 + size) return false;
         // Keep the exposed ledge's drop and wall clean.
         return !nearRopeLedge(x, z);
       },

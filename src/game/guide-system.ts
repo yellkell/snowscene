@@ -17,6 +17,7 @@ import { expControl } from './expedition/director/exp-control.js';
 import { SECTION_ORDER, type SectionId, SUMMIT_ELEV } from './expedition/exp-route.js';
 import { SECTION_NAMES } from './expedition/exp-layout.js';
 import { exp } from './expedition/exp-state.js';
+import { chuteState } from './expedition/slide/chute-state.js';
 import { currentLevel } from './level.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt, yawForward } from './rig.js';
 import { fadeThen, game, PART_COUNT, Phase, requestRestart, setPhase } from './state.js';
@@ -64,7 +65,7 @@ export class GuideSystem extends createSystem({}) {
 
   init(): void {
     // Score: "By the River" for the ascent, "Night Catch" from the moment
-    // the beacon is lit, down the flume and on through the glide.
+    // the beacon is lit, through the build on top of the rock and the glide.
     const updateMusic = () => {
       // On the expedition the soundscape system owns the score.
       if (exp.active.peek()) return;
@@ -178,6 +179,7 @@ export class GuideSystem extends createSystem({}) {
       exp.active.subscribe(() => this.refresh()),
       exp.section.subscribe(() => this.refresh()),
       exp.summited.subscribe(() => this.refresh()),
+      chuteState.arrived.subscribe(() => this.refresh()),
       exp.finished.subscribe(() => this.refresh()),
       expControl.hint.subscribe(() => this.refresh()),
       expControl.camp.subscribe(() => this.refresh()),
@@ -212,7 +214,7 @@ export class GuideSystem extends createSystem({}) {
     switch (phase) {
       case Phase.Poling:
         return {
-          step: 'STEP 1 OF 7',
+          step: 'STEP 1 OF 6',
           title: 'Pole up the trail',
           body: immersive ? 'Fist to grip. Plant, then pull back.' : 'Hold W to pole. Drag to look.',
           hint: '',
@@ -220,14 +222,14 @@ export class GuideSystem extends createSystem({}) {
         };
       case Phase.Climbing:
         return {
-          step: 'STEP 2 OF 7',
+          step: 'STEP 2 OF 6',
           title: 'Climb',
           body: immersive ? 'Grab a glowing hold. Pull down.' : 'Hold W to climb.',
           hint: '',
         };
       case Phase.Cave:
         return {
-          step: 'STEP 3 OF 7',
+          step: 'STEP 3 OF 6',
           title: 'The timber works',
           body: immersive
             ? 'Step onto decks with green lamps. Amber: leaving. Red: moving.'
@@ -236,39 +238,32 @@ export class GuideSystem extends createSystem({}) {
         };
       case Phase.Beacon:
         return {
-          step: 'STEP 4 OF 7',
+          step: 'STEP 4 OF 6',
           title: game.beaconLit.peek() ? 'The beacon is lit' : 'Light the beacon',
           body: game.beaconLit.peek()
-            ? 'The party below has seen you. To the flume!'
+            ? 'The party below has seen you. Up and out to the top!'
             : immersive
               ? 'Grab the torch. Hold it to the brazier.'
               : 'Press E to light the beacon.',
           hint: '',
         };
-      case Phase.Sliding:
-        return {
-          step: 'STEP 5 OF 7',
-          title: 'Ride the flume',
-          body: immersive ? 'Lean or duck past the hazards.' : 'A / D to lean past the hazards.',
-          hint: '',
-        };
       case Phase.Building:
         return {
-          step: 'STEP 6 OF 7',
+          step: 'STEP 5 OF 6',
           title: 'Build your glider',
           body: immersive ? 'Carry each part to its outline.' : 'Press E to fit a part.',
           hint: `${game.partsPlaced.peek()} of 3 fitted`,
         };
       case Phase.Launch:
         return {
-          step: 'STEP 6 OF 7',
+          step: 'STEP 5 OF 6',
           title: 'Take off',
           body: immersive ? 'Grab the bar. Fly to the fire.' : 'Space to launch. Fly to the fire.',
           hint: game.barHeld.peek() ? 'Hold on...' : '',
         };
       case Phase.Gliding:
         return {
-          step: 'STEP 7 OF 7',
+          step: 'STEP 6 OF 6',
           title: 'Fly to the campfire',
           body: immersive ? 'Tilt the bar to turn. Pull in to dive.' : 'A / D steer. W dive, S float.',
           hint: '',
@@ -322,9 +317,19 @@ export class GuideSystem extends createSystem({}) {
           body: immersive ? 'Grab a glowing hold. Pull down.' : 'Hold W to climb.',
           hint,
         };
+      case Phase.Sliding:
+        if (chuteState.arrived.peek()) {
+          return { step: 'THE DESCENT', title: 'Fly home', body: 'Unpack the glider and drop it to launch.', hint };
+        }
+        return {
+          step: 'THE DESCENT',
+          title: 'The Summit Chute',
+          body: immersive ? 'Lean left or right past the barriers.' : 'A / D to lean past the barriers.',
+          hint,
+        };
       case Phase.Launch:
         return {
-          step: 'THE SUMMIT',
+          step: 'THE DESCENT',
           title: 'Fly home',
           body: immersive ? 'Grab the bar. Glide to Base Camp.' : 'Space to launch.',
           hint: game.barHeld.peek() ? 'Hold on...' : '',
@@ -343,7 +348,7 @@ export class GuideSystem extends createSystem({}) {
       case Phase.Poling:
       default:
         if (exp.summited.peek()) {
-          return { step: 'THE SUMMIT', title: 'You made it!', body: 'Unpack the glider to fly home.', hint };
+          return { step: 'THE SUMMIT', title: 'You made it!', body: 'Ride the Summit Chute down, then fly home.', hint };
         }
         if (expControl.camp.peek() > 0) {
           return {

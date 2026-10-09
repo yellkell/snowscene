@@ -1,7 +1,8 @@
 /**
  * The expedition as a Level: 7.8 km of route from Base Camp to the 1,300 m
- * summit, two climbs (the ice wall with axes, the rock band on holds), a
- * summit launch and a ~3 km glide back down to the Base Camp party.
+ * summit, two climbs (the ice wall with axes, the rock band on holds), the
+ * Summit Chute down the mountain's flank to a deck above the ice cliff, and
+ * a ~2.5 km glide from there back down to the Base Camp party.
  *
  * Walking rules live in `director/walk-rules.ts` (pure, node-checked);
  * this file applies them to the rig and wires the level into the shared
@@ -30,6 +31,8 @@ import {
 import { exp, expFrame, expHooks } from './exp-state.js';
 import { expeditionHeight } from './exp-terrain.js';
 import { walkGate } from './mechanics/walk-gate.js';
+import { chute } from './slide/chute-path.js';
+import { chuteState } from './slide/chute-state.js';
 import { expControl } from './director/exp-control.js';
 import { pointAt, type RouteDir, type RoutePos, tangentAt, yawOf } from './director/route-math.js';
 import { drawExpeditionMap } from './director/topo-map.js';
@@ -242,6 +245,8 @@ export const expeditionLevel: Level = {
   },
 
   launch(): LaunchSite {
+    // Off the deck at the bottom of the Summit Chute once you have ridden it.
+    if (chuteState.arrived.peek()) return chute().launch;
     if (!launchSite) launchSite = computeLaunch();
     return launchSite;
   },
@@ -264,8 +269,11 @@ export const expeditionLevel: Level = {
   },
 
   gliderDeployBlocker(head: Vector3): string | null {
+    // The glider comes out on the deck at the bottom of the Summit Chute.
+    if (game.phase.peek() === Phase.Sliding) return chuteState.arrived.peek() ? null : 'Hold on!';
     if (game.phase.peek() !== Phase.Poling) return 'Not now';
     if (!exp.summited.peek()) return 'Save it for the summit';
+    if (!chuteState.arrived.peek()) return 'Ride the Summit Chute down first: walk into its gate';
     project(head.x, head.z, deployProj);
     const m = routePoint(SUMMIT_S);
     const nearMarker = Math.hypot(head.x - m.x, head.z - m.z) < SUMMIT_FREE_RADIUS;

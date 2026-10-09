@@ -22,12 +22,12 @@ import {
 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { landUniforms } from './land-material.js';
-import { currentLevel } from './level.js';
+import { currentLevel, type FogRange } from './level.js';
 import { getHeadWorld } from './rig.js';
 import { sceneRefs } from './scene-system.js';
 import { cloudSeaUniforms, skyUniforms } from './sky.js';
 import { game } from './state.js';
-import { mulberry32, smoothstep, valueNoise } from './terrain.js';
+import { mulberry32, RANGES_INNER_RADIUS, smoothstep, TUTORIAL_CENTER_X, TUTORIAL_CENTER_Z, valueNoise } from './terrain.js';
 import { FOG_COLOR } from './world-builders.js';
 
 const STORM_FOG = new Color(0.7, 0.72, 0.77);
@@ -111,7 +111,7 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
         float on = step(aSeed, uIntensity);
         float base = min(uSize * (0.45 + aSeed * 0.7) / max(-mv.z, 0.1), uMaxSize);
         float streakPx = length(d) * 600.0;
-        vStretch = clamp(1.0 + streakPx / max(base, 1.0), 1.0, 3.5);
+        vStretch = clamp(1.0 + streakPx / max(base, 1.0), 1.0, 2.5);
         vDir = length(d) > 1e-6 ? normalize(vec2(d.x, -d.y)) : vec2(0.0, 1.0);
         gl_PointSize = on * base * vStretch;
         float r = length((p - uCenter) / (0.5 * uBox));
@@ -150,27 +150,31 @@ export class WeatherSystem extends createSystem({}) {
   private readonly snowOffset = new Vector3();
   private readonly driftOffset = new Vector3();
   private readonly fogColor = new Color();
+  private readonly fogRange: FogRange = { near: 0, far: 0 };
   private stormLighting = false;
 
   init(): void {
     const add = (object: Parameters<typeof this.world.createTransformEntity>[0]) =>
       this.world.createTransformEntity(object, { persistent: true });
 
+    // Point sprites right in front of the eyes are the most expensive pixels
+    // in a blizzard (the cliff climb is all snow and rock face), so keep the
+    // count and the on-screen size of the nearest flakes in check.
     this.snow = buildSnowLayer({
-      count: 4800,
+      count: 3200,
       box: new Vector3(30, 24, 30),
       size: 36,
-      maxSize: 14,
+      maxSize: 10,
       seed: 12,
     });
     this.snow.name = 'Snowfall';
     add(this.snow);
 
     this.drift = buildSnowLayer({
-      count: 1600,
+      count: 1200,
       box: new Vector3(24, 2.4, 24),
       size: 16,
-      maxSize: 7,
+      maxSize: 6,
       seed: 31,
     });
     this.drift.name = 'Spindrift';
@@ -205,6 +209,7 @@ export class WeatherSystem extends createSystem({}) {
     // Indoors (the ice cave) the weather stands down entirely.
     const outdoors = 1 - game.indoors;
     snow.uIntensity.value = (0.18 + storm * 0.82) * outdoors;
+    this.snow.visible = snow.uIntensity.value > 0.01;
     (snow.uTint.value as Color).copy(weatherHooks.snowTint ?? SNOW_WHITE);
 
     // Spindrift: snow blown along the ground in strong wind.
@@ -217,14 +222,28 @@ export class WeatherSystem extends createSystem({}) {
     (drift.uOffset.value as Vector3).copy(this.driftOffset);
     (drift.uVelocity.value as Vector3).set(wx * 1.8, 0, wz * 1.8);
     drift.uOpacity.value = smoothstep(1.8, 5.5, windSpeed) * 0.75 * outdoors;
+    // Invisible spindrift still rasterises every flake: skip the draw.
+    this.drift.visible = drift.uOpacity.value > 0.01;
     (drift.uTint.value as Color).copy(weatherHooks.snowTint ?? SNOW_WHITE);
 
     // Visibility closes in during the storm; in clear air only the far
     // ranges pick up aerial haze.
     const fog = this.scene.fog as Fog | null;
     this.fogColor.copy(weatherHooks.clearFog ?? FOG_COLOR).lerp(weatherHooks.stormFog ?? STORM_FOG, storm);
-    const near = 400 + (6 - 400) * storm;
-    const far = 24000 + (80 - 24000) * Math.pow(storm, 0.6);
+    const level = currentLevel();
+    let near = 400 + (6 - 400) * storm;
+    let far = 24000 + (80 - 24000) * Math.pow(storm, 0.6);
+    if (level.fogRange) {
+      level.fogRange(storm, this.fogRange);
+      near = this.fogRange.near;
+      far = this.fogRange.far;
+    }
+    // Ranges lost in the fog cost a lot of triangles for nothing: skip them.
+    const ranges = sceneRefs.farRanges;
+    if (ranges) {
+      const toRanges = RANGES_INNER_RADIUS - Math.hypot(this.head.x - TUTORIAL_CENTER_X, this.head.z - TUTORIAL_CENTER_Z);
+      ranges.visible = far > toRanges - 20 || game.indoors > 0;
+    }
     if (fog) {
       fog.color.copy(this.fogColor);
       fog.near = near;

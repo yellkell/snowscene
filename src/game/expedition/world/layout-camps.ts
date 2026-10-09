@@ -11,6 +11,7 @@
 import { mulberry32 } from '../../terrain.js';
 import { type Camp, CAMPS, campCentre, routeFrame, SUMMIT_S } from '../exp-layout.js';
 import { route, routePoint } from '../exp-route.js';
+import { CHUTE_HALF, chuteDistance } from '../slide/chute-path.js';
 import { campSignLines, signBeside, type SignSpec } from './layout-route.js';
 import {
   CORRIDOR_CLEAR,
@@ -526,7 +527,7 @@ export function* summitLayout(): Gen<SummitLayout> {
       y: groundMin(x, z, 0.3),
       z,
       yaw: lp.yaw + Math.PI,
-      lines: ['GLIDER LAUNCH', `Base Camp ${((Math.hypot(BASE_CAMP_LANDING.x - lp.x, BASE_CAMP_LANDING.z - lp.z)) / 1000).toFixed(1)} km  ·  run and fly`],
+      lines: ['THE SUMMIT CHUTE', 'Ride down to the ice cliff  ·  then fly to Base Camp'],
       boardY: 1.45,
     });
     break;
@@ -543,6 +544,7 @@ export function* summitLayout(): Gen<SummitLayout> {
     const lz = z - lp.z;
     if (Math.abs(lx * fx + lz * fz) < lp.halfLength + 3 && Math.abs(lx * sx + lz * sz) < lp.halfWidth + 3) continue;
     if (Math.hypot(x - cairn.x, z - cairn.z) < 10) continue;
+    if (chuteDistance(x, z) < CHUTE_HALF + 3 + size) continue;
     items.push(item('boulder', x, z, size, rand() * 6, size, 7100 + i, size * 0.35));
   }
   return { items, flagLines, decals, windsocks, signs, cairn, launch: lp };

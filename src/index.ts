@@ -1,9 +1,10 @@
 /**
  * Snow Scene: pole up a mountain trail, climb the final cliff, ride the old
  * timber works up the ice cave inside the Needle to recover the glider parts
- * and light the beacon, slide down the log flume, build the hang glider and
- * glide back down to the valley. Designed for WebXR hand tracking, with
- * controller and desktop fallbacks.
+ * and light the beacon, then build the hang glider on top of the rock the cave
+ * runs up inside and glide straight down to the valley. The expedition that follows ends with a
+ * steep chute ride down the summit's flank and a long glide home. Designed
+ * for WebXR hand tracking, with controller and desktop fallbacks.
  */
 
 import { World } from '@iwsdk/core';
@@ -11,7 +12,6 @@ import projectOptions from 'virtual:iwsdk-project';
 import { audio } from './game/audio.js';
 import { BackpackSystem } from './game/backpack-system.js';
 import { CaveSystem } from './game/cave/cave-system.js';
-import { FlumeSystem } from './game/flume/flume-system.js';
 import { CampfireSystem } from './game/campfire.js';
 import { ClimbSystem } from './game/climb-system.js';
 import { DesktopLookSystem } from './game/desktop-look-system.js';
@@ -23,6 +23,7 @@ import { ExpeditionSkySystem } from './game/expedition/sky/expedition-sky-system
 import { ExpeditionTerrainSystem } from './game/expedition/terrain/expedition-terrain-system.js';
 import { fxHooks } from './game/expedition/fx/fx-context.js';
 import { ExpeditionWorldSystem, setCollapsingSeracVisible } from './game/expedition/world/expedition-world-system.js';
+import { ChuteSystem } from './game/expedition/slide/chute-system.js';
 import { CrossingGuardSystem } from './game/expedition/mechanics/crossing-guard-system.js';
 import { LadderSystem } from './game/expedition/mechanics/ladder-system.js';
 import { RopeSystem } from './game/expedition/mechanics/rope-system.js';
@@ -30,6 +31,7 @@ import { GlideSystem } from './game/glide-system.js';
 import { GliderBuildSystem } from './game/glider-build-system.js';
 import { GuideSystem } from './game/guide-system.js';
 import { HandInputSystem, hands } from './game/hand-input.js';
+import { CaveBluffSystem } from './game/cave-bluff-system.js';
 import { PoleSystem } from './game/pole-system.js';
 import { SceneSetupSystem } from './game/scene-system.js';
 import { WeatherSystem } from './game/weather-system.js';
@@ -58,7 +60,7 @@ World.create(
     .registerSystem(GliderBuildSystem, { priority: 12 })
     .registerSystem(GlideSystem, { priority: 13 })
     .registerSystem(CaveSystem, { priority: 14 })
-    .registerSystem(FlumeSystem, { priority: 15 })
+    .registerSystem(CaveBluffSystem, { priority: 15 })
     .registerSystem(GuideSystem, { priority: 30 })
     // The expedition (?expedition / ?expedition&s=5000 start it directly).
     // The director must be registered before other expedition systems.
@@ -72,7 +74,9 @@ World.create(
     .registerSystem(ExpeditionEventsSystem, { priority: 27 })
     .registerSystem(ExpeditionSkySystem, { priority: 23 })
     .registerSystem(ExpeditionTerrainSystem, { priority: 24 })
-    .registerSystem(ExpeditionWorldSystem, { priority: 25 });
+    .registerSystem(ExpeditionWorldSystem, { priority: 25 })
+    // The Summit Chute, from the summit down to the deck above the ice cliff.
+    .registerSystem(ChuteSystem, { priority: 15.5 });
 
   // The world builds the collapsing serac; the events system topples it.
   fxHooks.setSeracVisible = setCollapsingSeracVisible;
@@ -87,7 +91,6 @@ World.create(
       Phase,
       setPhase,
       cave: world.getSystem(CaveSystem),
-      flume: world.getSystem(FlumeSystem),
     };
   }
 });

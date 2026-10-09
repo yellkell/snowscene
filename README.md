@@ -11,9 +11,9 @@ shadowed snow and granite, a snow-laden spruce forest and a horizon of
 2. **Climb the cliff.** Reach for a glowing hold, close your hand to grab it
    and pull down to lift yourself. Go hand over hand and haul yourself over the
    summit lip.
-3. **Ride the timber works.** The glider kit on the summit is empty: its
-   parts are up in the old timber works, an ice cave inside the Needle (the
-   rock column behind the summit). The works are a 28-platform room-scale
+3. **Ride the timber works.** Over the lip, all you see is a cave mouth in
+   the bluff at the back of the summit shoulder. The glider's parts are up
+   in the old timber works in the ice cave inside it. The works are a 28-platform room-scale
    course in the spirit of ff2's VOIDSTEP: log rafts on a meltwater pool,
    rope hoists, an incline cart, rope swings, a mill wheel with level-hung
    gondolas, an ore skip, a ropeway and a chimney trolley, climbing 26 m on
@@ -21,17 +21,15 @@ shadowed snow and granite, a snow-laden spruce forest and a horizon of
    lamps go out one per beat before it leaves, and red means it is moving.
    No room to walk? Reach over the green deck and close your hand to be
    carried onto it. Take the left wing, right wing and control bar from their
-   racks on the way up (a deck leaving a rack waits until you have).
+   racks on the way up (they pulse; reach in with a closed hand to take one,
+   and a deck leaving a rack waits until you have).
 4. **Light the beacon.** At the top of the chimney, take the torch off its
-   hook and hold it to the brazier. The beacon on top of the Needle tells the
+   hook and hold it to the brazier. The beacon on top of the bluff tells the
    party on the lake that you are on your way.
-5. **Ride the flume.** An old log flume spirals down the outside of the
-   Needle in two runs, HELTER style. Lean (or duck) into the open lane to
-   get past the boards, icicles and ore buckets hanging from the gantries;
-   clip one and that run starts again.
-6. **Build a glider.** At the foot of the Needle, carry each part you
-   recovered to its glowing outline on the workbench kit.
-7. **Glide home.** Close both hands on the control bar to launch. Tilt the bar
+5. **Build a glider.** You come up out of the chimney onto the beacon deck
+   on top of the bluff. Carry each part you recovered to its glowing outline
+   on the workbench kit.
+6. **Glide home.** Close both hands on the control bar to launch. Tilt the bar
    like a steering wheel to turn; pull it in to dive, push it out to float.
    Land in the valley. Thanks for playing!
 
@@ -50,15 +48,15 @@ approach assist lines you up to land at the edge of the party.
 | --------------- | ----------------------------- | -------------------------- |
 | Hand tracking   | Fist (a firm pinch also works) | Hands on the bar           |
 | Controllers     | Squeeze or trigger            | Bar, or thumbstick         |
-| Desktop browser | W to pole/climb/step across, E to take or fit parts and light the beacon, A/D to lean on the flume, Space to launch | A/D steer, W dive, S float |
+| Desktop browser | W to pole/climb/step across, E to take or fit parts and light the beacon, A/D to lean on the expedition's chute, Space to launch | A/D steer, W dive, S float |
 
 Drag the mouse to look around on desktop.
 
 Lost your bearings, or drifted towards the edge of your room? Open the
 backpack (left palm up) and poke the brass **recentre** button on its front
 with your right index finger (R on desktop). In the cave it puts you back on
-the middle of the deck you're standing on; on the flume it makes where you
-stand the middle lane; on the trail it turns you up the trail; at the
+the middle of the deck you're standing on; on the expedition's chute it
+makes where you stand the middle lane; on the trail it turns you up the trail; at the
 workbench it stands you back at the bench; after landing it faces you to the
 fire.
 
@@ -91,9 +89,13 @@ and press **Enter VR**.
   platform timetable and its validator (every route step shares a berth,
   nothing collides over the whole cycle), `cave-build.ts` the cave and
   machines, `cave-system.ts` the moving frame of reference, parts and beacon
-- `src/game/flume/`: the Needle, its portal and the log flume (`flume-path.ts`
-  is the spiral by arc length, `flume-system.ts` the ride and hazards)
-- `src/game/glider-build-system.ts`: summit kit assembly
+- `src/game/cave-bluff.ts`, `cave-bluff-system.ts`: the bluff with the cave
+  mouth, and the beacon deck on top where the glider is built and launched
+- `src/game/expedition/slide/`: the Summit Chute, a DOWN-style lane slide
+  from the expedition's summit down the mountain's flank to a deck above the
+  ice cliff, where you unpack the glider (`chute-path.ts` is the profile,
+  barriers and speeds, `chute-system.ts` the ride)
+- `src/game/glider-build-system.ts`: kit assembly on the beacon deck
 - `src/game/glide-system.ts`: launch, flight and landing
 - `src/game/weather-system.ts`: blizzard snowfall, spindrift, fog and wind
 - `src/game/campfire.ts`: the bonfire party on the lake

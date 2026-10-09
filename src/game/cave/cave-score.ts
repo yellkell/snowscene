@@ -1,8 +1,8 @@
 /**
- * THE TIMBER WORKS: the score for the cave inside the Needle.
+ * THE TIMBER WORKS: the score for the cave inside the bluff behind the summit.
  *
  * The old timber company left a stack of wooden machinery in the ice cave
- * under the summit needle: rafts on a meltwater pool, rope hoists, a mill
+ * under the summit: rafts on a meltwater pool, rope hoists, a mill
  * wheel with level-hung gondolas, rope swings, ore skips and a ropeway. It
  * still runs on its own clock. The glider parts are on racks at three of its
  * stations and the old signal beacon is at the top of the chimney.

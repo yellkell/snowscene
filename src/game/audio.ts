@@ -379,7 +379,7 @@ class SnowAudio {
     this.burst(2400, 0.8, 0.5, 0.2, 'highpass');
   }
 
-  /** Sliding along the iced flume: a continuous rumble while it lasts. */
+  /** Sliding down an iced chute: a continuous rumble while it lasts. */
   slideRumble(speed: number): void {
     if (speed <= 0.05) return;
     this.burst(260 + speed * 30, 0.9, 0.12, 0.05 + 0.02 * speed, 'lowpass');

@@ -169,12 +169,16 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
         landRock = max(landRock, LAND_ROCK_BIAS * smoothstep(0.92, 0.6, landNW.y + (landFine - 0.5) * 0.3));
         vec3 landW = pow(abs(landNW), vec3(4.0));
         landW /= (landW.x + landW.y + landW.z);
+        // Drop projections that barely contribute so their fetches can be
+        // skipped (a cliff face needs one, not three).
+        landW = max(landW - 0.03, 0.0);
+        landW /= (landW.x + landW.y + landW.z);
         vec3 landRockCol = vec3(0.3);
         if (landRock > 0.01) {
-          landRockCol =
-            texture2D(uRockAlbedo, vLandWorld.zy * LAND_ROCK_SCALE).rgb * landW.x +
-            texture2D(uRockAlbedo, vLandWorld.xz * LAND_ROCK_SCALE).rgb * landW.y +
-            texture2D(uRockAlbedo, vLandWorld.xy * LAND_ROCK_SCALE).rgb * landW.z;
+          landRockCol = vec3(0.0);
+          if (landW.x > 0.0) landRockCol += texture2D(uRockAlbedo, vLandWorld.zy * LAND_ROCK_SCALE).rgb * landW.x;
+          if (landW.y > 0.0) landRockCol += texture2D(uRockAlbedo, vLandWorld.xz * LAND_ROCK_SCALE).rgb * landW.y;
+          if (landW.z > 0.0) landRockCol += texture2D(uRockAlbedo, vLandWorld.xy * LAND_ROCK_SCALE).rgb * landW.z;
           landRockCol *= 0.75 + 0.5 * landNoise.g;
         }
         // Fresh snow: bright, faintly blue in the large-scale hollows.
@@ -190,18 +194,31 @@ export function createLandMaterial(opts: LandMaterialOptions = {}): MeshStandard
         '#include <normal_fragment_maps>',
         `#include <normal_fragment_maps>
         {
-          vec2 sa = texture2D(uSnowNormal, vLandWorld.xz * LAND_SNOW_SCALE).xy * 2.0 - 1.0;
-          vec2 sb = texture2D(uSnowNormal, vLandWorld.xz * LAND_SNOW_SCALE * 0.13 + 0.37).xy * 2.0 - 1.0;
-          vec3 snowN = normalize(landNW + vec3(sa.x * 0.25 + sb.x * 0.4, 0.0, sa.y * 0.25 + sb.y * 0.4));
+          vec3 snowN = landNW;
+          if (landRock < 0.99) {
+            vec2 sa = texture2D(uSnowNormal, vLandWorld.xz * LAND_SNOW_SCALE).xy * 2.0 - 1.0;
+            vec2 sb = texture2D(uSnowNormal, vLandWorld.xz * LAND_SNOW_SCALE * 0.13 + 0.37).xy * 2.0 - 1.0;
+            snowN = normalize(landNW + vec3(sa.x * 0.25 + sb.x * 0.4, 0.0, sa.y * 0.25 + sb.y * 0.4));
+          }
           vec3 rockN = landNW;
           if (landRock > 0.01) {
-            vec3 tx = texture2D(uRockNormal, vLandWorld.zy * LAND_ROCK_SCALE).xyz * 2.0 - 1.0;
-            vec3 ty = texture2D(uRockNormal, vLandWorld.xz * LAND_ROCK_SCALE).xyz * 2.0 - 1.0;
-            vec3 tz = texture2D(uRockNormal, vLandWorld.xy * LAND_ROCK_SCALE).xyz * 2.0 - 1.0;
-            tx = vec3(tx.xy + landNW.zy, abs(tx.z) * landNW.x);
-            ty = vec3(ty.xy + landNW.xz, abs(ty.z) * landNW.y);
-            tz = vec3(tz.xy + landNW.xy, abs(tz.z) * landNW.z);
-            rockN = normalize(tx.zyx * landW.x + ty.xzy * landW.y + tz.xyz * landW.z);
+            vec3 rockSum = vec3(0.0);
+            if (landW.x > 0.0) {
+              vec3 tx = texture2D(uRockNormal, vLandWorld.zy * LAND_ROCK_SCALE).xyz * 2.0 - 1.0;
+              tx = vec3(tx.xy + landNW.zy, abs(tx.z) * landNW.x);
+              rockSum += tx.zyx * landW.x;
+            }
+            if (landW.y > 0.0) {
+              vec3 ty = texture2D(uRockNormal, vLandWorld.xz * LAND_ROCK_SCALE).xyz * 2.0 - 1.0;
+              ty = vec3(ty.xy + landNW.xz, abs(ty.z) * landNW.y);
+              rockSum += ty.xzy * landW.y;
+            }
+            if (landW.z > 0.0) {
+              vec3 tz = texture2D(uRockNormal, vLandWorld.xy * LAND_ROCK_SCALE).xyz * 2.0 - 1.0;
+              tz = vec3(tz.xy + landNW.xy, abs(tz.z) * landNW.z);
+              rockSum += tz.xyz * landW.z;
+            }
+            rockN = normalize(rockSum);
           }
           vec3 landShadeN = normalize(mix(snowN, rockN, landRock));
           normal = normalize((viewMatrix * vec4(landShadeN, 0.0)).xyz);

@@ -1,17 +1,20 @@
 /**
  * The tutorial mountain as a Level: a short pole trail, one 6.6 m cliff with
- * placed holds, a summit glider build, and a glide down to the party on the
- * frozen lake.
+ * placed holds, the cave in the bluff behind the summit, a glider build on
+ * the beacon deck on top of that bluff, and a glide straight down to the party on the frozen
+ * lake.
  */
 
 import { Object3D, Vector3 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { FIRE_POS } from './campfire.js';
-import { NEEDLE } from './flume/flume-path.js';
-import type { ClimbWall, Level } from './level.js';
+import type { ClimbWall, FogRange, Level } from './level.js';
+import { LAUNCH_EDGE } from './cave-bluff.js';
 import { CLIMB_TRIGGER_S, game, Phase, setPhase, SUMMIT_STAND } from './state.js';
 import {
   clamp,
+  BLUFF_FACE_S,
+  BLUFF_X,
   CLIFF_BASE_Y,
   CLIFF_CENTER_X,
   CLOUD_SEA_Y,
@@ -90,7 +93,8 @@ export const tutorialLevel: Level = {
 
   currentWall: () => wall,
 
-  launch: () => ({ x: CLIFF_CENTER_X, z: WALL_Z - 0.55, floorY: SUMMIT_Y, yaw: Math.PI }),
+  // Off the open south edge of the beacon deck, facing the lake.
+  launch: () => ({ x: LAUNCH_EDGE.x, z: LAUNCH_EDGE.z, floorY: LAUNCH_EDGE.y, yaw: Math.PI }),
 
   glideTarget: FIRE_POS,
   landingShort: LANDING_SHORT_OF_FIRE,
@@ -106,7 +110,6 @@ export const tutorialLevel: Level = {
         return 1;
       case Phase.Cave:
       case Phase.Beacon:
-      case Phase.Sliding:
       case Phase.Building:
         // Breaking through the top of the storm: the sky clears.
         return 0.06;
@@ -120,6 +123,15 @@ export const tutorialLevel: Level = {
   },
 
   cloudDeckY: CLOUD_SEA_Y,
+
+  fogRange(storm: number, out: FogRange): FogRange {
+    // A little haze even on a clear day, closing in fast as the snow
+    // thickens: about 450 m at the trailhead, under 100 m on the cliff.
+    const t = Math.pow(storm, 0.8);
+    out.near = 140 + (2 - 140) * storm;
+    out.far = Math.exp(Math.log(9000) + (Math.log(70) - Math.log(9000)) * t);
+    return out;
+  },
 
   drawMap(ctx: CanvasRenderingContext2D, size: number, you: Vector3, yaw: number): void {
     // North-up sketch of the tutorial: trail, cliff, summit and the lake party.
@@ -160,13 +172,13 @@ export const tutorialLevel: Level = {
     ctx.fillStyle = '#2b2b2b';
     ctx.font = '600 22px Georgia, serif';
     ctx.fillText('Summit', px(CLIFF_CENTER_X + 10), pz(WALL_Z - 6));
-    // The Needle, with the cave and the flume.
+    // The bluff with the cave mouth, and the beacon on top.
     ctx.fillStyle = '#5b5550';
     ctx.beginPath();
-    ctx.arc(px(NEEDLE.x), pz(NEEDLE.z), 7, 0, Math.PI * 2);
+    ctx.arc(px(BLUFF_X), pz(-BLUFF_FACE_S - 5), 7, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = game.beaconLit.peek() ? '#e8822c' : '#2b2b2b';
-    ctx.fillText('Needle', px(NEEDLE.x + 12), pz(NEEDLE.z - 4));
+    ctx.fillText('Cave', px(BLUFF_X + 12), pz(-BLUFF_FACE_S - 9));
     ctx.fillStyle = '#2b2b2b';
     ctx.fillText('Party', px(FIRE_POS.x + 12), pz(FIRE_POS.z));
     // You: a dot with a heading tick.

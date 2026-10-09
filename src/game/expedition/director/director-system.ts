@@ -58,6 +58,7 @@ import {
 } from './checkpoints.js';
 import { coldAt, daylightAt, SQUALL, squallEnvelope, squallGap, WARMTH_DRAIN_AT_FULL_COLD } from './climate.js';
 import { expSound } from '../audio/expedition-sound-system.js';
+import { chuteState } from '../slide/chute-state.js';
 import { expControl } from './exp-control.js';
 import { formatAltitude, formatDistance, pointAt, type RoutePos, routeYaw, yawOf } from './route-math.js';
 import { prepareTopo, warmTopo } from './topo-map.js';
@@ -361,6 +362,7 @@ export class ExpeditionDirectorSystem extends createSystem({}) {
   private resetExpeditionState(): void {
     if (exp.summited.peek()) exp.summited.value = false;
     if (exp.finished.peek()) exp.finished.value = false;
+    if (chuteState.arrived.peek()) chuteState.arrived.value = false;
     if (exp.ropeClipped.peek()) exp.ropeClipped.value = false;
     if (equipment.clipped.peek()) equipment.clipped.value = false;
     if (equipment.headlampOn.peek()) equipment.headlampOn.value = false;
@@ -516,7 +518,7 @@ export class ExpeditionDirectorSystem extends createSystem({}) {
     }
     if (this.player.position.y > home.elev + 120) {
       // Flew into the mountain: back up to the launch for another go.
-      this.queueToast('Crash landing! Back to the summit to try again', 4);
+      this.queueToast('Crash landing! Back to the launch deck to try again', 4);
       this.landingRelaunch = true;
     } else {
       // Came down somewhere else in the valley: the camp team brings you home.
@@ -574,7 +576,7 @@ export class ExpeditionDirectorSystem extends createSystem({}) {
       audio.fanfare();
       expSound.sting('summit');
       this.queueToast(`Summit · ${formatAltitude(SUMMIT_ELEV)}`, 6);
-      this.queueToast('Take the glider from your pack and drop it', 6);
+      this.queueToast('Walk into the Summit Chute gate by the flags to ride down', 6);
     }
   }
 
@@ -804,8 +806,12 @@ export class ExpeditionDirectorSystem extends createSystem({}) {
         const left = Math.max(0, Math.round(top - this.player.position.y));
         text = `${left} m to the top`;
       }
+    } else if (phase === Phase.Sliding) {
+      if (chuteState.arrived.peek()) {
+        text = this.world.renderer.xr.isPresenting ? 'Palm up: take out the glider and drop it' : 'B: pack · pick the glider · U: drop it';
+      }
     } else if (exp.summited.peek()) {
-      text = this.world.renderer.xr.isPresenting ? 'Palm up for your pack' : 'B: pack · pick the glider · U: drop it';
+      text = 'The chute gate is just past the summit marker';
     } else if (this.camp >= 0) {
       text = this.world.renderer.xr.isPresenting ? 'Rest here, or skip ahead' : 'Rest here, or press K to skip ahead';
     } else {

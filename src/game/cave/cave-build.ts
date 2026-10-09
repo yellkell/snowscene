@@ -825,13 +825,14 @@ function isNearPath(p: Vector3, self: number): boolean {
 }
 
 /**
- * How a station is held up: a centre post down to the floor or onto the
- * station stacked below it, or, when a machine runs underneath, a beam out
- * to the cave wall instead.
+ * How a station is held up: a centre post down to the cave floor, or, when
+ * anything runs or stands underneath, a beam out to the cave wall instead.
+ * (A post onto a station stacked below would plant a timber in the middle
+ * of that station's deck, right where you step off the machine arriving
+ * there.)
  */
 function supportFor(index: number): { post: number; wall: boolean } {
   const at = PLATFORMS[index].keys[0].a;
-  let rest = FLOOR_Y;
   const a = { x: 0, y: 0, z: 0 };
   for (let j = 0; j < PLATFORMS.length; j++) {
     if (j === index) continue;
@@ -843,12 +844,11 @@ function supportFor(index: number): { post: number; wall: boolean } {
       for (const sq of other.claim) {
         const o = sqOffset(sq);
         if (Math.abs(a.x + o.x - at.x) >= 0.45 || Math.abs(a.z + o.z - at.z) >= 0.45) continue;
-        if (other.kind !== 'station') return { post: 0, wall: true };
-        rest = Math.max(rest, a.y);
+        return { post: 0, wall: true };
       }
     }
   }
-  return { post: rest - at.y, wall: false };
+  return { post: FLOOR_Y - at.y, wall: false };
 }
 
 // --------------------------------------------------------- the beacon ----

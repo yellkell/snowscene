@@ -40,6 +40,12 @@ export interface LaunchSite {
   yaw: number;
 }
 
+/** Linear fog distances (metres) for a storm level. */
+export interface FogRange {
+  near: number;
+  far: number;
+}
+
 export interface Level {
   id: LevelId;
   /** Walkable surface height: terrain, ice, bridges, ladders. */
@@ -74,6 +80,8 @@ export interface Level {
   stormTarget(head: Vector3): number;
   /** Height of the cloud deck (sea of clouds). */
   cloudDeckY: number;
+  /** Fog distances for a storm level (0..1); the weather's default curve if absent. */
+  fogRange?(storm: number, out: FogRange): FogRange;
   /** Called when the glide passes below the cloud deck over open air. */
   cloudLanding?(): { x: number; z: number; yaw: number } | null;
   /** Draw this level's map (route, camps, you) into a square canvas. */

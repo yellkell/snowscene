@@ -17,7 +17,7 @@
  *
  * RECENTRE: a brass button on the front of the open pack. Poke it with your
  * right index finger to re-centre yourself: back to the middle of the deck
- * you're on in the cave, your lean on the flume, facing up the trail, back
+ * you're on in the cave, your lean on the chute, facing up the trail, back
  * at the workbench, or facing the fire once you've landed.
  *
  * Desktop: B toggles the pack, 1-9 take items, U uses, Q stows, R recentres.
@@ -58,8 +58,8 @@ import { currentLevel } from './level.js';
 import { sceneRefs } from './scene-system.js';
 import { FIRE_POS } from './campfire.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt } from './rig.js';
-import { addWarmth, game, Phase, requestRecentre, SUMMIT_STAND, toast } from './state.js';
-import { SUMMIT_Y } from './terrain.js';
+import { BUILD_STAND } from './cave-bluff.js';
+import { addWarmth, game, Phase, requestRecentre, toast } from './state.js';
 
 /** Gesture thresholds (from FLUX): palm-normal·up and gaze cone, open/stay. */
 const OPEN_UP = 0.65;
@@ -232,7 +232,7 @@ export class BackpackSystem extends createSystem({}) {
     requestRecentre();
   }
 
-  /** Re-centring outside the cave and the flume (they handle their own). */
+  /** Re-centring outside the cave and the chute (they handle their own). */
   private recentreGeneric(): void {
     const world = this.world;
     switch (game.phase.peek()) {
@@ -245,7 +245,7 @@ export class BackpackSystem extends createSystem({}) {
       }
       case Phase.Building:
         faceYaw(world, 0);
-        placeHeadAt(world, SUMMIT_STAND.x, SUMMIT_STAND.z, SUMMIT_Y);
+        placeHeadAt(world, BUILD_STAND.x, BUILD_STAND.z, BUILD_STAND.y);
         toast('Back at the workbench.', 2);
         break;
       case Phase.Landed:

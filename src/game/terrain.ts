@@ -7,8 +7,9 @@
  *   0 .. -68      the pole trail, climbing ~19.5 m up a gentle couloir
  *   -68 .. -72    flat landing below the cliff
  *   -72           the rock wall (climbing section)
- *   < -72         summit shoulder where the glider is built; the main peak
- *                 rises further behind it
+ *   < -72         summit shoulder; at its back (-96) a 13 m rock bluff with
+ *                 the cave mouth in its face, whose top shelf is where the
+ *                 glider is built and launched; the main peak rises behind
  *
  * Everything here is pure math so gameplay can sample heights without
  * touching meshes.
@@ -35,6 +36,13 @@ export const TUTORIAL_CENTER_Z = -10;
 export const RANGES_INNER_RADIUS = 380;
 /** ...and the playable terrain stops just inside it. */
 export const TUTORIAL_TERRAIN_RADIUS = RANGES_INNER_RADIUS - 8;
+/** The rock bluff behind the summit shoulder: the cave mouth is in its face. */
+export const BLUFF_X = -3;
+/** Distance up the trail (s = -z) of the bluff's face. */
+export const BLUFF_FACE_S = 96;
+export const BLUFF_HEIGHT = 13;
+export const BLUFF_HALF_WIDTH = 12;
+
 /** Half width of the walkable trail corridor around the path centre line. */
 export const TRAIL_HALF_WIDTH = 5.5;
 
@@ -151,6 +159,16 @@ export function terrainHeight(x: number, z: number): number {
   h += fbm(x * 0.11 + 3.7, z * 0.11) * 0.7 * offTrail;
   // Wind-sculpted ripples along the trail itself (very subtle).
   if (s > -4 && s < WALL_S) h += valueNoise(x * 0.6, z * 0.35) * 0.05;
+
+  // The bluff: a flat-topped shelf stepping up out of the back of the summit
+  // shoulder and running back until the mountainside catches up with it.
+  if (s > BLUFF_FACE_S - 1 && s < 170) {
+    const lx = Math.abs(x - BLUFF_X);
+    const front = smoothstep(BLUFF_FACE_S - 0.2, BLUFF_FACE_S + 1.3, s);
+    const side = smoothstep(BLUFF_HALF_WIDTH + 7, BLUFF_HALF_WIDTH, lx);
+    const rough = valueNoise(x * 0.3, z * 0.3) * 0.3 * smoothstep(5, 9, lx);
+    h = Math.max(h, SUMMIT_Y + BLUFF_HEIGHT * front * side + rough * side);
+  }
 
   // Shallow basin for the frozen lake.
   const lx = (x - LAKE_CENTER_X) / LAKE_RADIUS_X;

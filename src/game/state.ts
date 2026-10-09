@@ -15,9 +15,9 @@ export const Phase = {
   Cave: 'Cave',
   /** At the top of the works: light the signal beacon. */
   Beacon: 'Beacon',
-  /** Down the log flume around the Needle, leaning past the hazards. */
+  /** Expedition only: down the summit chute, leaning past the barriers. */
   Sliding: 'Sliding',
-  /** Assemble the hang glider kit on the summit workbench. */
+  /** Assemble the hang glider kit on the beacon deck on top of the cave's bluff. */
   Building: 'Building',
   /** Glider is assembled; grab the control bar with both hands to launch. */
   Launch: 'Launch',
@@ -32,8 +32,6 @@ export const PART_COUNT = 3;
 
 /** Where the player stands once they have hauled themselves over the lip. */
 export const SUMMIT_STAND = new Vector3(CLIFF_CENTER_X, 0, WALL_Z - 1.4);
-/** Root of the glider kit on the summit (floor level), in front of the player. */
-export const WORKBENCH_POS = new Vector3(CLIFF_CENTER_X, 0, WALL_Z - 2.75);
 /** Distance up the trail at which the cliff section begins. */
 export const CLIMB_TRIGGER_S = TRAIL_END_S + 1.5;
 
@@ -45,7 +43,7 @@ export const game = {
   partsPlaced: signal(0),
   /** How many glider parts have been recovered from the cave. */
   partsFound: signal(0),
-  /** The signal beacon on top of the Needle is burning. */
+  /** The signal beacon on top of the cave's bluff is burning. */
   beaconLit: signal(false),
   /** 0 outdoors .. 1 inside the cave (weather and sky stand down). */
   indoors: 0,

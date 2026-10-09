@@ -20,11 +20,12 @@
  * one square onto it.
  */
 
-import { Color, createSystem, Matrix4, Vector3 } from '@iwsdk/core';
+import { Box3, Color, createSystem, Matrix4, Vector3 } from '@iwsdk/core';
 import { audio } from '../audio.js';
 import { Bonfire, fires } from '../campfire.js';
 import { HANDS, type Handedness } from '../hand-input.js';
-import { getHeadWorld } from '../rig.js';
+import { BUILD_STAND } from '../cave-bluff.js';
+import { faceYaw, getHeadWorld, placeHeadAt } from '../rig.js';
 import { sceneRefs } from '../scene-system.js';
 import { fadeThen, game, Phase, setPhase, toast } from '../state.js';
 import {
@@ -65,8 +66,10 @@ const PART_LABEL: Record<GliderPartId, string> = {
 };
 /** Seconds of summit view before the fade into the cave. */
 const PREROLL = 3.4;
-/** Close a hand within this of a part or the torch to take it. */
+/** Close a hand within this of the torch to take it. */
 const TAKE_RADIUS = 0.3;
+/** A closed hand within this of a glider part (its bounds) takes it. */
+const PART_REACH = 0.28;
 /** How close the torch's head must come to the brazier. */
 const LIGHT_RADIUS = 0.42;
 /** A missed step burns the deck that left without you for this long. */
@@ -74,7 +77,7 @@ const SLIP_FLASH = 0.6;
 /** The ice walls' own glow, and how warm it turns once the beacon burns. */
 const ICE_GLOW = new Color(0.025, 0.08, 0.16);
 const FIRE_GLOW = new Color(0.2, 0.1, 0.05);
-/** Seconds after the beacon catches before the flume. */
+/** Seconds after the beacon catches before you come out on top of the bluff. */
 const BEACON_HOLD = 4.5;
 
 export class CaveSystem extends createSystem({}) {
@@ -108,11 +111,17 @@ export class CaveSystem extends createSystem({}) {
   private readonly n = new Vector3();
   private readonly color = new Color();
   private readonly matrix = new Matrix4();
+  /** World bounds of each part on its rack (they never move there). */
+  private readonly partBounds = new Map<GliderPartId, Box3>();
 
   init(): void {
     if (import.meta.env.DEV) validateScore();
     this.v = buildCave();
     this.world.createTransformEntity(this.v.root, { persistent: true });
+    this.v.root.updateMatrixWorld(true);
+    for (const id of Object.keys(this.v.parts) as GliderPartId[]) {
+      this.partBounds.set(id, new Box3().setFromObject(this.v.parts[id]));
+    }
     this.states = PLATFORMS.map(() => ({
       anchor: { x: 0, y: 0, z: 0 },
       moving: false,
@@ -143,7 +152,7 @@ export class CaveSystem extends createSystem({}) {
       game.phase.subscribe((phase) => {
         if (phase === Phase.Cave && !this.inside && this.preroll < 0) {
           this.preroll = PREROLL;
-          toast('The kit is empty. The parts are in the old works inside the Needle.', PREROLL + 1);
+          toast('The glider parts are somewhere in the old works inside this cave.', PREROLL + 1);
         }
       }),
       game.resetCount.subscribe(() => this.reset()),
@@ -426,9 +435,12 @@ export class CaveSystem extends createSystem({}) {
     const holder = this.v.parts[part];
     let take = false;
     if (this.world.renderer.xr.isPresenting) {
-      holder.getWorldPosition(this.m);
+      // Anywhere on the part counts, and a hand that is already closed takes
+      // it as it reaches in: no need to time the grab.
+      const bounds = this.partBounds.get(part)!;
       for (const hand of HANDS) {
-        if (hand.gripDown && hand.position.distanceTo(this.m) < TAKE_RADIUS) take = true;
+        if (!hand.tracked || !hand.grip) continue;
+        if (bounds.distanceToPoint(hand.position) < PART_REACH) take = true;
       }
     } else {
       const k = this.input.keyboard;
@@ -456,10 +468,7 @@ export class CaveSystem extends createSystem({}) {
         this.v.beaconGlow.material.opacity = Math.min(0.85, this.beaconTimer);
         if (this.beaconTimer > BEACON_HOLD) {
           this.beaconTimer = -1;
-          fadeThen(() => {
-            this.exit();
-            setPhase(Phase.Sliding);
-          });
+          fadeThen(() => this.arriveOnTop());
         }
       }
       return false;
@@ -497,6 +506,19 @@ export class CaveSystem extends createSystem({}) {
     this.n.set(0, 0.32, 0).add(torch.position);
     if (this.n.distanceTo(this.v.brazier) < LIGHT_RADIUS) this.light();
     return true;
+  }
+
+  /** Under the fade: out of the chimney onto the beacon deck, facing the kit. */
+  private arriveOnTop(): void {
+    this.exit();
+    const rig = this.player;
+    rig.rotation.set(0, 0, 0);
+    rig.updateMatrixWorld(true);
+    faceYaw(this.world, 0);
+    placeHeadAt(this.world, BUILD_STAND.x, BUILD_STAND.z, BUILD_STAND.y);
+    game.velocity.set(0, 0, 0);
+    setPhase(Phase.Building);
+    toast('Out on top of the rock! Build the glider and fly down to the party.', 5);
   }
 
   private light(): void {
@@ -641,10 +663,14 @@ export class CaveSystem extends createSystem({}) {
       v.marker.scale.setScalar(0.85 + 0.15 * pulse);
     }
 
-    // Glow on a part that is waiting for you.
+    // Parts still on their racks pulse; the one waiting for you most of all.
     const part = this.partHere();
+    const beat = 0.5 + 0.5 * Math.sin(time * 4);
     for (const id of Object.keys(v.partGlow) as GliderPartId[]) {
-      v.partGlow[id].material.opacity = id === part ? 0.45 + 0.35 * Math.sin(time * 4) : 0.25;
+      const here = id === part;
+      v.partGlow[id].material.opacity = here ? 0.5 + 0.45 * beat : 0.3 + 0.2 * beat;
+      v.partGlow[id].scale.setScalar(here ? 1.1 + 0.5 * beat : 1.1);
+      v.parts[id].scale.setScalar(1 + (here ? 0.1 : 0.04) * beat);
     }
     v.torchFlame.visible = !game.beaconLit.peek();
 
