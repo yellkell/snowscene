@@ -2,10 +2,12 @@
  * Summit assembly: put together a half-size hang glider kit.
  *
  * Close a hand anywhere on a loose part to pick it up (parts glow when your
- * hand is close enough), carry it to its glowing outline on the frame and
- * open your hand to fit it. Parts dropped away from their outline float back
- * to where they were resting. When every part is fitted the kit "becomes" a
- * full-size glider for the launch.
+ * hand is close enough). A part out of reach can be pulled in: reach toward
+ * it so it glows, then close your hand. Carry it to its glowing outline on
+ * the frame and open your hand to fit it; the part stays pinned to the spot
+ * you grabbed it by while it turns to match the frame. Parts dropped away
+ * from the kit float back to where they were resting. When every part is
+ * fitted the kit "becomes" a full-size glider for the launch.
  *
  * Desktop fallback: press E to fit the next part.
  */
@@ -40,11 +42,19 @@ import {
 
 const KIT_SCALE = 0.5;
 /** Grab when the hand is within this distance of a part's bounding box. */
-const GRAB_MARGIN = 0.1;
+const GRAB_MARGIN = 0.15;
 /** Parts glow when a hand is within this distance of them. */
-const HOVER_MARGIN = 0.22;
+const HOVER_MARGIN = 0.25;
+/** Reaching toward a part (head -> hand ray) within this angle pulls it in. */
+const AIM_COS = Math.cos(0.33);
+/** ... from no further away than this. */
+const AIM_RANGE = 3.2;
+/** Seconds for a pulled part to fly into the hand. */
+const PULL_TIME = 0.3;
 /** Fit when the part's centre is this close to its outline. */
-const SNAP_RADIUS = 0.45;
+const SNAP_RADIUS = 0.75;
+/** A hand that drops out of tracking keeps its part this long. */
+const LOST_GRACE = 0.5;
 const KEEL_Y = 2.3; // keel height in glider model space
 
 interface PartInfo {
@@ -64,18 +74,40 @@ interface PartInfo {
 
 const HOVER_COLOR = new Color(1, 0.86, 0.55);
 
+/** How a hand holds its part. */
+interface Hold {
+  part: PartInfo | null;
+  /** The grabbed point in the part's (rotated, scaled) frame, from its origin. */
+  readonly local: Vector3;
+  readonly fromQuat: Quaternion;
+  /** Where a pulled part's grab point started, and the pull's progress 0..1. */
+  readonly pullFrom: Vector3;
+  pull: number;
+  lost: number;
+}
+
+const newHold = (): Hold => ({
+  part: null,
+  local: new Vector3(),
+  fromQuat: new Quaternion(),
+  pullFrom: new Vector3(),
+  pull: 1,
+  lost: 0,
+});
+
 export class GliderBuildSystem extends createSystem({
   parts: { required: [GliderPart] },
 }) {
   private kitRoot!: Group;
   private parts = new Map<GliderPartId, PartInfo>();
-  private carrying: Record<Handedness, PartInfo | null> = { left: null, right: null };
-  private readonly offsets: Record<Handedness, Vector3> = {
-    left: new Vector3(),
-    right: new Vector3(),
-  };
+  private readonly holds: Record<Handedness, Hold> = { left: newHold(), right: newHold() };
+  /** The part each hand is reaching toward (glows; closing the hand pulls it in). */
+  private readonly aimed: Record<Handedness, PartInfo | null> = { left: null, right: null };
   private completeTimer = -1;
   private readonly tmp = new Vector3();
+  private readonly tmp2 = new Vector3();
+  private readonly head = new Vector3();
+  private readonly inv = new Quaternion();
 
   init(): void {
     const base = new Vector3(WORKBENCH_POS.x, SUMMIT_Y, WORKBENCH_POS.z);
@@ -175,8 +207,10 @@ export class GliderBuildSystem extends createSystem({
 
   private reset(): void {
     this.kitRoot.visible = true;
-    this.carrying.left = null;
-    this.carrying.right = null;
+    this.holds.left.part = null;
+    this.holds.right.part = null;
+    this.aimed.left = null;
+    this.aimed.right = null;
     this.completeTimer = -1;
     for (const part of this.parts.values()) {
       part.entity.setValue(GliderPart, 'placed', false);
@@ -194,7 +228,7 @@ export class GliderBuildSystem extends createSystem({
     for (const part of this.parts.values()) this.animate(part, dt);
     if (game.phase.peek() !== Phase.Building) return;
 
-    if (this.world.renderer.xr.isPresenting) this.updateHands();
+    if (this.world.renderer.xr.isPresenting) this.updateHands(dt);
     else if (this.input.keyboard.getKeyDown('KeyE')) this.placeNext();
 
     for (const part of this.parts.values()) this.updateFeedback(part, dt, time);
@@ -214,7 +248,7 @@ export class GliderBuildSystem extends createSystem({
   }
 
   private isCarried(part: PartInfo): boolean {
-    return this.carrying.left === part || this.carrying.right === part;
+    return this.holds.left.part === part || this.holds.right.part === part;
   }
 
   private isFree(part: PartInfo): boolean {
@@ -227,24 +261,34 @@ export class GliderBuildSystem extends createSystem({
     return part.bounds.distanceToPoint(point);
   }
 
-  private updateHands(): void {
+  private updateHands(dt: number): void {
+    this.world.camera.getWorldPosition(this.head);
     for (const hand of HANDS) {
       const side = hand.handedness;
-      const carried = this.carrying[side];
+      const hold = this.holds[side];
+      const carried = hold.part;
       if (carried) {
-        if (!hand.grip || !hand.tracked) {
-          this.carrying[side] = null;
+        if (!hand.grip) {
+          hold.part = null;
           this.drop(carried);
           continue;
         }
-        carried.group.position.copy(hand.position).add(this.offsets[side]);
-        // Ease the part into its slot orientation as it nears the frame.
-        const d = carried.group.position.distanceTo(carried.slotPos);
-        const t = 1 - Math.min(1, Math.max(0, (d - 0.15) / 0.8));
-        carried.group.quaternion.slerpQuaternions(carried.restQuat, carried.slotQuat, t);
+        // A flicker in tracking shouldn't throw the part back to its crate.
+        if (!hand.tracked) {
+          hold.lost += dt;
+          if (hold.lost > LOST_GRACE) {
+            hold.part = null;
+            this.drop(carried);
+          }
+          continue;
+        }
+        hold.lost = 0;
+        this.carry(carried, hold, hand.position, dt);
         continue;
       }
+      this.aimed[side] = hand.tracked ? this.aimTarget(hand.position) : null;
       if (!hand.gripDown) continue;
+      // Touching a part beats reaching toward one.
       let best: PartInfo | null = null;
       let bestDist = GRAB_MARGIN;
       for (const part of this.parts.values()) {
@@ -255,13 +299,61 @@ export class GliderBuildSystem extends createSystem({
           best = part;
         }
       }
-      if (best) {
-        best.anim = null;
-        this.carrying[side] = best;
-        this.offsets[side].subVectors(best.group.position, hand.position);
-        audio.clack();
+      const pulled = !best;
+      best ??= this.aimed[side];
+      if (!best) continue;
+      best.anim = null;
+      hold.part = best;
+      hold.lost = 0;
+      hold.fromQuat.copy(best.group.quaternion);
+      // Hold it by the point you touched, or the near side of one you pulled in.
+      const grabPoint = pulled ? best.bounds.clampPoint(hand.position, this.tmp) : this.tmp.copy(hand.position);
+      hold.pullFrom.copy(grabPoint);
+      hold.pull = pulled ? 0 : 1;
+      this.inv.copy(best.group.quaternion).invert();
+      hold.local.subVectors(grabPoint, best.group.position).applyQuaternion(this.inv);
+      this.aimed[side] = null;
+      audio.clack();
+    }
+  }
+
+  /** The free part a hand is reaching toward, if any (head -> hand ray). */
+  private aimTarget(hand: Vector3): PartInfo | null {
+    const dir = this.tmp2.subVectors(hand, this.head);
+    if (dir.lengthSq() < 0.09) return null; // arm not reaching out
+    dir.normalize();
+    let best: PartInfo | null = null;
+    let bestCos = AIM_COS;
+    for (const part of this.parts.values()) {
+      if (!this.isFree(part)) continue;
+      part.bounds.setFromObject(part.group);
+      const centre = part.bounds.getCenter(this.tmp);
+      const dist = centre.distanceTo(hand);
+      if (dist > AIM_RANGE) continue;
+      const cos = centre.sub(hand).normalize().dot(dir);
+      if (cos > bestCos) {
+        bestCos = cos;
+        best = part;
       }
     }
+    return best;
+  }
+
+  /** Keep the grabbed point on the hand while the part eases toward its slot pose. */
+  private carry(part: PartInfo, hold: Hold, hand: Vector3, dt: number): void {
+    const target = this.tmp;
+    if (hold.pull < 1) {
+      hold.pull = Math.min(1, hold.pull + dt / PULL_TIME);
+      const e = 1 - Math.pow(1 - hold.pull, 3);
+      target.lerpVectors(hold.pullFrom, hand, e);
+    } else {
+      target.copy(hand);
+    }
+    const d = part.group.position.distanceTo(part.slotPos);
+    const t = 1 - Math.min(1, Math.max(0, (d - 0.15) / 0.9));
+    part.group.quaternion.slerpQuaternions(hold.fromQuat, part.slotQuat, t);
+    part.group.position.copy(hold.local).applyQuaternion(part.group.quaternion);
+    part.group.position.subVectors(target, part.group.position);
   }
 
   /** Glow parts within reach, and pulse the outline of a carried part. */
@@ -270,6 +362,7 @@ export class GliderBuildSystem extends createSystem({
     if (this.isCarried(part)) {
       target = 0.25;
     } else if (this.isFree(part) && this.world.renderer.xr.isPresenting) {
+      if (this.aimed.left === part || this.aimed.right === part) target = 0.3;
       for (const hand of HANDS) {
         if (!hand.tracked) continue;
         if (this.distanceToPart(part, hand.position) < HOVER_MARGIN) target = 0.45;

@@ -19,7 +19,7 @@ import { SECTION_NAMES } from './expedition/exp-layout.js';
 import { exp } from './expedition/exp-state.js';
 import { currentLevel } from './level.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt, yawForward } from './rig.js';
-import { fadeThen, game, PART_COUNT, Phase, requestRestart, setPhase } from './state.js';
+import { fadeThen, game, PART_COUNT, Phase, requestRestart, setPhase, toast } from './state.js';
 import { CLIFF_HEIGHT, WALL_S, WALL_Z } from './terrain.js';
 import { startTutorialKit } from './tutorial-kit.js';
 
@@ -61,6 +61,7 @@ export class GuideSystem extends createSystem({}) {
   private anchored = false;
 
   private phaseTime = 0;
+  private soundHintAt = 0;
 
   init(): void {
     // Score: "By the River" for the ascent, "Night Catch" from the moment
@@ -90,7 +91,9 @@ export class GuideSystem extends createSystem({}) {
     const unlock = () => audio.unlock();
     const pageEvents = ['pointerdown', 'pointerup', 'click', 'touchend', 'keydown'];
     for (const type of pageEvents) window.addEventListener(type, unlock);
-    const xrEvents = ['selectstart', 'select', 'squeezestart', 'squeeze', 'inputsourceschange'];
+    // Entering through the browser's own "Enter VR" offer gives the page no
+    // gesture, so these XR presses are the first chance the sound has.
+    const xrEvents = ['selectstart', 'select', 'selectend', 'squeezestart', 'squeeze', 'squeezeend', 'inputsourceschange'];
     const xr = this.world.renderer.xr;
     const onSessionStart = () => {
       audio.unlock();
@@ -230,7 +233,9 @@ export class GuideSystem extends createSystem({}) {
           step: 'STEP 3 OF 7',
           title: 'The timber works',
           body: immersive
-            ? 'Step onto decks with green lamps. Amber: leaving. Red: moving.'
+            ? game.partsFound.peek() === 0
+              ? 'Step onto decks with green lamps. Pick up the glider parts on the racks.'
+              : 'Step onto decks with green lamps. Amber: leaving. Red: moving.'
             : 'W steps across on green lamps. E takes a part.',
           hint: `${game.partsFound.peek()} of 3 parts found`,
         };
@@ -256,7 +261,11 @@ export class GuideSystem extends createSystem({}) {
         return {
           step: 'STEP 6 OF 7',
           title: 'Build your glider',
-          body: immersive ? 'Carry each part to its outline.' : 'Press E to fit a part.',
+          body: immersive
+            ? game.partsPlaced.peek() === 0
+              ? 'Pick up a glider part: reach toward it and close your hand. Carry it to its outline.'
+              : 'Carry each part to its outline.'
+            : 'Press E to fit a part.',
           hint: `${game.partsPlaced.peek()} of 3 fitted`,
         };
       case Phase.Launch:
@@ -400,7 +409,21 @@ export class GuideSystem extends createSystem({}) {
     const toastNow = game.toast.peek();
     if (toastNow && toastNow.until <= performance.now() / 1000) game.toast.value = null;
     if (!this.world.renderer.xr.isPresenting || !this.panelObject) return;
+    this.promptForSound();
     this.placeInFront();
+  }
+
+  /**
+   * The browser keeps audio silent until a press it counts as a gesture.
+   * Hands closing into fists are not one, so without this the first pinch
+   * (often a minute in) is when the sound finally starts. Ask for it.
+   */
+  private promptForSound(): void {
+    if (audio.running()) return;
+    const now = performance.now() / 1000;
+    if (this.phaseTime < 1.5 || now < this.soundHintAt) return;
+    this.soundHintAt = now + 7;
+    toast('Pinch your fingers (or pull a trigger) to turn the sound on.', 5);
   }
 
   /** Float the panel in front of the viewer, re-centring only when needed. */

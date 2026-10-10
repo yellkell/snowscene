@@ -57,6 +57,11 @@ class SnowAudio {
     this.applyMusic();
   }
 
+  /** Sound is actually playing (the browser has let the context run). */
+  running(): boolean {
+    return this.ctx?.state === 'running';
+  }
+
   /** The audio context once unlocked (null before the first gesture). */
   context(): AudioContext | null {
     return this.ctx;

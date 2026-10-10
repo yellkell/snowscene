@@ -201,6 +201,11 @@ export class ExpeditionWorldSystem extends createSystem({}) {
 
   private updateVisibility(): void {
     const h = this.head;
+    // On the finale glide the cheap trees and boulders stay: popping to the
+    // detailed ones as you swoop low reads worse than never swapping.
+    const phase = game.phase.peek();
+    const cheapOnly =
+      exp.summited.peek() && (phase === Phase.Launch || phase === Phase.Gliding || phase === Phase.Landed);
     for (const c of this.chunks) {
       const d = h.distanceTo(c.centre) - c.radius;
       const range = c.layer === 'detail' ? DETAIL_RADIUS : LARGE_RADIUS;
@@ -211,7 +216,7 @@ export class ExpeditionWorldSystem extends createSystem({}) {
       }
       if (show && c.hasLod) {
         const dc = d + c.radius;
-        const hi = c.lodHi ? dc < LOD_RADIUS + HYSTERESIS : dc < LOD_RADIUS;
+        const hi = !cheapOnly && (c.lodHi ? dc < LOD_RADIUS + HYSTERESIS : dc < LOD_RADIUS);
         if (hi !== c.lodHi) {
           c.lodHi = hi;
           c.hi.visible = hi;

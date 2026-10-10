@@ -20,7 +20,7 @@
  * one square onto it.
  */
 
-import { Color, createSystem, Matrix4, Vector3 } from '@iwsdk/core';
+import { Box3, Color, createSystem, Matrix4, Vector3 } from '@iwsdk/core';
 import { audio } from '../audio.js';
 import { Bonfire, fires } from '../campfire.js';
 import { HANDS, type Handedness } from '../hand-input.js';
@@ -65,8 +65,10 @@ const PART_LABEL: Record<GliderPartId, string> = {
 };
 /** Seconds of summit view before the fade into the cave. */
 const PREROLL = 3.4;
-/** Close a hand within this of a part or the torch to take it. */
+/** Close a hand within this of the torch to take it. */
 const TAKE_RADIUS = 0.3;
+/** Close a hand within this of any bit of a glider part to take it. */
+const PART_REACH = 0.14;
 /** How close the torch's head must come to the brazier. */
 const LIGHT_RADIUS = 0.42;
 /** A missed step burns the deck that left without you for this long. */
@@ -108,6 +110,7 @@ export class CaveSystem extends createSystem({}) {
   private readonly n = new Vector3();
   private readonly color = new Color();
   private readonly matrix = new Matrix4();
+  private readonly partBox = new Box3();
 
   init(): void {
     if (import.meta.env.DEV) validateScore();
@@ -161,6 +164,7 @@ export class CaveSystem extends createSystem({}) {
       this.v.parts[id].visible = true;
       this.v.partGlow[id].visible = true;
     }
+    this.v.partLabel.visible = true;
     this.torchHand = null;
     this.v.torch.position.copy(this.v.torchHome);
     this.v.torch.quaternion.identity();
@@ -359,6 +363,9 @@ export class CaveSystem extends createSystem({}) {
     this.candidate = -1;
     this.candidateFrames = 0;
     audio.marimba(this.flow);
+    if (this.partHere()) {
+      toast(this.world.renderer.xr.isPresenting ? 'Pick up the glider part: close your hand on it.' : 'Press E to take the glider part.', 4);
+    }
   }
 
   /** The next route step's deck docked here, if any, and the square to step onto. */
@@ -420,28 +427,38 @@ export class CaveSystem extends createSystem({}) {
     return part && !this.collected.has(part) ? part : null;
   }
 
+  /** Take a part: in XR any part you can close a hand on, from whatever deck you're on. */
   private updateParts(): boolean {
-    const part = this.partHere();
-    if (!part) return false;
-    const holder = this.v.parts[part];
-    let take = false;
+    let part: GliderPartId | null = null;
     if (this.world.renderer.xr.isPresenting) {
-      holder.getWorldPosition(this.m);
-      for (const hand of HANDS) {
-        if (hand.gripDown && hand.position.distanceTo(this.m) < TAKE_RADIUS) take = true;
-      }
+      part = this.partInHand();
     } else {
       const k = this.input.keyboard;
-      take = k.getKeyDown('KeyE') || k.getKeyDown('KeyW') || k.getKeyDown('ArrowUp');
+      if (k.getKeyDown('KeyE') || k.getKeyDown('KeyW') || k.getKeyDown('ArrowUp')) part = this.partHere();
     }
-    if (!take) return false;
+    if (!part) return false;
+    const holder = this.v.parts[part];
     this.collected.add(part);
+    this.v.partLabel.visible = false;
     holder.visible = false;
     this.v.partGlow[part].visible = false;
     game.partsFound.value = this.collected.size;
     audio.chime();
     toast(`${PART_LABEL[part]} recovered: ${this.collected.size} of 3`, 3.5);
     return true;
+  }
+
+  /** An uncollected part a hand just closed on (anywhere on it, plus a little reach). */
+  private partInHand(): GliderPartId | null {
+    for (const hand of HANDS) {
+      if (!hand.gripDown) continue;
+      for (const id of Object.keys(this.v.parts) as GliderPartId[]) {
+        if (this.collected.has(id)) continue;
+        this.partBox.setFromObject(this.v.parts[id]).expandByScalar(PART_REACH);
+        if (this.partBox.containsPoint(hand.position)) return id;
+      }
+    }
+    return null;
   }
 
   // ----------------------------------------------------------- the beacon ---
@@ -646,6 +663,7 @@ export class CaveSystem extends createSystem({}) {
     for (const id of Object.keys(v.partGlow) as GliderPartId[]) {
       v.partGlow[id].material.opacity = id === part ? 0.45 + 0.35 * Math.sin(time * 4) : 0.25;
     }
+    if (v.partLabel.visible) v.partLabel.position.y = v.partLabelHome.y + 0.04 * Math.sin(time * 2.2);
     v.torchFlame.visible = !game.beaconLit.peek();
 
     const shaft = v.shaft.material as { opacity: number };
