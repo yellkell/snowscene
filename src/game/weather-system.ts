@@ -21,6 +21,7 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import { audio } from './audio.js';
+import { mistHooks } from './glide-mist.js';
 import { landUniforms } from './land-material.js';
 import { currentLevel } from './level.js';
 import { getHeadWorld } from './rig.js';
@@ -223,8 +224,20 @@ export class WeatherSystem extends createSystem({}) {
     // ranges pick up aerial haze.
     const fog = this.scene.fog as Fog | null;
     this.fogColor.copy(weatherHooks.clearFog ?? FOG_COLOR).lerp(weatherHooks.stormFog ?? STORM_FOG, storm);
-    const near = 400 + (6 - 400) * storm;
-    const far = 24000 + (80 - 24000) * Math.pow(storm, 0.6);
+    let near = 400 + (6 - 400) * storm;
+    let far = 24000 + (80 - 24000) * Math.pow(storm, 0.6);
+    // A light haze over the glide, and in a bank of mist the fog closes right in.
+    const haze = mistHooks.haze;
+    if (haze > 0) {
+      near += (Math.min(near, mistHooks.hazeNear) - near) * haze;
+      far += (Math.min(far, mistHooks.hazeFar) - far) * haze;
+    }
+    const mist = mistHooks.inside;
+    if (mist > 0) {
+      near += (1 - near) * mist;
+      far += (Math.min(far, mistHooks.far) - far) * mist;
+      this.fogColor.lerp(mistHooks.color, 0.6 * mist);
+    }
     if (fog) {
       fog.color.copy(this.fogColor);
       fog.near = near;

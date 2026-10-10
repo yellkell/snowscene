@@ -498,6 +498,9 @@ export class BackpackSystem extends createSystem({}) {
     else if (id === 'flare') toast('Raise it high and squeeze');
     else if (id === 'glider') toast('Drop it at the launch to unpack');
     else if (id === 'carabiner') toast('Touch the rope to clip in');
+    else if (id === 'leftWing' || id === 'rightWing' || id === 'controlBar') {
+      toast(game.phase.peek() === Phase.Building ? 'Fit it to its glowing outline on the frame' : 'Save it for the summit workbench');
+    }
   }
 
   private stowHand(side: Handedness): void {

@@ -1,6 +1,10 @@
 /**
  * Summit assembly: put together a half-size hang glider kit.
  *
+ * The parts you recovered in the cave are in your backpack: open it (left
+ * palm up) and take one out with your right hand, and it comes out ready to
+ * carry to the frame. Parts not in the pack wait on their crates.
+ *
  * Close a hand anywhere on a loose part to pick it up (parts glow when your
  * hand is close enough). A part out of reach can be pulled in: reach toward
  * it so it glows, then close your hand. Carry it to its glowing outline on
@@ -25,11 +29,12 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import { audio } from './audio.js';
+import { consume, equipment, GLIDER_PART_ITEMS, type ItemId, packCount, removeFromPack } from './equipment.js';
 import { GliderPart, GliderPartIds } from './game-components.js';
 import { buildGhost, buildGlider, type GliderPartId } from './glider-model.js';
 import { HANDS, type Handedness } from './hand-input.js';
 import { sceneRefs } from './scene-system.js';
-import { fadeThen, game, PART_COUNT, Phase, setPhase, WORKBENCH_POS } from './state.js';
+import { fadeThen, game, PART_COUNT, Phase, setPhase, toast, WORKBENCH_POS } from './state.js';
 import { SUMMIT_Y } from './terrain.js';
 import {
   BAR_CRATE_X,
@@ -59,6 +64,9 @@ const KEEL_Y = 2.3; // keel height in glider model space
 
 interface PartInfo {
   entity: Entity;
+  /** Its backpack item, and whether it is still packed away. */
+  item: ItemId;
+  inPack: boolean;
   group: Group;
   ghost: Group;
   materials: MeshStandardMaterial[];
@@ -174,6 +182,8 @@ export class GliderBuildSystem extends createSystem({
       entity.addComponent(GliderPart, { partId: id, placed: false });
       this.parts.set(id, {
         entity,
+        item: GLIDER_PART_ITEMS[id],
+        inPack: false,
         group,
         ghost,
         materials,
@@ -190,7 +200,10 @@ export class GliderBuildSystem extends createSystem({
     this.cleanupFuncs.push(
       game.resetCount.subscribe(() => this.reset()),
       game.phase.subscribe((phase) => {
-        if (phase === Phase.Building) this.completeTimer = -1;
+        if (phase === Phase.Building) {
+          this.completeTimer = -1;
+          this.syncPack();
+        }
         // The parts only reach the bench once you bring them down from the cave.
         const away =
           phase === Phase.Poling ||
@@ -199,10 +212,27 @@ export class GliderBuildSystem extends createSystem({
           phase === Phase.Beacon ||
           phase === Phase.Sliding;
         for (const part of this.parts.values()) {
-          if (!part.entity.getValue(GliderPart, 'placed')) part.group.visible = !away;
+          if (!part.entity.getValue(GliderPart, 'placed')) part.group.visible = !away && !part.inPack;
+        }
+        if (phase === Phase.Building && [...this.parts.values()].some((p) => p.inPack)) {
+          toast(
+            this.world.renderer.xr.isPresenting
+              ? 'Take the glider parts you collected out of your backpack and assemble them here.'
+              : 'The glider parts you collected are in your backpack: press E to fit each one here.',
+            7,
+          );
         }
       }),
     );
+  }
+
+  /** Which parts are still in the backpack (or in a hand, fresh out of it). */
+  private syncPack(): void {
+    for (const part of this.parts.values()) {
+      if (part.entity.getValue(GliderPart, 'placed')) continue;
+      part.inPack =
+        packCount(part.item) > 0 || equipment.inHand.left === part.item || equipment.inHand.right === part.item;
+    }
   }
 
   private reset(): void {
@@ -219,6 +249,7 @@ export class GliderBuildSystem extends createSystem({
       part.group.quaternion.copy(part.restQuat);
       part.ghost.visible = true;
       part.anim = null;
+      part.inPack = false;
     }
     game.partsPlaced.value = 0;
   }
@@ -252,7 +283,30 @@ export class GliderBuildSystem extends createSystem({
   }
 
   private isFree(part: PartInfo): boolean {
-    return !part.entity.getValue(GliderPart, 'placed') && !this.isCarried(part);
+    return !part.inPack && !part.entity.getValue(GliderPart, 'placed') && !this.isCarried(part);
+  }
+
+  /** A part just taken out of the backpack into this hand becomes the real part, carried. */
+  private unpackInto(side: Handedness, hand: Vector3): boolean {
+    const item = equipment.inHand[side];
+    if (!item) return false;
+    for (const part of this.parts.values()) {
+      if (part.item !== item || !part.inPack) continue;
+      consume(side);
+      part.inPack = false;
+      part.anim = null;
+      part.group.visible = true;
+      part.group.quaternion.copy(part.restQuat);
+      part.group.position.copy(hand);
+      const hold = this.holds[side];
+      hold.part = part;
+      hold.lost = 0;
+      hold.pull = 1;
+      hold.fromQuat.copy(part.restQuat);
+      hold.local.set(0, 0, 0);
+      return true;
+    }
+    return false;
   }
 
   /** Distance from a point to the part's current world bounding box. */
@@ -284,6 +338,10 @@ export class GliderBuildSystem extends createSystem({
         }
         hold.lost = 0;
         this.carry(carried, hold, hand.position, dt);
+        continue;
+      }
+      if (hand.tracked && hand.grip && this.unpackInto(side, hand.position)) {
+        this.aimed[side] = null;
         continue;
       }
       this.aimed[side] = hand.tracked ? this.aimTarget(hand.position) : null;
@@ -404,6 +462,14 @@ export class GliderBuildSystem extends createSystem({
   private placeNext(): void {
     for (const part of this.parts.values()) {
       if (!part.entity.getValue(GliderPart, 'placed')) {
+        if (part.inPack) {
+          // Desktop: straight out of the pack (or the hand it was taken into).
+          if (equipment.inHand.left === part.item) consume('left');
+          else if (equipment.inHand.right === part.item) consume('right');
+          else if (packCount(part.item) > 0) removeFromPack(part.item);
+          part.inPack = false;
+          part.group.visible = true;
+        }
         this.fit(part);
         return;
       }

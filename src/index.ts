@@ -27,6 +27,7 @@ import { CrossingGuardSystem } from './game/expedition/mechanics/crossing-guard-
 import { LadderSystem } from './game/expedition/mechanics/ladder-system.js';
 import { RopeSystem } from './game/expedition/mechanics/rope-system.js';
 import { GlideSystem } from './game/glide-system.js';
+import { GlideMistSystem } from './game/glide-mist.js';
 import { GliderBuildSystem } from './game/glider-build-system.js';
 import { GuideSystem } from './game/guide-system.js';
 import { HandInputSystem, hands } from './game/hand-input.js';
@@ -48,6 +49,7 @@ World.create(
 ).then((world) => {
   world
     .registerSystem(SceneSetupSystem, { priority: 20 })
+    .registerSystem(GlideMistSystem, { priority: 20.5 })
     .registerSystem(WeatherSystem, { priority: 21 })
     .registerSystem(CampfireSystem, { priority: 22 })
     .registerSystem(HandInputSystem, { priority: 0 })

@@ -26,6 +26,7 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import type { ItemId } from './equipment.js';
+import { buildGlider, type GliderPartId } from './glider-model.js';
 import { GeometryBuilder, segmentMatrix } from './mesh-utils.js';
 import { buildPole } from './world-builders.js';
 
@@ -209,6 +210,25 @@ function buildAxePair(): Group {
   return group;
 }
 
+const GLIDER_PART_OF: Partial<Record<ItemId, GliderPartId>> = {
+  leftWing: 'LeftWing',
+  rightWing: 'RightWing',
+  controlBar: 'ControlBar',
+};
+
+/** A glider part (the real model, scaled), centred on its own origin. */
+function buildGliderPartModel(item: ItemId, scale: number): Group {
+  const id = GLIDER_PART_OF[item]!;
+  const part = buildGlider().parts[id];
+  part.removeFromParent();
+  part.position.set(0, 0, 0);
+  part.scale.setScalar(scale);
+  const group = new Group();
+  group.name = `Packed${id}`;
+  group.add(part);
+  return group;
+}
+
 /** Full-size model held in a hand. */
 export function buildHeldItem(item: ItemId): Object3D | null {
   switch (item) {
@@ -228,6 +248,12 @@ export function buildHeldItem(item: ItemId): Object3D | null {
       return buildFlare();
     case 'glider':
       return buildPackedGlider();
+    case 'leftWing':
+    case 'rightWing':
+    case 'controlBar':
+      // On the summit the glider kit takes the part from your hand; anywhere
+      // else you just carry a small version of it.
+      return buildGliderPartModel(item, 0.12);
     case 'poles':
     default:
       return null; // poles are drawn by the pole system
@@ -269,6 +295,11 @@ export function buildSlotIcon(item: ItemId): Object3D {
       icon = buildFlare();
       icon.rotation.x = -Math.PI / 2;
       icon.scale.setScalar(0.5);
+      break;
+    case 'leftWing':
+    case 'rightWing':
+    case 'controlBar':
+      icon = buildGliderPartModel(item, 0.1);
       break;
     case 'glider':
     default:

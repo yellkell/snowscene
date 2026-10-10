@@ -263,7 +263,7 @@ export class GuideSystem extends createSystem({}) {
           title: 'Build your glider',
           body: immersive
             ? game.partsPlaced.peek() === 0
-              ? 'Pick up a glider part: reach toward it and close your hand. Carry it to its outline.'
+              ? 'Left palm up opens your backpack: take out the glider parts you collected and fit each to its outline.'
               : 'Carry each part to its outline.'
             : 'Press E to fit a part.',
           hint: `${game.partsPlaced.peek()} of 3 fitted`,

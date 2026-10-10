@@ -18,6 +18,10 @@ export const ItemIds = [
   'map',
   'flare',
   'glider',
+  // The tutorial's glider kit, recovered in the cave and assembled on the summit.
+  'leftWing',
+  'rightWing',
+  'controlBar',
 ] as const;
 export type ItemId = (typeof ItemIds)[number];
 
@@ -34,6 +38,9 @@ export const ITEM_LABELS: Record<ItemId, string> = {
   map: 'Map',
   flare: 'Flare',
   glider: 'Glider',
+  leftWing: 'Left wing',
+  rightWing: 'Right wing',
+  controlBar: 'Control bar',
 };
 
 export const equipment = {
@@ -70,6 +77,27 @@ export function holding(side: Handedness, item: ItemId): boolean {
 
 export function handsFree(side: Handedness): boolean {
   return equipment.inHand[side] === null;
+}
+
+/** The backpack item each recovered glider part becomes. */
+export const GLIDER_PART_ITEMS = {
+  LeftWing: 'leftWing',
+  RightWing: 'rightWing',
+  ControlBar: 'controlBar',
+} as const satisfies Record<string, ItemId>;
+
+/** Put one more of an item into the pack. */
+export function addToPack(item: ItemId): void {
+  equipment.pack.set(item, packCount(item) + 1);
+  changed();
+}
+
+/** Take one of an item out of the pack without putting it in a hand. */
+export function removeFromPack(item: ItemId): void {
+  const count = packCount(item) - 1;
+  if (count > 0) equipment.pack.set(item, count);
+  else equipment.pack.delete(item);
+  changed();
 }
 
 /** Put whatever is in a hand back into the pack. */
