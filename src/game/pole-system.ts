@@ -6,8 +6,12 @@
  * (as if levering yourself along the pole). Pushes feed a smoothed velocity
  * rather than moving you directly, so hand-tracking jitter never jerks the
  * view, and a little momentum carries you between strokes. A planted pole
- * never brakes you. Open the hand or lift the pole to unplant. Every plant
- * leaves a hole in the snow, so your strides leave a trail behind you.
+ * never brakes you. Open the hand, or pull it further from the tip than the
+ * pole is long, to unplant; it plants again only once its tip has lifted
+ * clear of the snow, so a stroke never stutters between planted and free.
+ * A planted tip stays where it went in and the shaft slides through your
+ * hand. Every plant leaves a hole in the snow, so your strides leave a trail
+ * behind you.
  *
  * In the desktop browser (no headset) hold W / ArrowUp to stride and watch
  * the simulated poles swing.
@@ -35,11 +39,18 @@ const PUSH_RESPONSE = 14;
 /** Fraction of "straight down" mixed into the grip axis so tips plant easily. */
 const DOWN_BIAS = 0.3;
 const PLANT_DEPTH = 0.04;
-const UNPLANT_HEIGHT = 0.18;
+/** A planted pole pops out once the hand is this much further from the tip than the pole is long. */
+const PLANT_SLACK = 0.35;
+/** After unplanting, the tip must rise this far above the snow before it can plant again. */
+const REPLANT_CLEAR = 0.06;
 
 interface PoleState {
   mesh: Mesh;
   planted: boolean;
+  /** May plant: the tip has been clear of the snow since it last came out. */
+  armed: boolean;
+  /** Orientation the free (unplanted) pole eases toward. */
+  readonly freeQuat: Quaternion;
   /** Where the tip went into the snow (world). */
   readonly anchor: Vector3;
   /** Hand position in rig-local space last frame (for hand velocity). */
@@ -64,7 +75,7 @@ export class PoleSystem extends createSystem({}) {
   private readonly dir = new Vector3();
   private readonly fwd = new Vector3();
   private readonly right = new Vector3();
-  private readonly target = new Quaternion();
+  private readonly hand = new Vector3();
   private readonly hangTarget = new Quaternion().setFromUnitVectors(Z_AXIS, DOWN);
   private strideClock = 0;
   private readonly marks = new PoleMarks();
@@ -79,6 +90,8 @@ export class PoleSystem extends createSystem({}) {
       return {
         mesh,
         planted: false,
+        armed: true,
+        freeQuat: new Quaternion().copy(this.hangTarget),
         anchor: new Vector3(),
         prevLocal: new Vector3(),
         handVel: new Vector3(),
@@ -143,6 +156,42 @@ export class PoleSystem extends createSystem({}) {
     rig.position.z += game.velocity.z * dt;
 
     this.constrainToTrail(dt);
+    this.posePoles(dt);
+  }
+
+  /**
+   * Draw the poles where your hands are now, after this frame's move (the
+   * hand positions read at the start of the frame are a stride behind).
+   */
+  private posePoles(dt: number): void {
+    this.player.updateMatrixWorld(true);
+    const smooth = 1 - Math.exp(-25 * dt);
+    for (const hand of HANDS) {
+      const pole = this.poles[hand.handedness];
+      if (!pole.mesh.visible) continue;
+      const grip = this.player.gripSpaces[hand.handedness];
+      grip.updateWorldMatrix(true, false);
+      this.hand.setFromMatrixPosition(grip.matrixWorld);
+      if (pole.planted) {
+        // Tip stays in its hole and the shaft slides through the hand. At the
+        // end of a stroke, when the hand is further away than the pole is
+        // long, the tip drags along the snow after it instead of lifting off.
+        this.tip.copy(pole.anchor);
+        this.dir.subVectors(this.tip, this.hand);
+        if (this.dir.length() > POLE_TIP_DISTANCE) {
+          this.tip.copy(this.hand).addScaledVector(this.dir.normalize(), POLE_TIP_DISTANCE);
+          this.tip.y = groundHeight(this.tip.x, this.tip.z);
+          this.dir.subVectors(this.tip, this.hand);
+        }
+        this.dir.normalize();
+        pole.mesh.position.copy(this.tip).addScaledVector(this.dir, -POLE_TIP_DISTANCE);
+        pole.quat.setFromUnitVectors(Z_AXIS, this.dir);
+      } else {
+        pole.mesh.position.copy(this.hand);
+        pole.quat.slerp(pole.freeQuat, hand.grip ? smooth : 1 - Math.exp(-10 * dt));
+      }
+      pole.mesh.quaternion.copy(pole.quat);
+    }
   }
 
   /** Returns true if this pole is planted and being pushed. */
@@ -150,47 +199,46 @@ export class PoleSystem extends createSystem({}) {
     if (!hand.tracked || !holding(hand.handedness, 'poles')) {
       pole.mesh.visible = false;
       pole.planted = false;
+      pole.armed = true;
       return false;
     }
     pole.mesh.visible = true;
-    pole.mesh.position.copy(hand.position);
-    const smooth = 1 - Math.exp(-25 * dt);
 
     if (!hand.grip) {
       pole.planted = false;
-      pole.quat.slerp(this.hangTarget, 1 - Math.exp(-10 * dt));
-      pole.mesh.quaternion.copy(pole.quat);
+      pole.armed = true;
+      pole.freeQuat.copy(this.hangTarget);
       return false;
     }
 
     // Shaft runs out of the pinky side of the fist (grip +Z), biased down.
     this.dir.copy(Z_AXIS).applyQuaternion(hand.quaternion);
     this.dir.multiplyScalar(1 - DOWN_BIAS).addScaledVector(DOWN, DOWN_BIAS).normalize();
-    this.tip.copy(hand.position).addScaledVector(this.dir, POLE_TIP_DISTANCE);
-    const ground = groundHeight(this.tip.x, this.tip.z);
-
-    if (!pole.planted && this.tip.y < ground + PLANT_DEPTH) {
-      pole.planted = true;
-      pole.anchor.set(this.tip.x, ground, this.tip.z);
-      this.player.worldToLocal(pole.prevLocal.copy(hand.position));
-      pole.handVel.set(0, 0, 0);
-      audio.crunch(hand.isHand ? 1 : 0.8);
-      sceneRefs.puffs?.emit(pole.anchor, 7);
-      this.marks.add(pole.anchor.x, pole.anchor.z, groundHeight);
-      this.pulse(hand.handedness);
-    } else if (pole.planted) {
-      const lifted = this.tip.y > ground + UNPLANT_HEIGHT;
-      const overreached = hand.position.distanceTo(pole.anchor) > POLE_TIP_DISTANCE + 0.35;
-      if (lifted || overreached) pole.planted = false;
-    }
+    pole.freeQuat.setFromUnitVectors(Z_AXIS, this.dir);
 
     if (pole.planted) {
-      // Visually pivot the pole about the planted tip.
-      this.dir.subVectors(pole.anchor, hand.position).normalize();
+      // A planted pole stays put until the hand pulls away from it (the end
+      // of a stroke, or lifting it out). The wrist angle no longer matters.
+      if (hand.position.distanceTo(pole.anchor) > POLE_TIP_DISTANCE + PLANT_SLACK) {
+        pole.planted = false;
+        pole.armed = false;
+      }
+    } else {
+      this.tip.copy(hand.position).addScaledVector(this.dir, POLE_TIP_DISTANCE);
+      const ground = groundHeight(this.tip.x, this.tip.z);
+      if (this.tip.y > ground + REPLANT_CLEAR) pole.armed = true;
+      if (pole.armed && this.tip.y < ground + PLANT_DEPTH) {
+        pole.planted = true;
+        pole.armed = false;
+        pole.anchor.set(this.tip.x, ground, this.tip.z);
+        this.player.worldToLocal(pole.prevLocal.copy(hand.position));
+        pole.handVel.set(0, 0, 0);
+        audio.crunch(hand.isHand ? 1 : 0.8);
+        sceneRefs.puffs?.emit(pole.anchor, 7);
+        this.marks.add(pole.anchor.x, pole.anchor.z, groundHeight);
+        this.pulse(hand.handedness);
+      }
     }
-    this.target.setFromUnitVectors(Z_AXIS, this.dir);
-    pole.quat.slerp(this.target, pole.planted ? 1 : smooth);
-    pole.mesh.quaternion.copy(pole.quat);
     if (!pole.planted) return false;
 
     // Hand velocity relative to the body (rig-local), low-passed.
