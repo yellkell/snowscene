@@ -28,16 +28,18 @@ export interface Kind {
   dps: number;
   /** Experience its crystal is worth. */
   xp: number;
-  neon: number;
+  /** Fur / shell colour, and the frost, horn or ember along its edges. */
+  body: number;
+  accent: number;
 }
 
 export const KINDS: Kind[] = [
   // The ghoul: skittering, frail, endless.
-  { name: 'ghoul', radius: 0.42, speed: 2.4, hp: 5, dps: 7, xp: 1, neon: 0xff2d55 },
+  { name: 'ghoul', radius: 0.42, speed: 2.4, hp: 5, dps: 7, xp: 1, body: 0x2c3652, accent: 0xc4e8ff },
   // The brute: a shelled thing that takes a volley or five.
-  { name: 'brute', radius: 0.7, speed: 1.7, hp: 28, dps: 12, xp: 4, neon: 0xb64dff },
+  { name: 'brute', radius: 0.7, speed: 1.7, hp: 28, dps: 12, xp: 4, body: 0x4a3830, accent: 0xf0dfc0 },
   // The titan: an elite. Always drops something worth walking to.
-  { name: 'titan', radius: 1.45, speed: 1.2, hp: 240, dps: 26, xp: 25, neon: 0xff9a1f },
+  { name: 'titan', radius: 1.45, speed: 1.2, hp: 240, dps: 26, xp: 25, body: 0x2a2833, accent: 0xffb54a },
 ];
 
 /** Crowd and hash grid: cell edge (m) and cells per side, centred on the player. */

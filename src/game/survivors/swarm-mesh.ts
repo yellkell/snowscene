@@ -11,8 +11,11 @@
  * it is biting). The CPU's whole job per frame is one pass copying columns.
  *
  * Changes for the snowfield: the bodies are scaled up to person-sized
- * monsters, the neon is frost-vampire colours, and the shader fades them
- * into the scene's fog so they loom out of the mist.
+ * monsters, and instead of Factory Fight's black-and-neon they are shaded
+ * like the rest of the mountain: dark fur and shell lit in the game's cel
+ * bands by the same low evening sun, blue sky in the shade, frost, horn or
+ * ember along the edges where Factory Fight had neon, and the scene's fog
+ * by distance.
  */
 
 import {
@@ -31,9 +34,11 @@ import {
   Vector4,
 } from '@iwsdk/core';
 import { CAP, type Horde, KINDS } from './horde.js';
+import { duneHeight } from './survivors-level.js';
 
-/** The hostile body: near-black, so the neon carries the shape. */
-const BODY = 0x0b0a10;
+/** Where the key light comes from: the valley's low sun, lifted a little so
+ *  backs and heads catch it rather than only the sides. */
+const KEY_LIGHT = new Vector3(-0.72, 0.065, 0.68).normalize().add(new Vector3(0, 0.9, 0)).normalize();
 
 /* ── the builder ────────────────────────────────────────────────────────── */
 
@@ -584,8 +589,9 @@ const SWARM_FRAG = /* glsl */ `
 uniform vec3 uFogColor;
 uniform float uFogNear;
 uniform float uFogFar;
-uniform vec3 uNeon;
+uniform vec3 uAccent;
 uniform vec3 uBody;
+uniform vec3 uKey;
 uniform float uTime;
 varying float vGlow;
 varying vec3 vW;
@@ -599,23 +605,25 @@ void main() {
   vec3 v = normalize(cameraPosition - vW);
   if (dot(n, v) < 0.0) n = -n;
   float facing = clamp(dot(n, v), 0.0, 1.0);
-  // The shell: near-black, but every facet catches the light from above
-  // a little differently (crystal, not a blob), a glint on the ones
-  // square to it, and the kind's neon creeping round the silhouette.
-  float key = clamp(dot(n, normalize(vec3(0.3, 1.0, 0.35))), 0.0, 1.0);
-  vec3 shell = uBody * (0.35 + 2.4 * key) + uNeon * (pow(1.0 - facing, 4.0) * 0.08 + pow(key, 24.0) * 0.012);
-  // Neon: a corner's glow fades across its facets, and the curve turns
-  // that fade into a hard-ish neon edge with a faint tint behind it.
+  // The game's cel look: warm sun in soft bands (lit, half-lit, shade),
+  // blue sky filling the shade, and a cool rim on the silhouette.
+  float key = clamp(dot(n, uKey), 0.0, 1.0);
+  float ramp = 0.58 * smoothstep(0.0, 0.1, key) + 0.42 * smoothstep(0.32, 0.52, key);
+  float sky = 0.5 + 0.5 * n.y;
+  vec3 light = vec3(0.42, 0.5, 0.72) * (0.6 + 0.4 * sky) + vec3(1.15, 0.98, 0.78) * ramp;
+  vec3 shell = uBody * light + vec3(0.45, 0.55, 0.8) * pow(1.0 - facing, 3.0) * 0.18;
+  // A corner's glow fades across its facets; past the curve's knee the
+  // facet takes the kind's accent (frost, horn, ember), lit like the rest.
   float g = clamp(vGlow, 0.0, 1.0);
-  float lit = smoothstep(0.86, 1.0, g) + g * 0.015;
-  vec3 col = mix(shell, uNeon * (0.75 + 0.35 * facing), lit);
-  // Past 1, neon goes white-hot (eyes, knees, tips, the core).
-  col = mix(col, vec3(1.0, 0.97, 0.92), clamp((vGlow - 1.0) * 0.6, 0.0, 0.9));
+  float lit = smoothstep(0.86, 1.0, g);
+  vec3 col = mix(shell, uAccent * (0.5 + 0.45 * ramp + 0.15 * sky), lit);
+  // Past 1: eyes, knees, tips and the core keep a small warm glow.
+  col = mix(col, vec3(1.0, 0.84, 0.5), clamp((vGlow - 1.0) * 0.5, 0.0, 0.7));
   // On fire: it flickers toward flame.
   float flick = 0.6 + 0.4 * sin(uTime * 37.0 + vW.x * 60.0 + vW.z * 40.0);
   col = mix(col, vec3(1.0, 0.5, 0.12), vBurn * 0.55 * flick);
   col = mix(col, vec3(1.0), vFlash);
-  // Out of the mist: the scene's fog, by distance.
+  // The scene's fog, by distance.
   col = mix(col, uFogColor, smoothstep(uFogNear, uFogFar, length(vW - cameraPosition)));
   gl_FragColor = vec4(col, 1.0);
   #include <colorspace_fragment>
@@ -652,8 +660,9 @@ class Brood {
       fragmentShader: SWARM_FRAG,
       side: DoubleSide,
       uniforms: {
-        uNeon: { value: new Color(KINDS[kind].neon) },
-        uBody: { value: new Color(BODY) },
+        uAccent: { value: new Color(KINDS[kind].accent) },
+        uBody: { value: new Color(KINDS[kind].body) },
+        uKey: { value: KEY_LIGHT },
         uGait: { value: spec.gait },
         uMove: { value: spec.move },
         uNeck: { value: new Vector3(...spec.neck) },
@@ -815,7 +824,7 @@ export class Shards {
       this.spin[i] = (Math.random() - 0.5) * 30;
       this.life[i] = this.maxLife[i] = 0.5 + Math.random() * 0.5;
       this.size[i] = size * (0.5 + Math.random() * 0.8);
-      // Most shards are its neon; some are its dark shell.
+      // Most shards are its accent colour; some are its dark shell.
       const dark = Math.random() < 0.3;
       const f = dark ? 0.12 : 1;
       this.col[i * 3] = this.tmp.r * f;
@@ -924,7 +933,7 @@ export class SwarmMesh {
       anim[o + 2] = h.burn[i] > 0 ? 1 : 0;
       anim[o + 3] = h.rise[i];
       const q = n * 3;
-      act[q] = (h.rise[i] - 1) * KINDS[k].radius * 1.4;
+      act[q] = duneHeight(h.x[i], h.z[i]) + (h.rise[i] - 1) * KINDS[k].radius * 1.4;
       act[q + 1] = h.kT[i] > 0 ? 1 : 0;
       act[q + 2] = h.bite[i];
     }

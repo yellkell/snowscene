@@ -35,6 +35,7 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import { GeometryBuilder, placed } from '../mesh-utils.js';
+import { duneHeight } from './survivors-level.js';
 
 const tmpM = new Matrix4();
 const tmpQ = new Quaternion();
@@ -184,7 +185,7 @@ export class Novas {
     const ring = this.rings.find((r) => r.t >= 1) ?? this.rings[0];
     ring.t = 0;
     ring.r = radius;
-    ring.mesh.position.set(x, 0.08, z);
+    ring.mesh.position.set(x, 0.08 + duneHeight(x, z), z);
     (ring.mesh.material as MeshBasicMaterial).color.set(color).multiplyScalar(1.5);
     ring.mesh.visible = true;
   }
@@ -299,7 +300,7 @@ export class Gems {
     const i = this.n++;
     this.x[i] = x + (Math.random() - 0.5) * 0.4;
     this.z[i] = z + (Math.random() - 0.5) * 0.4;
-    this.y[i] = 0.35;
+    this.y[i] = 0.35 + duneHeight(this.x[i], this.z[i]);
     this.value[i] = value;
     this.pulled[i] = 0;
   }
@@ -411,14 +412,14 @@ export class Orbs {
     orb.active = true;
     orb.age = 0;
     orb.root.visible = true;
-    orb.root.position.set(x, 0.8, z);
+    orb.root.position.set(x, 0.8 + duneHeight(x, z), z);
   }
 
   tick(dt: number, time: number): void {
     for (const orb of this.list) {
       if (!orb.active) continue;
       orb.age += dt;
-      orb.root.position.set(orb.x, 0.8 + Math.sin(time * 2.4 + orb.x) * 0.12, orb.z);
+      orb.root.position.set(orb.x, 0.8 + duneHeight(orb.x, orb.z) + Math.sin(time * 2.4 + orb.x) * 0.12, orb.z);
       orb.gem.rotation.y = time * 1.6;
       orb.gem.rotation.x = time * 0.9;
       orb.gem.scale.setScalar(Math.min(1, orb.age * 3) * (1 + 0.1 * Math.sin(time * 6)));
@@ -445,6 +446,8 @@ export interface Chest {
   z: number;
   active: boolean;
   opening: number;
+  /** Snow height where it stands. */
+  ground: number;
 }
 
 /** Treasure chests with a pillar of light over them: walk into one for a burst of upgrades. */
@@ -480,7 +483,7 @@ export class Chests {
       root.visible = false;
       root.name = 'Chest';
       parent.add(root);
-      this.list.push({ root, lid, beam, x: 0, z: 0, active: false, opening: -1 });
+      this.list.push({ root, lid, beam, x: 0, z: 0, active: false, opening: -1, ground: 0 });
     }
   }
 
@@ -491,7 +494,8 @@ export class Chests {
     chest.z = z;
     chest.active = true;
     chest.opening = -1;
-    chest.root.position.set(x, 0, z);
+    chest.ground = duneHeight(x, z);
+    chest.root.position.set(x, chest.ground, z);
     chest.root.rotation.y = Math.random() * Math.PI * 2;
     chest.lid.rotation.x = 0;
     chest.beam.visible = true;
@@ -509,7 +513,7 @@ export class Chests {
         chest.lid.rotation.x = -Math.min(1.9, chest.opening * 7);
         chest.beam.visible = false;
         if (chest.opening > 1.6) {
-          chest.root.position.y = -(chest.opening - 1.6) * 1.5;
+          chest.root.position.y = chest.ground - (chest.opening - 1.6) * 1.5;
           if (chest.opening > 2.4) {
             chest.root.visible = false;
             chest.opening = -1;

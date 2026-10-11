@@ -383,7 +383,7 @@ export class SurvivorsSystem extends createSystem({}) {
     const k = KINDS[kind];
     const r = h.radius(i);
     // A few shards each: with a hundred kills a second, more would bury the view.
-    this.shards.burst(h.x[i], r * 0.6, h.z[i], kind === TITAN ? 22 : kind === BRUTE ? 4 : 2, k.neon, r * 0.16, 1.5 + r, 1.5 + r * 0.8);
+    this.shards.burst(h.x[i], r * 0.6, h.z[i], kind === TITAN ? 22 : kind === BRUTE ? 4 : 2, k.accent, r * 0.16, 1.5 + r, 1.5 + r * 0.8);
     this.gems.drop(h.x[i], h.z[i], k.xp);
     if (kind === TITAN) {
       for (let g = 0; g < 6; g++) this.gems.drop(h.x[i] + (Math.random() - 0.5) * 2, h.z[i] + (Math.random() - 0.5) * 2, 4);
