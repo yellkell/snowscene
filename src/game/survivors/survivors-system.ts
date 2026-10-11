@@ -162,6 +162,8 @@ export class SurvivorsSystem extends createSystem({}) {
   private readonly lastHead = new Vector3();
   private readonly moveDir = new Vector3(0, 0, -1);
   private readonly puffAt = new Vector3();
+  private readonly gaze = new Vector3();
+  private readonly bossAt = new Vector3();
 
   init(): void {
     survivorsControl.start = () => this.start();
@@ -192,7 +194,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.hurls = new Hurls(this.root);
     this.root.visible = false;
     this.world.createTransformEntity(this.root, { persistent: true });
-    this.world.createTransformEntity(this.hud.card, { persistent: true });
+    this.world.createTransformEntity(this.hud.root, { persistent: true });
     this.world.createTransformEntity(this.hud.hurt, { persistent: true });
   }
 
@@ -221,6 +223,9 @@ export class SurvivorsSystem extends createSystem({}) {
       setPhase(Phase.Poling);
       audio.setMusic('night');
       toast('Snow Survivors! Pole about. Your weapons fire by themselves; walk over what they drop.', 6);
+      this.pendingHint = this.world.renderer.xr.isPresenting
+        ? { text: 'Health & XP glow round your feet · stats on your left wrist', color: '#c9e8ff' }
+        : { text: 'Health & XP glow round your feet', color: '#c9e8ff' };
       this.busy = false;
     });
   }
@@ -369,21 +374,30 @@ export class SurvivorsSystem extends createSystem({}) {
     this.killSounds = Math.max(0, this.killSounds - dt * 14);
     this.biteSound = Math.max(0, this.biteSound - dt);
 
-    this.hud.update(dt, this.head, yaw, {
-      hp: this.hp,
-      maxHp: this.stats.maxHp,
-      level: this.lvl,
-      xp: this.xp,
-      xpNext: this.xpNext,
-      time: this.time,
-      kills: this.kills,
-      weapons: this.weaponLine(),
-      combo: this.combo,
-      comboLeft: Math.max(0, this.comboT / COMBO_WINDOW),
-      speedMul: this.speedMul,
-      boss: this.bossName,
-      bossHp: this.bossHealth(),
-    });
+    this.player.head.getWorldDirection(this.gaze).negate();
+    const bossHp = this.bossHealth();
+    this.hud.update(
+      dt,
+      { head: this.head, yaw, gaze: this.gaze, presenting: this.world.renderer.xr.isPresenting },
+      {
+        hp: this.hp,
+        maxHp: this.stats.maxHp,
+        level: this.lvl,
+        xp: this.xp,
+        xpNext: this.xpNext,
+        time: this.time,
+        kills: this.kills,
+        weapons: this.weaponLine(),
+        combo: this.combo,
+        comboLeft: Math.max(0, this.comboT / COMBO_WINDOW),
+        speedMul: this.speedMul,
+        boss: this.bossName,
+        bossHp,
+        bossX: this.bossAt.x,
+        bossY: this.bossAt.y,
+        bossZ: this.bossAt.z,
+      },
+    );
     if (Math.floor(this.time) !== survivors.time.peek()) survivors.time.value = Math.floor(this.time);
   }
 
@@ -521,12 +535,15 @@ export class SurvivorsSystem extends createSystem({}) {
     for (const hand of HANDS) this.pulse(hand.handedness, 1, 600);
   }
 
-  /** The boss's health (0..1), clearing the bar once it is gone. */
+  /** The boss's health (0..1) and where its bar goes, clearing the bar once it is gone. */
   private bossHealth(): number {
     if (!this.bossName) return 0;
     const h = this.horde;
     for (let i = 0; i < h.n; i++) {
-      if (h.carrier[i] === 2 && !h.dead[i]) return h.hp[i] / this.bossMaxHp;
+      if (h.carrier[i] !== 2 || h.dead[i]) continue;
+      const r = h.radius(i);
+      this.bossAt.set(h.x[i], duneHeight(h.x[i], h.z[i]) + r * 2.1 + 0.8, h.z[i]);
+      return h.hp[i] / this.bossMaxHp;
     }
     this.bossName = '';
     return 0;
