@@ -38,6 +38,7 @@ import {
   MeshStandardMaterial,
   Mesh,
   MeshBasicMaterial,
+  type Entity,
   Object3D,
   PlaneGeometry,
   PointLight,
@@ -117,9 +118,9 @@ export class BackpackSystem extends createSystem({}) {
   private readonly localQuat = new Quaternion();
   private readonly palmWasUp: Record<Handedness, boolean> = { left: false, right: false };
   private slots = new Map<SlotId, Slot>();
-  private held: Record<Handedness, { item: ItemId | null; model: Object3D | null }> = {
-    left: { item: null, model: null },
-    right: { item: null, model: null },
+  private held: Record<Handedness, { item: ItemId | null; model: Object3D | null; entity: Entity | null }> = {
+    left: { item: null, model: null, entity: null },
+    right: { item: null, model: null, entity: null },
   };
   private mapBoard!: Mesh;
   private mapCanvas!: HTMLCanvasElement;
@@ -645,14 +646,18 @@ export class BackpackSystem extends createSystem({}) {
       const item = equipment.inHand[side];
       const slot = this.held[side];
       if (slot.item !== item) {
-        if (slot.model) {
-          slot.model.removeFromParent();
+        if (slot.entity) {
+          // Dispose the entity: a bare removeFromParent() is undone by the
+          // transform system, which re-attaches it to the scene, leaving a
+          // frozen copy of every item (and glider part) that left your hand.
+          slot.entity.dispose();
+          slot.entity = null;
           slot.model = null;
         }
         slot.item = item;
         const model = item ? buildHeldItem(item) : null;
         if (model) {
-          this.world.createTransformEntity(model, { persistent: true });
+          slot.entity = this.world.createTransformEntity(model, { persistent: true });
           slot.model = model;
         }
       }

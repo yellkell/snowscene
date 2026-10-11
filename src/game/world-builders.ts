@@ -299,11 +299,47 @@ export function buildCliff(): Group {
   plane.computeVertexNormals();
   // The wall fills your whole view while you climb: the lite land shader and
   // no shadow lookups keep those pixels cheap (its relief is in the mesh).
-  const face = new Mesh(plane, createLandMaterial({ rockScale: 4.5, snowScale: 1.5, lite: true }));
+  const faceMaterial = createLandMaterial({ rockScale: 4.5, snowScale: 1.5, lite: true });
+  // Drawn from both sides: from the top, looking back over the lip, you see
+  // the wall's back rather than straight through it.
+  faceMaterial.side = DoubleSide;
+  const face = new Mesh(plane, faceMaterial);
   face.castShadow = true;
   face.receiveShadow = false;
   face.name = 'CliffFace';
   group.add(face);
+
+  // A snow cap from the face's top edge back over the summit, so the lip
+  // is solid when you look down at it from the top.
+  const columns = 96 + 1;
+  const capPositions: number[] = [];
+  for (let i = 0; i < columns; i++) {
+    capPositions.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+  }
+  for (let i = 0; i < columns; i++) {
+    capPositions.push(pos.getX(i), SUMMIT_Y + 0.04, WALL_Z - 1.6);
+  }
+  const capIndex: number[] = [];
+  for (let i = 0; i < columns - 1; i++) {
+    const a = i;
+    const b = i + 1;
+    const c = columns + i;
+    const d = columns + i + 1;
+    capIndex.push(a, c, b, b, c, d);
+  }
+  const capGeometry = new BufferGeometry();
+  capGeometry.setAttribute('position', new Float32BufferAttribute(capPositions, 3));
+  const capUv: number[] = [];
+  for (let k = 0; k < capPositions.length; k += 3) capUv.push(capPositions[k] * 0.25, capPositions[k + 2] * 0.25);
+  capGeometry.setAttribute('uv', new Float32BufferAttribute(capUv, 2));
+  capGeometry.setIndex(capIndex);
+  capGeometry.computeVertexNormals();
+  const capMaterial = createLandMaterial({ snowScale: 1.2 });
+  capMaterial.side = DoubleSide;
+  const cap = new Mesh(capGeometry, capMaterial);
+  cap.receiveShadow = true;
+  cap.name = 'CliffCap';
+  group.add(cap);
 
   // A snow cornice softens the summit lip.
   const cornice = new Mesh(

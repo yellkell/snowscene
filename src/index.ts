@@ -38,6 +38,7 @@ import { SceneSetupSystem } from './game/scene-system.js';
 import { WeatherSystem } from './game/weather-system.js';
 import { game, Phase, setPhase } from './game/state.js';
 import { level } from './game/level.js';
+import { addToPack, equipment } from './game/equipment.js';
 import { startTutorialKit } from './game/tutorial-kit.js';
 import { tutorialLevel } from './game/tutorial-level.js';
 import { installToonStyle } from './game/toon-style.js';
@@ -97,6 +98,8 @@ World.create(
       Phase,
       setPhase,
       cave: world.getSystem(CaveSystem),
+      equipment,
+      addToPack,
     };
   }
 });

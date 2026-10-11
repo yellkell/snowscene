@@ -246,17 +246,18 @@ export class WeatherSystem extends createSystem({}) {
       near = this.fogRange.near;
       far = this.fogRange.far;
     }
-    // A light haze over the glide, and in a bank of mist the fog closes right in.
+    // The glide's air is clear (only its banks of mist are fog), and in a
+    // bank the view thins out around you.
     const haze = mistHooks.haze;
     if (haze > 0) {
-      near += (Math.min(near, mistHooks.hazeNear) - near) * haze;
-      far += (Math.min(far, mistHooks.hazeFar) - far) * haze;
+      near += (Math.max(near, mistHooks.hazeNear) - near) * haze;
+      far += (Math.max(far, mistHooks.hazeFar) - far) * haze;
     }
     const mist = mistHooks.inside;
     if (mist > 0) {
-      near += (1 - near) * mist;
+      near += (5 - near) * mist;
       far += (Math.min(far, mistHooks.far) - far) * mist;
-      this.fogColor.lerp(mistHooks.color, 0.6 * mist);
+      this.fogColor.lerp(mistHooks.color, 0.35 * mist);
     }
     // Inside the ice cave: a deep blue haze of its own.
     if (game.indoors > 0) {

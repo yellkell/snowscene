@@ -19,7 +19,7 @@ import { createSystem, Entity, Mesh, MeshStandardMaterial, Vector3 } from '@iwsd
 import { audio } from './audio.js';
 import { holding, stowAll } from './equipment.js';
 import { ClimbHold } from './game-components.js';
-import { HANDS, hands, type Handedness } from './hand-input.js';
+import { HANDS, type Handedness } from './hand-input.js';
 import { currentLevel, type ClimbWall } from './level.js';
 import { getHeadWorld, placeHeadAt } from './rig.js';
 import { sceneRefs } from './scene-system.js';
@@ -36,6 +36,13 @@ const PULL_GAIN = 1.2;
 const HANG_GRACE = 0.9;
 /** ...and then slide down no faster than this (m/s). */
 const MAX_SLIDE = 1.3;
+/**
+ * Climbing hand filter: the world moves with your hand, so tracking jitter
+ * would shake the whole view. Slow wobbles are smoothed hard, real pulls pass
+ * through almost at once (rate per second = BASE + PER_SPEED x hand speed).
+ */
+const SMOOTH_BASE = 10;
+const SMOOTH_PER_SPEED = 80;
 /** Distance from the hand to the pick of a held ice axe. */
 const AXE_REACH = 0.42;
 /** Minimum swing speed toward the ice for a pick to bite (m/s). */
@@ -87,6 +94,11 @@ export class ClimbSystem extends createSystem({
     right: new Vector3(),
   };
   private needToolTimer = 0;
+  /** Filtered hand positions in rig space (see SMOOTH_BASE). */
+  private readonly smoothLocal: Record<Handedness, Vector3> = { left: new Vector3(), right: new Vector3() };
+  private readonly smoothReady: Record<Handedness, boolean> = { left: false, right: false };
+  private readonly raw = new Vector3();
+  private readonly smoothed = new Vector3();
 
   init(): void {
     this.grabs = {
@@ -165,6 +177,7 @@ export class ClimbSystem extends createSystem({
       if (phase === Phase.Poling) this.updateHoldGlow(dt, false);
       return;
     }
+    this.filterHands(dt);
     this.updateHoldGlow(dt, this.wall.mode === 'holds');
 
     if (this.tween) {
@@ -208,6 +221,39 @@ export class ClimbSystem extends createSystem({
     }
   }
 
+  /** Low-pass each tracked hand in rig space, harder the slower it moves. */
+  private filterHands(dt: number): void {
+    this.player.updateMatrixWorld(true);
+    for (const hand of HANDS) {
+      const side = hand.handedness;
+      if (!hand.tracked) {
+        this.smoothReady[side] = false;
+        continue;
+      }
+      this.player.worldToLocal(this.raw.copy(hand.position));
+      const s = this.smoothLocal[side];
+      if (!this.smoothReady[side]) {
+        s.copy(this.raw);
+        this.smoothReady[side] = true;
+        continue;
+      }
+      const speed = this.raw.distanceTo(s) / dt;
+      s.lerp(this.raw, 1 - Math.exp(-dt * (SMOOTH_BASE + SMOOTH_PER_SPEED * speed)));
+    }
+  }
+
+  /** A hand's filtered position in the world, right now. */
+  private smoothHand(side: Handedness): Vector3 {
+    this.player.updateMatrixWorld(true);
+    return this.player.localToWorld(this.smoothed.copy(this.smoothLocal[side]));
+  }
+
+  /** Start filtering a hand from where it is (on a fresh grab). */
+  private snapSmooth(side: Handedness, at: Vector3): void {
+    this.player.worldToLocal(this.smoothLocal[side].copy(at));
+    this.smoothReady[side] = true;
+  }
+
   private updateGrabs(dt: number): void {
     const wall = this.wall!;
     for (const hand of HANDS) {
@@ -221,7 +267,7 @@ export class ClimbSystem extends createSystem({
             const other: Handedness = side === 'left' ? 'right' : 'left';
             this.active = this.grabs[other].active ? other : null;
             // Re-anchor the remaining hand so there is no jump.
-            if (this.active) this.grabs[other].anchor.copy(hands[other].position);
+            if (this.active) this.grabs[other].anchor.copy(this.smoothHand(other));
           }
         }
         continue;
@@ -237,6 +283,7 @@ export class ClimbSystem extends createSystem({
         grab.hold = hold;
         grab.active = true;
         grab.anchor.copy(hand.position);
+        this.snapSmooth(side, hand.position);
         this.active = side;
         hold.setValue(ClimbHold, 'glow', 1);
         audio.clack();
@@ -264,6 +311,7 @@ export class ClimbSystem extends createSystem({
         grab.hold = null;
         grab.active = true;
         grab.anchor.copy(hand.position);
+        this.snapSmooth(side, hand.position);
         this.active = side;
         audio.axeBite();
         this.pulse(side, 0.7, 50);
@@ -274,7 +322,7 @@ export class ClimbSystem extends createSystem({
 
     if (this.active) {
       const grab = this.grabs[this.active];
-      this.delta.subVectors(grab.anchor, hands[this.active].position);
+      this.delta.subVectors(grab.anchor, this.smoothHand(this.active));
       // Hauling yourself up goes a little further than the pull itself. The
       // hand rides up with the body by that extra too, so move the anchor
       // with it (otherwise the next frame would pull you back down).

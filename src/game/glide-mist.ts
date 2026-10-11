@@ -1,11 +1,10 @@
 /**
  * Fog on the glide: soft banks of mist along the way from the launch to the
  * landing, some below you, some right on your line so you fly through them.
- * Inside a bank the scene fog closes in (see `mistHooks`, read by the
+ * Inside a bank the scene fog thickens (see `mistHooks`, read by the
  * weather system) and the bank's own billboard thins away, so going in and
- * out reads as one continuous whiteout rather than a flat sprite. A light
- * haze over the whole glide softens the distance without hiding the
- * ranges outright.
+ * out reads as passing through mist rather than a flat sprite. Otherwise the
+ * glide's air is clear: the weather's fog is pushed well out while you fly.
  *
  * One draw: an instanced, camera-facing quad per bank.
  */
@@ -28,16 +27,18 @@ import { getHeadWorld } from './rig.js';
 import { game, Phase } from './state.js';
 import { mulberry32 } from './terrain.js';
 
-const BANKS = 20;
+const BANKS = 10;
 /** Bank width as a share of the glide's length, and its limits (m). */
 const SIZE_MIN = 0.1;
 const SIZE_SPREAD = 0.1;
 const SIZE_LIMITS = [30, 450] as const;
-const OPACITY = 0.65;
-/** Glide haze: fog from this near distance out to `length x HAZE_SCALE`, within limits (m). */
-const HAZE_NEAR = 30;
-const HAZE_SCALE = 12;
-const HAZE_FAR_LIMITS = [3000, 12000] as const;
+const OPACITY = 0.4;
+/**
+ * On the glide the air opens up: the weather's fog is pushed out to at least
+ * this (m), so the banks are the only fog close to you.
+ */
+const GLIDE_NEAR = 150;
+const GLIDE_FAR = 5000;
 const MIST_WHITE = new Color(0.93, 0.95, 0.98);
 
 /** How deep in a bank the viewer is (0..1) and how far the fog lets you see there. */
@@ -45,10 +46,10 @@ export const mistHooks = {
   inside: 0,
   far: 60,
   color: MIST_WHITE,
-  /** Glide haze strength (0..1) and its fog range. */
+  /** How far into the glide's clear air we are (0..1), and the fog range it opens to. */
   haze: 0,
-  hazeNear: HAZE_NEAR,
-  hazeFar: HAZE_FAR_LIMITS[1] as number,
+  hazeNear: GLIDE_NEAR,
+  hazeFar: GLIDE_FAR,
 };
 
 const vertexShader = /* glsl */ `
@@ -203,7 +204,6 @@ export class GlideMistSystem extends createSystem({}) {
     this.centers.needsUpdate = true;
     this.sizes.needsUpdate = true;
     this.material.uniforms.uFar.value = length * 1.4;
-    mistHooks.hazeFar = Math.min(HAZE_FAR_LIMITS[1], Math.max(HAZE_FAR_LIMITS[0], length * HAZE_SCALE));
     this.placed = true;
   }
 
@@ -239,7 +239,7 @@ export class GlideMistSystem extends createSystem({}) {
       const inside = 1 - smoothstep(0.35, 0.75, ratio);
       if (inside > deepest) {
         deepest = inside;
-        far = size * 0.9;
+        far = size * 2.5;
       }
     }
     mistHooks.inside = deepest * (this.opacity / OPACITY);

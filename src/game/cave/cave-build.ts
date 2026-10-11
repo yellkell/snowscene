@@ -16,6 +16,7 @@ import {
   BufferAttribute,
   BufferGeometry,
   CanvasTexture,
+  CircleGeometry,
   Color,
   ConeGeometry,
   CylinderGeometry,
@@ -24,6 +25,7 @@ import {
   HemisphereLight,
   IcosahedronGeometry,
   InstancedMesh,
+  LatheGeometry,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -36,6 +38,7 @@ import {
   Sprite,
   SpriteMaterial,
   TorusGeometry,
+  Vector2,
   Vector3,
   Points,
   ShaderMaterial,
@@ -45,6 +48,7 @@ import { GeometryBuilder, placed, segmentMatrix } from '../mesh-utils.js';
 import { fbm, mulberry32, valueNoise } from '../terrain.js';
 import {
   anchorAt,
+  hopAirborne,
   BOARDINGS,
   berthsOf,
   GRID,
@@ -161,13 +165,13 @@ export interface CaveVisuals {
   parts: Record<GliderPartId, Group>;
   partGlow: Record<GliderPartId, Sprite>;
   /** "Pick up the glider part" sign over the first rack on the route. */
-  partLabel: Sprite;
-  partLabelHome: Vector3;
   /** The torch on its hook at the beacon and its flame. */
   torch: Group;
   torchFlame: Sprite;
   /** Warm halo round the torch on its post: take me. */
   torchHalo: Sprite;
+  /** Light rising from the torch once all the parts are found. */
+  torchBeam: Mesh;
   torchHome: Vector3;
   /** Where the torch must touch to light the beacon (course space). */
   brazier: Vector3;
@@ -257,39 +261,6 @@ export function glowTexture(inner: string, outer: string): CanvasTexture {
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
   return texture;
-}
-
-/** A flat sign that always faces you: a dark rounded card with bold text. */
-export function labelSprite(lines: string[], width: number): Sprite {
-  const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 256;
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = 'rgba(18,14,10,0.86)';
-  ctx.beginPath();
-  ctx.roundRect(8, 8, 1008, 240, 48);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,200,110,0.95)';
-  ctx.lineWidth = 8;
-  ctx.stroke();
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  lines.forEach((line, i) => {
-    let size = i === 0 ? 92 : 58;
-    ctx.font = `800 ${size}px system-ui, sans-serif`;
-    while (ctx.measureText(line).width > 940 && size > 20) {
-      size -= 4;
-      ctx.font = `800 ${size}px system-ui, sans-serif`;
-    }
-    ctx.fillStyle = i === 0 ? '#ffe4a8' : '#f4efe6';
-    ctx.fillText(line, 512, lines.length === 1 ? 128 : 92 + i * 92);
-  });
-  const texture = new CanvasTexture(canvas);
-  texture.colorSpace = SRGBColorSpace;
-  const sprite = new Sprite(new SpriteMaterial({ map: texture, transparent: true, depthWrite: false, fog: false }));
-  sprite.scale.set(width, width / 4, 1);
-  sprite.renderOrder = 2;
-  return sprite;
 }
 
 export function glowSprite(texture: CanvasTexture, size: number, opacity = 1): Sprite {
@@ -809,7 +780,12 @@ function addLantern(b: GeometryBuilder, x: number, y: number, z: number) {
   box(b, 0.12, 0.02, 0.12, x, y - 0.1, z, IRON);
   box(b, 0.14, 0.02, 0.14, x, y + 0.1, z, IRON);
   for (const [cx, cz] of CORNERS) box(b, 0.012, 0.2, 0.012, x + cx * 0.06, y, z + cz * 0.06, IRON);
-  b.add(new SphereGeometry(0.05, 8, 6), placed(x, y, z), new Color(3.2, 2.0, 0.8));
+  // A candle on a little iron dish, its flame burning bright.
+  b.add(new CylinderGeometry(0.035, 0.03, 0.012, 10), placed(x, y - 0.084, z), IRON);
+  b.add(new CylinderGeometry(0.018, 0.02, 0.08, 10), placed(x, y - 0.038, z), new Color(0.96, 0.9, 0.74));
+  b.add(new CylinderGeometry(0.0015, 0.0015, 0.012, 4), placed(x, y + 0.008, z), new Color(0.08, 0.06, 0.04));
+  b.add(new SphereGeometry(0.011, 8, 6), placed(x, y + 0.02, z, 0, 1, 1.25, 1), new Color(3.4, 2.4, 0.9));
+  b.add(new ConeGeometry(0.009, 0.03, 8), placed(x, y + 0.037, z), new Color(3.6, 2.9, 1.3));
   b.add(new TorusGeometry(0.035, 0.008, 4, 10), placed(x, y + 0.145, z), IRON);
 }
 
@@ -951,14 +927,25 @@ function buildStationFrame(spec: PlatformSpec, index: number, gaps: Set<string> 
   const len = -0.3 - support.post;
   if (support.wall) {
     // A cantilever beam out to the ice wall, with a raking strut under it.
+    // It heads for the nearest wall, swung round as far as it takes to keep
+    // clear of every machine that passes the station.
     const at = spec.keys[0].a;
     const f = shellFrame(at.y);
-    let dx = (at.x - f.cx) / f.rx;
-    let dz = (at.z - f.cz) / f.rz;
-    const l = Math.hypot(dx, dz) || 1;
-    dx /= l;
-    dz /= l;
-    const wall = new Vector3(f.cx + dx * f.rx * 0.9 - at.x, -0.25, f.cz + dz * f.rz * 0.9 - at.z);
+    const base = Math.atan2((at.z - f.cz) / f.rz, (at.x - f.cx) / f.rx);
+    const wall = new Vector3();
+    let dx = 0;
+    let dz = 0;
+    for (const turn of [0, 0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.4, -1.4, 1.75, -1.75, 2.1, -2.1, Math.PI]) {
+      dx = Math.cos(base + turn);
+      dz = Math.sin(base + turn);
+      wall.set(f.cx + dx * f.rx * 0.9 - at.x, -0.25, f.cz + dz * f.rz * 0.9 - at.z);
+      const beamA = tmpA.set(at.x, at.y - 0.25, at.z);
+      const beamB = tmpB.set(at.x + wall.x, at.y - 0.25, at.z + wall.z);
+      if (!clearOfMachines(beamA, beamB, 0.12, index)) continue;
+      beamA.set(at.x + dx * 0.3, at.y - 0.3, at.z + dz * 0.3);
+      beamB.set(at.x + wall.x, at.y - 2.6, at.z + wall.z);
+      if (clearOfMachines(beamA, beamB, 0.09, index)) break;
+    }
     rod(b, new Vector3(0, -0.25, 0), wall, 0.1, WOOD_DARK, 4);
     rod(b, new Vector3(dx * 0.3, -0.3, dz * 0.3), wall.clone().setY(-2.6), 0.07, WOOD_DARK, 4);
   } else if (len > 0.1) {
@@ -1027,26 +1014,48 @@ function addTrack(b: GeometryBuilder, pts: Vector3[], self: number): void {
     }
     carry = d - len;
   }
-  // Bents: a pair of posts under the stringers, braced, every couple of metres.
-  let run = 0;
-  for (let k = 1; k < pts.length; k++) {
-    const p = pts[k];
-    const prev = pts[k - 1];
-    run += Math.hypot(p.x - prev.x, p.z - prev.z);
-    if (run < 2.2) continue;
-    run = 0;
-    const h = p.y - FLOOR_Y;
-    if (h < 0.6 || isNearPath(p, self)) continue;
-    t.subVectors(p, prev).setY(0).normalize();
-    side.crossVectors(t, up).normalize();
-    const top = p.y - 0.16;
-    const l = p.clone().addScaledVector(side, -GAUGE).setY(top);
-    const r = p.clone().addScaledVector(side, GAUGE).setY(top);
-    for (const e of [l, r]) b.add(new BoxGeometry(0.1, 1, 0.1), segmentMatrix(e, e.clone().setY(FLOOR_Y), new Matrix4()), WOOD_DARK);
-    b.add(new BoxGeometry(0.08, 1, 0.08), segmentMatrix(l, r, new Matrix4()), WOOD_DARK);
-    const brace = Math.min(h, 2.4);
-    rod(b, l, r.clone().setY(top - brace), 0.025, WOOD_DARK, 4);
-    rod(b, r, l.clone().setY(top - brace), 0.025, WOOD_DARK, 4);
+  // Bents: a pair of braced posts under the stringers at both ends of the
+  // run and every metre and a half between, each nudged along the run to
+  // wherever nothing passes through it, so no stretch of track floats.
+  const along: number[] = [0];
+  for (let k = 1; k < pts.length; k++) along.push(along[k - 1] + Math.hypot(pts[k].x - pts[k - 1].x, pts[k].z - pts[k - 1].z));
+  const total = along[along.length - 1];
+  if (total < 0.05) return;
+  const pointAt = (d: number, out: Vector3, dir: Vector3) => {
+    const c = Math.min(total, Math.max(0, d));
+    let k = 1;
+    while (k < pts.length - 1 && along[k] < c) k++;
+    const seg = along[k] - along[k - 1] || 1;
+    out.lerpVectors(pts[k - 1], pts[k], (c - along[k - 1]) / seg);
+    dir.subVectors(pts[k], pts[k - 1]).setY(0).normalize();
+  };
+  const spots: number[] = [Math.min(0.15, total / 2)];
+  const count = Math.max(1, Math.ceil((total - 0.3) / 1.5));
+  for (let i = 1; i <= count; i++) spots.push(Math.min(0.15, total / 2) + ((total - 0.3) * i) / count);
+  const p = new Vector3();
+  const l = new Vector3();
+  const r = new Vector3();
+  const lf = new Vector3();
+  const rf = new Vector3();
+  for (const spot of spots) {
+    for (const nudge of [0, 0.25, -0.25, 0.5, -0.5]) {
+      pointAt(spot + nudge, p, t);
+      const top = p.y - 0.16;
+      const h = top - FLOOR_Y;
+      if (h < 0.45) break;
+      side.crossVectors(t, up).normalize();
+      l.copy(p).addScaledVector(side, -GAUGE).setY(top);
+      r.copy(p).addScaledVector(side, GAUGE).setY(top);
+      lf.copy(l).setY(FLOOR_Y);
+      rf.copy(r).setY(FLOOR_Y);
+      if (!clearOfMachines(l, lf, 0.06, -1, true) || !clearOfMachines(r, rf, 0.06, -1, true)) continue;
+      for (const e of [l, r]) b.add(new BoxGeometry(0.1, 1, 0.1), segmentMatrix(e, e.clone().setY(FLOOR_Y), new Matrix4()), WOOD_DARK);
+      b.add(new BoxGeometry(0.08, 1, 0.08), segmentMatrix(l, r, new Matrix4()), WOOD_DARK);
+      const brace = Math.min(h, 2.4);
+      rod(b, l, r.clone().setY(top - brace), 0.025, WOOD_DARK, 4);
+      rod(b, r, l.clone().setY(top - brace), 0.025, WOOD_DARK, 4);
+      break;
+    }
   }
 }
 
@@ -1181,8 +1190,11 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
         const dx = q.x - p.x;
         const dz = q.z - p.z;
         const len = Math.hypot(dx, dz);
-        // Vertical run (the trolley's lift): guide posts, no rails.
-        if (len < 1e-4 || Math.abs(q.y - p.y) > len || !onTrack(k) || !onTrack(k + 1)) {
+        // Vertical run (the trolley's lift): guide posts, no rails. Nor in
+        // the gap the trolley jumps.
+        const airborne =
+          !!spec.hop && (hopAirborne(spec.hop, p.x - o.x, p.z - o.z) || hopAirborne(spec.hop, q.x - o.x, q.z - o.z));
+        if (len < 1e-4 || Math.abs(q.y - p.y) > len || !onTrack(k) || !onTrack(k + 1) || airborne) {
           endRun();
           continue;
         }
@@ -1373,7 +1385,6 @@ function buildBrazier(): Group {
     const a = (k / 3) * Math.PI * 2;
     rod(b, new Vector3(Math.cos(a) * 0.3, 0.5, Math.sin(a) * 0.3), new Vector3(Math.cos(a) * 0.16, 1.05, Math.sin(a) * 0.16), 0.03, IRON);
   }
-  b.add(new CylinderGeometry(0.3, 0.18, 0.28, 10, 1, true), placed(0, 1.15, 0), IRON);
   for (let k = 0; k < 6; k++) {
     const a = (k / 6) * Math.PI * 2;
     b.add(new CylinderGeometry(0.035, 0.04, 0.42, 5), new Matrix4().makeRotationZ(0.5).premultiply(new Matrix4().makeRotationY(a)).setPosition(Math.cos(a) * 0.08, 1.2, Math.sin(a) * 0.08), WOOD_DARK);
@@ -1382,8 +1393,40 @@ function buildBrazier(): Group {
   const group = new Group();
   group.name = 'Brazier';
   group.add(mesh);
+  // The basket: a solid iron bowl with a thick rim and a floor, drawn from
+  // both sides so you never see through it from above or below.
+  const bowl = new Mesh(
+    new LatheGeometry(
+      [
+        new Vector2(0.001, 1.0),
+        new Vector2(0.17, 1.0),
+        new Vector2(0.3, 1.27),
+        new Vector2(0.32, 1.3),
+        new Vector2(0.28, 1.3),
+        new Vector2(0.155, 1.05),
+        new Vector2(0.001, 1.05),
+      ],
+      14,
+    ),
+    new MeshStandardMaterial({ color: 0x2a2624, roughness: 0.7, metalness: 0.4, side: DoubleSide, flatShading: true }),
+  );
+  bowl.name = 'BrazierBowl';
+  group.add(bowl);
+  // A bed of glowing coals inside it.
+  const coals = new Mesh(
+    new CircleGeometry(0.2, 14).rotateX(-Math.PI / 2),
+    new MeshBasicMaterial({ color: new Color(1.4, 0.45, 0.12), toneMapped: false }),
+  );
+  coals.position.y = 1.07;
+  coals.name = 'BrazierCoals';
+  group.add(coals);
   return group;
 }
+
+/** The signal torch is drawn this much bigger than life so it reads from below. */
+export const TORCH_SCALE = 1.5;
+/** Where the torch's flaming head is, above its grip (torch space, unscaled). */
+export const TORCH_HEAD = 0.32;
 
 function buildTorch(): Group {
   const b = new GeometryBuilder();
@@ -1535,14 +1578,6 @@ export function buildCave(): CaveVisuals {
     partGlow[spec.part] = glow;
   }
 
-  // The first rack on the route says what to do with it.
-  const firstPart = PLATFORMS.find((p) => p.part)!.part!;
-  const partLabel = labelSprite(['Pick up the glider part', 'Close your hand on it'], 0.9);
-  const partLabelHome = parts[firstPart].position.clone().add(new Vector3(0, 0.62, 0));
-  partLabel.position.copy(partLabelHome);
-  partLabel.name = 'PartLabel';
-  root.add(partLabel);
-
   // The beacon: brazier on the top deck's east side, torch on a hook.
   const top = PLATFORMS.find((p) => p.beacon)!;
   const topAt = top.keys[0].a;
@@ -1567,6 +1602,24 @@ export function buildCave(): CaveVisuals {
   const torchHalo = glowSprite(partGlowTex, 1.1, 0.7);
   torchHalo.position.set(0, 0.12, 0);
   torch.add(torchHalo);
+  torch.scale.setScalar(TORCH_SCALE);
+  // A column of light up the chimney from the torch once it flares up.
+  const torchBeam = new Mesh(
+    new CylinderGeometry(0.05, 0.32, 9, 16, 1, true),
+    new MeshBasicMaterial({
+      color: new Color(1.0, 0.62, 0.25),
+      transparent: true,
+      opacity: 0.18,
+      blending: AdditiveBlending,
+      depthWrite: false,
+      side: DoubleSide,
+      fog: false,
+    }),
+  );
+  torchBeam.position.copy(hook).add(new Vector3(0, 4.9, 0));
+  torchBeam.name = 'TorchBeam';
+  torchBeam.visible = false;
+  root.add(torchBeam);
   const beaconGlow = glowSprite(flameTex, 3.2, 0);
   beaconGlow.position.copy(brazier).add(new Vector3(0, 0.4, 0));
   root.add(beaconGlow);
@@ -1607,11 +1660,10 @@ export function buildCave(): CaveVisuals {
     marker,
     parts,
     partGlow,
-    partLabel,
-    partLabelHome,
     torch,
     torchFlame,
     torchHalo,
+    torchBeam,
     torchHome: hook.clone(),
     brazier,
     beaconGlow,

@@ -4,8 +4,13 @@
  */
 
 import {
+  CanvasTexture,
   createSystem,
+  Mesh,
+  MeshBasicMaterial,
   Object3D,
+  PlaneGeometry,
+  SRGBColorSpace,
   UIKit,
   UIKitMLAsset,
   Vector3,
@@ -55,6 +60,9 @@ export class GuideSystem extends createSystem({}) {
 
   private readonly head = new Vector3();
   private readonly fwd = new Vector3();
+  /** Big "pinch to turn on the sound" card while the browser still holds audio back. */
+  private soundCard!: Mesh;
+  private presentingFor = 0;
   private readonly target = new Vector3();
   private readonly localAnchor = new Vector3();
   private readonly localTarget = new Vector3();
@@ -62,9 +70,10 @@ export class GuideSystem extends createSystem({}) {
   private anchored = false;
 
   private phaseTime = 0;
-  private soundHintAt = 0;
 
   init(): void {
+    this.soundCard = buildSoundCard();
+    this.world.createTransformEntity(this.soundCard, { persistent: true });
     // Score: "By the River" for the ascent, "Night Catch" from the moment
     // the beacon is lit, through the build on top of the rock and the glide.
     const updateMusic = () => {
@@ -407,26 +416,40 @@ export class GuideSystem extends createSystem({}) {
   }
 
   update(delta: number): void {
+    this.updateSoundCard(delta);
     if (!this.tryBindPanel()) return;
     this.phaseTime += delta;
     const toastNow = game.toast.peek();
     if (toastNow && toastNow.until <= performance.now() / 1000) game.toast.value = null;
     if (!this.world.renderer.xr.isPresenting || !this.panelObject) return;
-    this.promptForSound();
     this.placeInFront();
   }
 
   /**
-   * The browser keeps audio silent until a press it counts as a gesture.
-   * Hands closing into fists are not one, so without this the first pinch
-   * (often a minute in) is when the sound finally starts. Ask for it.
+   * The browser keeps audio silent until a press it counts as a gesture, and
+   * entering through its own "Enter VR" offer is not one. Hands closing into
+   * fists are not one either, so without this the first pinch (often a minute
+   * in) is when the sound finally starts. A big card right in front of you
+   * asks for it from the moment you are in, and goes once the sound is on.
    */
-  private promptForSound(): void {
-    if (audio.running()) return;
-    const now = performance.now() / 1000;
-    if (this.phaseTime < 1.5 || now < this.soundHintAt) return;
-    this.soundHintAt = now + 7;
-    toast('Pinch your fingers (or pull a trigger) to turn the sound on.', 5);
+  private updateSoundCard(delta: number): void {
+    const presenting = this.world.renderer.xr.isPresenting;
+    this.presentingFor = presenting ? this.presentingFor + delta : 0;
+    const show = presenting && this.presentingFor > 0.6 && !audio.running();
+    this.soundCard.visible = show;
+    if (!show) return;
+    getHeadWorld(this.world, this.head);
+    yawForward(getHeadYaw(this.world), this.fwd);
+    const card = this.soundCard;
+    const tx = this.head.x + this.fwd.x * 0.95;
+    const ty = this.head.y - 0.12;
+    const tz = this.head.z + this.fwd.z * 0.95;
+    const k = card.userData.placed ? 1 - Math.exp(-4 * delta) : 1;
+    card.userData.placed = true;
+    card.position.set(card.position.x + (tx - card.position.x) * k, card.position.y + (ty - card.position.y) * k, card.position.z + (tz - card.position.z) * k);
+    card.lookAt(this.head.x, card.position.y, this.head.z);
+    const pulse = 1 + 0.03 * Math.sin(performance.now() / 180);
+    card.scale.setScalar(pulse);
   }
 
   /** Float the panel in front of the viewer, re-centring only when needed. */
@@ -531,4 +554,42 @@ export class GuideSystem extends createSystem({}) {
 
 function clampRange(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+/** "Pinch to turn on the sound": a dark rounded card with big friendly text. */
+function buildSoundCard(): Mesh {
+  const w = 1024;
+  const h = 420;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = 'rgba(16,26,48,0.92)';
+  ctx.beginPath();
+  ctx.roundRect(10, 10, w - 20, h - 20, 56);
+  ctx.fill();
+  ctx.strokeStyle = '#ffd25a';
+  ctx.lineWidth = 10;
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffd25a';
+  ctx.font = '800 88px system-ui, sans-serif';
+  ctx.fillText('\u{1F50A}  Turn on the sound', w / 2, 140);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '700 58px system-ui, sans-serif';
+  ctx.fillText('Pinch your finger and thumb together', w / 2, 255);
+  ctx.fillStyle = '#c9d6ee';
+  ctx.font = '600 46px system-ui, sans-serif';
+  ctx.fillText('(or pull a trigger)', w / 2, 335);
+  const texture = new CanvasTexture(canvas);
+  texture.colorSpace = SRGBColorSpace;
+  const card = new Mesh(
+    new PlaneGeometry(0.62, (0.62 * h) / w),
+    new MeshBasicMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false, toneMapped: false }),
+  );
+  card.renderOrder = 50;
+  card.name = 'SoundCard';
+  card.visible = false;
+  return card;
 }

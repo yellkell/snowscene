@@ -319,6 +319,8 @@ export interface BonfireOptions {
   light: boolean;
   /** Direction (yaw) visitors approach from; the party leaves it open. */
   approachYaw?: number;
+  /** Build the log stack and ring of stones (default true; off for a brazier, which has its own). */
+  logs?: boolean;
 }
 
 function buildLogStack(scale: number): Group {
@@ -517,7 +519,7 @@ export class Bonfire {
       this.objects.push(object);
     };
 
-    place(buildLogStack(scale));
+    if (options.logs !== false) place(buildLogStack(scale));
     if (options.party) {
       place(buildCampEdge(approach));
       place(buildFestoonLights());

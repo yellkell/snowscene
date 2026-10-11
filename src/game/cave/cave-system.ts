@@ -36,6 +36,7 @@ import {
   anchorAt,
   BAR_SEC,
   GRID,
+  hopAirborne,
   INDEX,
   PLATFORMS,
   RIG,
@@ -47,7 +48,7 @@ import {
   validateScore,
   wheelTurns,
 } from './cave-score.js';
-import { buildCave, CAVE_ORIGIN, type CaveVisuals, LAMP, setRope, TILE_CORNERS, TILE_EDGES, EDGE_DIR, TILE_HALF } from './cave-build.js';
+import { buildCave, CAVE_ORIGIN, type CaveVisuals, LAMP, setRope, TILE_CORNERS, TILE_EDGES, EDGE_DIR, TILE_HALF, TORCH_HEAD, TORCH_SCALE } from './cave-build.js';
 import type { GliderPartId } from '../glider-model.js';
 
 interface PlatformState {
@@ -113,6 +114,11 @@ export class CaveSystem extends createSystem({}) {
   private torchHand: Handedness | null = null;
   /** How near the held torch's head is to the brazier (1 = touching). */
   private torchNear = 0;
+  /** The torch only appears (with a flare) once all three parts are found. */
+  private torchShown = false;
+  private torchRevealAt = -1;
+  /** The tracked cart was in the air last frame (the trolley's jump). */
+  private airborne = false;
   private beaconTimer = -1;
   private waitHintAt = 0;
 
@@ -168,6 +174,7 @@ export class CaveSystem extends createSystem({}) {
       scale: 0.07,
       party: false,
       light: false,
+      logs: false,
     });
     for (const object of this.caveFire.objects) this.world.createTransformEntity(object, { persistent: true });
     fires.push(this.caveFire);
@@ -197,12 +204,13 @@ export class CaveSystem extends createSystem({}) {
       this.v.parts[id].visible = true;
       this.v.partGlow[id].visible = true;
     }
-    this.v.partLabel.visible = true;
     this.torchHand = null;
     this.torchNear = 0;
     this.v.torch.position.copy(this.v.torchHome);
     this.v.torch.quaternion.identity();
-    this.v.torch.visible = true;
+    this.torchShown = false;
+    this.torchRevealAt = -1;
+    this.v.torch.visible = false;
     this.v.beaconGlow.material.opacity = 0;
     this.v.shell.emissive.copy(ICE_GLOW);
     this.caveFire.setVisible(false);
@@ -342,6 +350,7 @@ export class CaveSystem extends createSystem({}) {
     getHeadWorld(this.world, this.head);
     this.p.set(this.head.x - CAVE_ORIGIN.x - rig.x, 0, this.head.z - CAVE_ORIGIN.z - rig.z);
 
+    this.updateHop();
     const used = this.updateBeacon(dt) || this.updateParts();
     if (!used) this.updateAssistStep();
     this.updateOwnership();
@@ -494,7 +503,6 @@ export class CaveSystem extends createSystem({}) {
     if (!part) return false;
     const holder = this.v.parts[part];
     this.collected.add(part);
-    this.v.partLabel.visible = false;
     holder.visible = false;
     this.v.partGlow[part].visible = false;
     // Into the pack it goes, to come out again on top for the build.
@@ -503,7 +511,32 @@ export class CaveSystem extends createSystem({}) {
     audio.chime();
     audio.zip();
     toast(`${PART_LABEL[part]} into your pack: ${this.collected.size} of 3`, 3.5);
+    if (this.collected.size >= 3) this.revealTorch();
     return true;
+  }
+
+  /** All three parts found: the signal torch flares up on the top deck. */
+  private revealTorch(): void {
+    if (this.torchShown) return;
+    this.torchShown = true;
+    this.torchRevealAt = performance.now() / 1000;
+    this.v.torch.visible = true;
+    audio.ignite();
+    toast('All three parts! A signal torch has flared up on the top deck. Climb up and light the beacon with it.', 6);
+  }
+
+  /** The trolley's jump: a whoosh as it leaves the ramp, a thud as it lands. */
+  private updateHop(): void {
+    const spec = PLATFORMS[this.tracked];
+    const hop = spec.hop;
+    const st = this.states[this.tracked];
+    const up = !!hop && hopAirborne(hop, st.anchor.x, st.anchor.z) && st.moving;
+    if (up && !this.airborne) audio.whoosh();
+    if (!up && this.airborne) {
+      audio.thud();
+      for (const hand of HANDS) this.pulse(hand.handedness, 0.6, 60);
+    }
+    this.airborne = up;
   }
 
   /**
@@ -526,6 +559,7 @@ export class CaveSystem extends createSystem({}) {
 
   private updateBeacon(dt: number): boolean {
     if (this.tracked !== BEACON_INDEX && this.torchHand === null) return false;
+    if (!this.torchShown && !game.beaconLit.peek()) return false;
     if (game.beaconLit.peek()) {
       if (this.beaconTimer >= 0) {
         this.beaconTimer += dt;
@@ -571,7 +605,7 @@ export class CaveSystem extends createSystem({}) {
     // Held upright in the fist; its head is what lights the beacon.
     torch.position.copy(hand.position).sub(CAVE_ORIGIN);
     torch.quaternion.identity();
-    this.n.set(0, 0.32, 0).add(torch.position);
+    this.n.set(0, TORCH_HEAD * TORCH_SCALE, 0).add(torch.position);
     const d = this.n.distanceTo(this.v.brazier);
     this.torchNear = Math.max(0, Math.min(1, (LIGHT_HINT - d) / (LIGHT_HINT - LIGHT_RADIUS)));
     if (d < LIGHT_RADIUS) {
@@ -760,9 +794,14 @@ export class CaveSystem extends createSystem({}) {
     const near = held ? this.torchNear : 0;
     v.torchFlame.visible = !lit;
     v.torchFlame.scale.setScalar(0.28 * (1 + 0.9 * near) * (0.92 + 0.08 * Math.sin(time * 23)));
+    v.torch.visible = this.torchShown || lit;
+    // It flares up when it appears, then glows and sends light up the chimney.
+    const flare = this.torchRevealAt < 0 ? 0 : Math.max(0, 1 - (performance.now() / 1000 - this.torchRevealAt) / 1.6);
     v.torchHalo.visible = !lit && !held;
-    v.torchHalo.material.opacity = 0.6 + 0.4 * beat;
-    v.torchHalo.scale.setScalar(0.9 + 0.5 * beat);
+    v.torchHalo.material.opacity = Math.min(1, 0.7 + 0.3 * beat + flare);
+    v.torchHalo.scale.setScalar((1.1 + 0.6 * beat) * (1 + 3 * flare));
+    v.torchBeam.visible = this.torchShown && !lit && !held;
+    (v.torchBeam.material as { opacity: number }).opacity = 0.12 + 0.08 * beat + 0.4 * flare;
     v.brazierRing.visible = !lit;
     const ringBeat = 0.5 + 0.5 * Math.sin(time * (held ? 6 : 3));
     (v.brazierRing.material as { opacity: number }).opacity = held ? 0.45 + 0.4 * ringBeat + 0.3 * near : 0.12 + 0.12 * ringBeat;
@@ -770,7 +809,6 @@ export class CaveSystem extends createSystem({}) {
     v.brazierTarget.visible = !lit && held;
     v.brazierTarget.material.opacity = 0.25 + 0.2 * ringBeat + 0.5 * near;
     v.brazierTarget.scale.setScalar(0.7 + 0.6 * near + 0.15 * ringBeat);
-    if (v.partLabel.visible) v.partLabel.position.y = v.partLabelHome.y + 0.04 * Math.sin(time * 2.2);
 
     const shaft = v.shaft.material as { opacity: number };
     shaft.opacity = 0.07 + 0.02 * Math.sin(time * 0.6);

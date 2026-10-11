@@ -76,6 +76,7 @@ export class PoleSystem extends createSystem({}) {
   private readonly fwd = new Vector3();
   private readonly right = new Vector3();
   private readonly hand = new Vector3();
+  private readonly aim = new Quaternion();
   private readonly hangTarget = new Quaternion().setFromUnitVectors(Z_AXIS, DOWN);
   private strideClock = 0;
   private readonly marks = new PoleMarks();
@@ -165,7 +166,10 @@ export class PoleSystem extends createSystem({}) {
    */
   private posePoles(dt: number): void {
     this.player.updateMatrixWorld(true);
-    const smooth = 1 - Math.exp(-25 * dt);
+    // A free pole eases toward the wrist's direction: gently enough that
+    // pulling it out of the snow, and tracking wobble, never snap it about.
+    const ease = 1 - Math.exp(-12 * dt);
+    const hang = 1 - Math.exp(-10 * dt);
     for (const hand of HANDS) {
       const pole = this.poles[hand.handedness];
       if (!pole.mesh.visible) continue;
@@ -186,11 +190,24 @@ export class PoleSystem extends createSystem({}) {
         this.dir.normalize();
         pole.mesh.position.copy(this.tip).addScaledVector(this.dir, -POLE_TIP_DISTANCE);
         pole.quat.setFromUnitVectors(Z_AXIS, this.dir);
+        pole.mesh.quaternion.copy(pole.quat);
+        continue;
+      }
+      pole.quat.slerp(pole.freeQuat, hand.grip ? ease : hang);
+      this.dir.copy(Z_AXIS).applyQuaternion(pole.quat);
+      this.tip.copy(this.hand).addScaledVector(this.dir, POLE_TIP_DISTANCE);
+      const ground = groundHeight(this.tip.x, this.tip.z);
+      if (hand.grip && this.tip.y < ground) {
+        // Just pulled out but still held low: the tip rests on the snow and
+        // the shaft slides up through the hand until you lift it clear.
+        this.tip.y = ground;
+        this.dir.subVectors(this.tip, this.hand).normalize();
+        pole.mesh.position.copy(this.tip).addScaledVector(this.dir, -POLE_TIP_DISTANCE);
+        pole.mesh.quaternion.copy(this.aim.setFromUnitVectors(Z_AXIS, this.dir));
       } else {
         pole.mesh.position.copy(this.hand);
-        pole.quat.slerp(pole.freeQuat, hand.grip ? smooth : 1 - Math.exp(-10 * dt));
+        pole.mesh.quaternion.copy(pole.quat);
       }
-      pole.mesh.quaternion.copy(pole.quat);
     }
   }
 

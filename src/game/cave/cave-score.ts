@@ -77,6 +77,53 @@ export interface PlatformSpec {
   part?: 'LeftWing' | 'RightWing' | 'ControlBar';
   /** The station with the signal beacon. */
   beacon?: boolean;
+  /** A jump over a gap in the track (see `hopLift`). */
+  hop?: Hop;
+}
+
+/**
+ * A cart that rides up a short ramp and hops a gap in its track: distances
+ * are horizontal metres from `from` toward `to` (the track's straight run).
+ * The ramp rises to `lift` by `takeoff`, the cart flies a parabola that
+ * leaves the ramp along its slope, and it lands back on the track at
+ * `landing`.
+ */
+export interface Hop {
+  from: V3;
+  to: V3;
+  rampStart: number;
+  takeoff: number;
+  landing: number;
+  lift: number;
+}
+
+/** Height a hopping cart is raised at horizontal distance `s` along its run. */
+export function hopLift(hop: Hop, s: number): number {
+  if (s <= hop.rampStart || s >= hop.landing) return 0;
+  if (s < hop.takeoff) {
+    const u = (s - hop.rampStart) / (hop.takeoff - hop.rampStart);
+    return hop.lift * u * u;
+  }
+  // Leave the lip along the ramp's slope, then come down onto the track.
+  const span = hop.landing - hop.takeoff;
+  const slope = (2 * hop.lift) / (hop.takeoff - hop.rampStart);
+  const u = (s - hop.takeoff) / span;
+  const p = (slope * span + hop.lift) / 4;
+  return (1 - u) * hop.lift + 4 * p * u * (1 - u);
+}
+
+/** Horizontal distance along a hop's run (0 at `from`). */
+export function hopDistance(hop: Hop, x: number, z: number): number {
+  const dx = hop.to.x - hop.from.x;
+  const dz = hop.to.z - hop.from.z;
+  const len = Math.hypot(dx, dz) || 1;
+  return ((x - hop.from.x) * dx + (z - hop.from.z) * dz) / len;
+}
+
+/** Is a point on a hop's run in the air (the gap in the track)? */
+export function hopAirborne(hop: Hop, x: number, z: number): boolean {
+  const s = hopDistance(hop, x, z);
+  return s > hop.takeoff && s < hop.landing;
 }
 
 export const v3 = (x: number, y: number, z: number): V3 => ({ x, y, z });
@@ -221,7 +268,15 @@ export const PLATFORMS: PlatformSpec[] = [
   // ── The chimney ──
   { id: 'lift-3', kind: 'hoist', claim: [N], ...shuttle(50, P8, P9) },
   station('chimney-foot', P9, [C, W]),
-  { id: 'trolley', kind: 'corner', claim: [E], ...corner(55, P9, T10, P10) },
+  {
+    id: 'trolley',
+    kind: 'corner',
+    claim: [E],
+    ...corner(55, P9, T10, P10),
+    // The high swing crosses the trolley's run just short of the ledge, so
+    // the track stops there: the cart rides up a little ramp and jumps it.
+    hop: { from: T10, to: P10, rampStart: 3.85, takeoff: 4.65, landing: 5.95, lift: 0.2 },
+  },
   station('chimney-ledge', P10, [C, W]),
   { id: 'swing-2', kind: 'swing', claim: [N], ...shuttle(60, P10, P11, 2, 2, { c: SWING_2, plane: 'xy' }) },
   station('bar-rack', P11, [C, E], { part: 'ControlBar' }),
@@ -327,6 +382,7 @@ export function anchorAt(spec: PlatformSpec, bar: number, out: V3): V3 {
       const k1 = keys[i + 1];
       const span = k1.bar - k0.bar;
       lerpArc(k0, k1, span > 0 ? smooth((t - k0.bar) / span) : 0, out);
+      if (spec.hop) out.y += hopLift(spec.hop, hopDistance(spec.hop, out.x, out.z));
       return out;
     }
   }
