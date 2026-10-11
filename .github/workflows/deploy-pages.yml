@@ -1,8 +1,10 @@
 name: Deploy to GitHub Pages
 
+# Only main deploys: the github-pages environment rejects other branches, and
+# a run from one would still take the pages slot below.
 on:
   push:
-    branches: [main, 'claude/magical-edison-hkunzd']
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -10,9 +12,10 @@ permissions:
   pages: write
   id-token: write
 
+# Queue deploys rather than cancelling one that is already publishing.
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
