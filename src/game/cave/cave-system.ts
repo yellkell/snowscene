@@ -446,26 +446,17 @@ export class CaveSystem extends createSystem({}) {
     return null;
   }
 
-  /** Reach-and-grab or W: be carried one square onto the next deck. */
+  /**
+   * Desktop only: W carries you one square onto the next deck. In a headset
+   * you only ever change decks by stepping onto one: nothing moves you
+   * across (a hand closing near an arriving deck used to carry you onto it).
+   */
   private updateAssistStep(): void {
-    const xr = this.world.renderer.xr.isPresenting;
+    if (this.world.renderer.xr.isPresenting) return;
     const keyboard = this.input.keyboard;
-    const pressed = !xr && (keyboard.getKeyDown('KeyW') || keyboard.getKeyDown('ArrowUp'));
-    let reached = false;
+    const pressed = keyboard.getKeyDown('KeyW') || keyboard.getKeyDown('ArrowUp');
     const next = this.nextDeck();
-    if (xr && next) {
-      const st = this.states[next.index];
-      const o = sqOffset(next.sq);
-      const tx = CAVE_ORIGIN.x + st.anchor.x + o.x;
-      const tz = CAVE_ORIGIN.z + st.anchor.z + o.z;
-      const ty = CAVE_ORIGIN.y + st.anchor.y;
-      for (const hand of HANDS) {
-        if (!hand.gripDown) continue;
-        const h = hand.position;
-        if (Math.hypot(h.x - tx, h.z - tz) < 0.46 && h.y > ty + 0.15 && h.y < ty + 1.8) reached = true;
-      }
-    }
-    if (!pressed && !reached) return;
+    if (!pressed) return;
     if (!next) {
       const now = performance.now() / 1000;
       if (pressed && now > this.waitHintAt) {
