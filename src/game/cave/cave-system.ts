@@ -20,7 +20,7 @@
  * one square onto it.
  */
 
-import { Box3, Color, createSystem, Matrix4, type ShaderMaterial, Vector3 } from '@iwsdk/core';
+import { Box3, Color, createSystem, Matrix4, Mesh, MeshBasicMaterial, type ShaderMaterial, TorusGeometry, Vector3 } from '@iwsdk/core';
 import { audio } from '../audio.js';
 import { addToPack, PART_ITEM } from '../equipment.js';
 import { Bonfire, fires } from '../campfire.js';
@@ -67,6 +67,15 @@ const PART_LABEL: Record<GliderPartId, string> = {
 };
 /** Seconds of summit view before the fade into the cave. */
 const PREROLL = 3.4;
+/**
+ * In a headset, this much longer to stand in the middle of your play space
+ * first: the works are walked for real across a 2 x 2 m grid around it.
+ */
+const CENTRE_TIME = 6;
+/** Close enough to the middle of the play space (m). */
+const CENTRED = 0.25;
+const RING_FAR = new Color(1.6, 0.85, 0.15);
+const RING_OK = new Color(0.3, 1.5, 0.5);
 /** Close a hand within this of the torch to take it. */
 const TAKE_RADIUS = 0.4;
 /** A closed hand within this of a glider part (its bounds) takes it. */
@@ -118,6 +127,10 @@ export class CaveSystem extends createSystem({}) {
   private readonly matrix = new Matrix4();
   /** World bounds of each part on its rack (they never move there). */
   private readonly partBounds = new Map<GliderPartId, Box3>();
+  /** Glowing ring on the floor at the middle of your play space (before the cave). */
+  private centreRing!: Mesh;
+  private centreMat!: MeshBasicMaterial;
+  private centring = false;
 
   init(): void {
     if (import.meta.env.DEV) validateScore();
@@ -143,6 +156,13 @@ export class CaveSystem extends createSystem({}) {
       return prev.part ?? null;
     });
 
+    this.centreMat = new MeshBasicMaterial({ color: RING_FAR, toneMapped: false, transparent: true, depthWrite: false });
+    this.centreRing = new Mesh(new TorusGeometry(0.3, 0.025, 6, 40), this.centreMat);
+    this.centreRing.rotation.x = -Math.PI / 2;
+    this.centreRing.name = 'PlaySpaceCentre';
+    this.centreRing.visible = false;
+    this.world.createTransformEntity(this.centreRing, { persistent: true });
+
     // The beacon's fire in its brazier (lit later).
     this.caveFire = new Bonfire(this.v.brazier.clone().add(CAVE_ORIGIN).add(new Vector3(0, -0.15, 0)), {
       scale: 0.07,
@@ -156,7 +176,8 @@ export class CaveSystem extends createSystem({}) {
     this.cleanupFuncs.push(
       game.phase.subscribe((phase) => {
         if (phase === Phase.Cave && !this.inside && this.preroll < 0) {
-          this.preroll = PREROLL;
+          this.centring = this.world.renderer.xr.isPresenting;
+          this.preroll = PREROLL + (this.centring ? CENTRE_TIME : 0);
           toast('The glider parts are somewhere in the old works inside this cave.', PREROLL + 1);
         }
       }),
@@ -170,11 +191,13 @@ export class CaveSystem extends createSystem({}) {
   private reset(): void {
     if (this.inside) this.exit();
     this.preroll = -1;
+    this.centreRing.visible = false;
     this.collected.clear();
     for (const id of Object.keys(this.v.parts) as GliderPartId[]) {
       this.v.parts[id].visible = true;
       this.v.partGlow[id].visible = true;
     }
+    this.v.partLabel.visible = true;
     this.torchHand = null;
     this.torchNear = 0;
     this.v.torch.position.copy(this.v.torchHome);
@@ -216,6 +239,23 @@ export class CaveSystem extends createSystem({}) {
     this.placeRig();
     if (game.phase.peek() !== Phase.Cave) setPhase(Phase.Cave);
     toast(this.world.renderer.xr.isPresenting ? 'Step onto decks with green lamps.' : 'W steps across when the lamps are green.', 5);
+  }
+
+  /** Before the cave: ask to stand in the middle of the play space, and show where it is. */
+  private updateCentring(before: number, time: number): void {
+    if (before > CENTRE_TIME && this.preroll <= CENTRE_TIME) {
+      toast('Before you go in: step to the middle of your play space (the ring on the floor) and stand still.', CENTRE_TIME + 0.5);
+    }
+    const show = this.preroll <= CENTRE_TIME && this.preroll >= 0;
+    this.centreRing.visible = show;
+    if (!show) return;
+    const rig = this.player;
+    getHeadWorld(this.world, this.head);
+    const off = Math.hypot(this.head.x - rig.position.x, this.head.z - rig.position.z);
+    this.centreRing.position.set(rig.position.x, rig.position.y + 0.02, rig.position.z);
+    this.centreRing.scale.setScalar(1 + 0.06 * Math.sin(time * 5));
+    this.centreMat.color.copy(off < CENTRED ? RING_OK : RING_FAR);
+    this.centreMat.opacity = 0.6 + 0.3 * Math.sin(time * 5);
   }
 
   /** Put the head back on the centre of the square you're standing on. */
@@ -275,8 +315,13 @@ export class CaveSystem extends createSystem({}) {
   update(delta: number, time: number): void {
     const dt = Math.min(delta, 0.1);
     if (this.preroll >= 0) {
+      const before = this.preroll;
       this.preroll -= dt;
-      if (this.preroll < 0) fadeThen(() => this.enter());
+      if (this.centring) this.updateCentring(before, time);
+      if (this.preroll < 0) {
+        this.centreRing.visible = false;
+        fadeThen(() => this.enter());
+      }
       return;
     }
     if (!this.inside) return;
@@ -382,6 +427,9 @@ export class CaveSystem extends createSystem({}) {
     this.candidate = -1;
     this.candidateFrames = 0;
     audio.marimba(this.flow);
+    if (this.partHere()) {
+      toast(this.world.renderer.xr.isPresenting ? 'Pick up the glider part: close your hand on it.' : 'Press E to take the glider part.', 4);
+    }
   }
 
   /** The next route step's deck docked here, if any, and the square to step onto. */
@@ -443,25 +491,19 @@ export class CaveSystem extends createSystem({}) {
     return part && !this.collected.has(part) ? part : null;
   }
 
+  /** Take a part: in XR any part you can close a hand on, from whatever deck you're on. */
   private updateParts(): boolean {
-    const part = this.partHere();
-    if (!part) return false;
-    const holder = this.v.parts[part];
-    let take = false;
+    let part: GliderPartId | null = null;
     if (this.world.renderer.xr.isPresenting) {
-      // Anywhere on the part counts, and a hand that is already closed takes
-      // it as it reaches in: no need to time the grab.
-      const bounds = this.partBounds.get(part)!;
-      for (const hand of HANDS) {
-        if (!hand.tracked || !hand.grip) continue;
-        if (bounds.distanceToPoint(hand.position) < PART_REACH) take = true;
-      }
+      part = this.partInHand();
     } else {
       const k = this.input.keyboard;
-      take = k.getKeyDown('KeyE') || k.getKeyDown('KeyW') || k.getKeyDown('ArrowUp');
+      if (k.getKeyDown('KeyE') || k.getKeyDown('KeyW') || k.getKeyDown('ArrowUp')) part = this.partHere();
     }
-    if (!take) return false;
+    if (!part) return false;
+    const holder = this.v.parts[part];
     this.collected.add(part);
+    this.v.partLabel.visible = false;
     holder.visible = false;
     this.v.partGlow[part].visible = false;
     // Into the pack it goes, to come out again on top for the build.
@@ -471,6 +513,22 @@ export class CaveSystem extends createSystem({}) {
     audio.zip();
     toast(`${PART_LABEL[part]} into your pack: ${this.collected.size} of 3`, 3.5);
     return true;
+  }
+
+  /**
+   * An uncollected part a closed hand is on (anywhere on it, plus a little
+   * reach), from whatever deck you're standing on. A hand that is already
+   * closed takes it as it reaches in: no need to time the grab.
+   */
+  private partInHand(): GliderPartId | null {
+    for (const hand of HANDS) {
+      if (!hand.tracked || !hand.grip) continue;
+      for (const [id, bounds] of this.partBounds) {
+        if (this.collected.has(id)) continue;
+        if (bounds.distanceToPoint(hand.position) < PART_REACH) return id;
+      }
+    }
+    return null;
   }
 
   // ----------------------------------------------------------- the beacon ---
@@ -721,6 +779,7 @@ export class CaveSystem extends createSystem({}) {
     v.brazierTarget.visible = !lit && held;
     v.brazierTarget.material.opacity = 0.25 + 0.2 * ringBeat + 0.5 * near;
     v.brazierTarget.scale.setScalar(0.7 + 0.6 * near + 0.15 * ringBeat);
+    if (v.partLabel.visible) v.partLabel.position.y = v.partLabelHome.y + 0.04 * Math.sin(time * 2.2);
 
     const shaft = v.shaft.material as { opacity: number };
     shaft.opacity = 0.07 + 0.02 * Math.sin(time * 0.6);

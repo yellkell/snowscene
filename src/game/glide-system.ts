@@ -12,7 +12,7 @@
  * A/D steer, W dives, S floats.
  */
 
-import { createSystem, InputComponent, Vector3 } from '@iwsdk/core';
+import { createSystem, Euler, InputComponent, Quaternion, Vector3 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { BAR_BELOW_EYES, BAR_HALF_WIDTH, BAR_Y, BAR_Z, buildGlider } from './glider-model.js';
 import { hands, HANDS } from './hand-input.js';
@@ -23,6 +23,11 @@ import { fadeThen, game, Phase, setPhase } from './state.js';
 import { clamp } from './terrain.js';
 
 const BAR_REACH = 0.2;
+/** The bar follows your hands this far from its resting spot at most (m). */
+const BAR_FOLLOW_MAX = 0.4;
+/** How quickly the bar settles into your hands (per second). */
+const BAR_FOLLOW_RATE = 30;
+const MAX_BAR_ROLL = 0.6;
 const MAX_TURN_RATE = 0.55; // rad/s
 const LAUNCH_HOLD_TIME = 0.35;
 
@@ -46,6 +51,16 @@ export class GlideSystem extends createSystem({}) {
   private readonly barB = new Vector3();
   private readonly tmp = new Vector3();
   private readonly avg = new Vector3();
+  /** Where the bar sits relative to its resting spot, and its tilt, while held. */
+  private readonly barOffset = new Vector3();
+  private readonly barTarget = new Vector3();
+  private barRoll = 0;
+  private handBlend = 0;
+  private readonly barLocal = new Vector3(0, BAR_Y, BAR_Z);
+  private readonly handL = new Vector3();
+  private readonly handR = new Vector3();
+  private readonly euler = new Euler(0, 0, 0, 'YXZ');
+  private readonly quat = new Quaternion();
 
   init(): void {
     this.glider.root.visible = false;
@@ -85,6 +100,9 @@ export class GlideSystem extends createSystem({}) {
     this.pitch = 0;
     this.barTimer = 0;
     game.barHeld.value = false;
+    this.handBlend = 0;
+    this.barOffset.set(0, 0, 0);
+    this.barRoll = 0;
     this.poseGlider();
   }
 
@@ -100,11 +118,50 @@ export class GlideSystem extends createSystem({}) {
     return this.player.rotation.y + this.gliderYawOffset;
   }
 
-  private poseGlider(): void {
+  /**
+   * Hang the glider from its control bar. The bar rests below and in front
+   * of the eyes; while both hands hold it, it sits in your hands instead
+   * (centred between them, tilted with them), and the wing pivots about the
+   * bar like a real hang glider's.
+   */
+  private poseGlider(dt = 0, followHands = false): void {
     getHeadWorld(this.world, this.head);
     const root = this.glider.root;
-    root.position.set(this.head.x, this.head.y - BAR_BELOW_EYES - BAR_Y, this.head.z);
-    root.rotation.set(this.pitch * 0.14, this.gliderYaw, -this.steer * 0.32, 'YXZ');
+    const yaw = this.gliderYaw;
+    yawForward(yaw, this.fwd);
+    // The bar's resting spot.
+    const rest = this.tmp.set(this.head.x, this.head.y - BAR_BELOW_EYES, this.head.z).addScaledVector(this.fwd, -BAR_Z);
+    let roll = -this.steer * 0.32;
+
+    const holding = followHands && hands.left.tracked && hands.right.tracked && hands.left.grip && hands.right.grip;
+    if (holding) {
+      // Fresh hand positions: the rig has moved since the hands were read this frame.
+      const grips = this.player.gripSpaces;
+      grips.left.updateWorldMatrix(true, false);
+      grips.right.updateWorldMatrix(true, false);
+      const left = this.handL.setFromMatrixPosition(grips.left.matrixWorld);
+      const right = this.handR.setFromMatrixPosition(grips.right.matrixWorld);
+      this.barTarget.addVectors(left, right).multiplyScalar(0.5).sub(rest);
+      if (this.barTarget.length() > BAR_FOLLOW_MAX) this.barTarget.setLength(BAR_FOLLOW_MAX);
+      const span = Math.max(0.2, left.distanceTo(right));
+      const handRoll = clamp(Math.asin(clamp((right.y - left.y) / span, -1, 1)), -MAX_BAR_ROLL, MAX_BAR_ROLL);
+      const k = dt > 0 ? 1 - Math.exp(-BAR_FOLLOW_RATE * dt) : 1;
+      this.barOffset.lerp(this.barTarget, k);
+      this.barRoll += (handRoll - this.barRoll) * k;
+    }
+    const blendRate = dt > 0 ? 1 - Math.exp(-(holding ? 12 : 3) * dt) : 1;
+    this.handBlend += ((holding ? 1 : 0) - this.handBlend) * blendRate;
+    if (this.handBlend < 1e-3 && !holding) {
+      this.barOffset.set(0, 0, 0);
+      this.barRoll = roll;
+    }
+    roll += (this.barRoll - roll) * this.handBlend;
+    rest.addScaledVector(this.barOffset, this.handBlend);
+
+    this.euler.set(this.pitch * 0.14, yaw, roll, 'YXZ');
+    root.rotation.copy(this.euler);
+    this.quat.setFromEuler(this.euler);
+    root.position.copy(this.barLocal).applyQuaternion(this.quat).multiplyScalar(-1).add(rest);
     root.updateMatrixWorld(true);
   }
 
@@ -128,11 +185,12 @@ export class GlideSystem extends createSystem({}) {
   }
 
   private updateLaunch(dt: number): void {
-    this.poseGlider();
+    const gripping = hands.left.tracked && hands.right.tracked && hands.left.grip && hands.right.grip;
     const held = this.world.renderer.xr.isPresenting
-      ? this.bothHandsOnBar()
+      ? gripping && (this.handBlend > 0.5 || this.bothHandsOnBar())
       : this.input.keyboard.getKeyPressed('Space') || this.input.keyboard.getKeyPressed('KeyW');
     if (game.barHeld.peek() !== held) game.barHeld.value = held;
+    this.poseGlider(dt, held && this.world.renderer.xr.isPresenting);
     this.barTimer = held ? this.barTimer + dt : 0;
     if (this.barTimer >= LAUNCH_HOLD_TIME) {
       getHeadWorld(this.world, this.head);
@@ -219,7 +277,7 @@ export class GlideSystem extends createSystem({}) {
     const turn = (-this.steer * MAX_TURN_RATE + autoTurn) * dt;
     if (turn !== 0) rotateRigAroundHead(this.world, turn, this.head);
     rig.updateMatrixWorld(true);
-    this.poseGlider();
+    this.poseGlider(dt, true);
 
     getHeadWorld(this.world, this.head);
     const ground = groundAt(this.head.x, this.head.z);
@@ -288,7 +346,7 @@ export class GlideSystem extends createSystem({}) {
     getHeadWorld(this.world, this.head);
     rig.position.y = groundAt(this.head.x, this.head.z);
     game.airspeed = this.speed;
-    this.poseGlider();
+    this.poseGlider(dt, true);
     if (this.speed < 0.15) {
       this.landedStopped = true;
       game.airspeed = 0;

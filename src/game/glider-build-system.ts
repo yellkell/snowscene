@@ -162,7 +162,15 @@ export class GliderBuildSystem extends createSystem({
     this.cleanupFuncs.push(
       game.resetCount.subscribe(() => this.reset()),
       game.phase.subscribe((phase) => {
-        if (phase === Phase.Building) this.completeTimer = -1;
+        if (phase === Phase.Building) {
+          this.completeTimer = -1;
+          toast(
+            this.world.renderer.xr.isPresenting
+              ? 'Take the glider parts you collected out of your backpack and assemble them here.'
+              : 'The glider parts you collected are in your pack: press E to fit each one here.',
+            7,
+          );
+        }
         this.applyVisibility(phase);
       }),
     );

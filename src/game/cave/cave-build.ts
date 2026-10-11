@@ -49,6 +49,7 @@ import {
   berthsOf,
   GRID,
   INDEX,
+  type Kind,
   PLATFORMS,
   ROUTE,
   type PlatformSpec,
@@ -80,6 +81,22 @@ const SWING_YOKE = 2.4;
 
 const TILE = GRID.tile;
 const HALF = TILE / 2;
+/** Cart track: rail centre below the deck, and the clearance the level chassis needs. */
+const RAIL_DROP = 0.42;
+const CHASSIS_CLEAR = 0.4;
+const CART_HALF = 0.33;
+/** Track that would have to dip further than this to clear the cart is left out. */
+const MAX_DIP = 0.32;
+/** Cart track is laid in straight lengths this long (m). */
+const TRACK_STEP = 0.2;
+/** Swing chain splay to the rock above (x, z), widest first. */
+const CHAIN_SPREADS: [number, number][] = [
+  [2.2, 1.4],
+  [1.6, 1.3],
+  [1.1, 1.15],
+  [0.7, 1.0],
+  [0.4, 0.85],
+];
 
 export const LAMP = {
   go: new Color(0.25, 1.4, 0.45),
@@ -143,6 +160,9 @@ export interface CaveVisuals {
   /** The parts waiting on racks, by id. */
   parts: Record<GliderPartId, Group>;
   partGlow: Record<GliderPartId, Sprite>;
+  /** "Pick up the glider part" sign over the first rack on the route. */
+  partLabel: Sprite;
+  partLabelHome: Vector3;
   /** The torch on its hook at the beacon and its flame. */
   torch: Group;
   torchFlame: Sprite;
@@ -237,6 +257,39 @@ export function glowTexture(inner: string, outer: string): CanvasTexture {
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
   return texture;
+}
+
+/** A flat sign that always faces you: a dark rounded card with bold text. */
+export function labelSprite(lines: string[], width: number): Sprite {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = 'rgba(18,14,10,0.86)';
+  ctx.beginPath();
+  ctx.roundRect(8, 8, 1008, 240, 48);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,200,110,0.95)';
+  ctx.lineWidth = 8;
+  ctx.stroke();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  lines.forEach((line, i) => {
+    let size = i === 0 ? 92 : 58;
+    ctx.font = `800 ${size}px system-ui, sans-serif`;
+    while (ctx.measureText(line).width > 940 && size > 20) {
+      size -= 4;
+      ctx.font = `800 ${size}px system-ui, sans-serif`;
+    }
+    ctx.fillStyle = i === 0 ? '#ffe4a8' : '#f4efe6';
+    ctx.fillText(line, 512, lines.length === 1 ? 128 : 92 + i * 92);
+  });
+  const texture = new CanvasTexture(canvas);
+  texture.colorSpace = SRGBColorSpace;
+  const sprite = new Sprite(new SpriteMaterial({ map: texture, transparent: true, depthWrite: false, fog: false }));
+  sprite.scale.set(width, width / 4, 1);
+  sprite.renderOrder = 2;
+  return sprite;
 }
 
 export function glowSprite(texture: CanvasTexture, size: number, opacity = 1): Sprite {
@@ -603,6 +656,114 @@ const box = (b: GeometryBuilder, w: number, h: number, d: number, x: number, y: 
 const rod = (b: GeometryBuilder, a: Vector3, c: Vector3, r: number, color: Color, sides = 6) =>
   b.add(new CylinderGeometry(r, r, 1, sides), segmentMatrix(a, c, new Matrix4()), color);
 
+// ----------------------------------------------------------- clearances ---
+
+/** How far each kind of platform's frame reaches above and below its deck. */
+const REACH: Record<Kind, { up: number; down: number }> = {
+  station: { up: 1.6, down: 0.33 },
+  raft: { up: 1.45, down: 0.33 },
+  hoist: { up: 2.4, down: 0.32 },
+  incline: { up: 0.75, down: 0.47 },
+  skip: { up: 0.9, down: 0.47 },
+  corner: { up: 0.75, down: 0.47 },
+  swing: { up: 0.95, down: 0.27 },
+  gondola: { up: 2.4, down: 0.28 },
+  ropeway: { up: 2.7, down: 0.28 },
+};
+/** Half-width of a deck square with its framing. */
+const FOOTPRINT = 0.34;
+
+interface Swept {
+  min: Vector3;
+  max: Vector3;
+  /** minX, minY, minZ, maxX, maxY, maxZ per pose and square. */
+  boxes: Float32Array;
+}
+let swept: Swept[] | null = null;
+
+/** Every platform's frame over its whole cycle, as boxes (course space). */
+function sweptVolumes(): Swept[] {
+  if (swept) return swept;
+  const a = { x: 0, y: 0, z: 0 };
+  swept = PLATFORMS.map((spec) => {
+    const steps = spec.loopBars ? spec.loopBars * 16 : 1;
+    const boxes = new Float32Array(steps * spec.claim.length * 6);
+    const min = new Vector3(Infinity, Infinity, Infinity);
+    const max = new Vector3(-Infinity, -Infinity, -Infinity);
+    const reach = REACH[spec.kind];
+    let n = 0;
+    for (let k = 0; k < steps; k++) {
+      anchorAt(spec, spec.keys[0].bar + k / 16, a);
+      for (const sq of spec.claim) {
+        const o = sqOffset(sq);
+        const x = a.x + o.x;
+        const z = a.z + o.z;
+        boxes[n++] = x - FOOTPRINT;
+        boxes[n++] = a.y - reach.down;
+        boxes[n++] = z - FOOTPRINT;
+        boxes[n++] = x + FOOTPRINT;
+        boxes[n++] = a.y + reach.up;
+        boxes[n++] = z + FOOTPRINT;
+        min.set(Math.min(min.x, x - FOOTPRINT), Math.min(min.y, a.y - reach.down), Math.min(min.z, z - FOOTPRINT));
+        max.set(Math.max(max.x, x + FOOTPRINT), Math.max(max.y, a.y + reach.up), Math.max(max.z, z + FOOTPRINT));
+      }
+    }
+    return { min, max, boxes };
+  });
+  return swept;
+}
+
+/** Fixed things the frame must also stay out of: the mill wheel's disc and hub. */
+const KEEP_OUT: Swept[] = [];
+function keepOuts(): Swept[] {
+  if (KEEP_OUT.length === 0) {
+    const r = WHEEL_R + 0.25;
+    const min = new Vector3(WHEEL_X - 0.75, WHEEL_C.y + GONDOLA_HANG - r, WHEEL_C.z - r);
+    const max = new Vector3(WHEEL_X + 0.55, WHEEL_C.y + GONDOLA_HANG + r, WHEEL_C.z + r);
+    KEEP_OUT.push({ min, max, boxes: new Float32Array([min.x, min.y, min.z, max.x, max.y, max.z]) });
+  }
+  return KEEP_OUT;
+}
+
+/**
+ * Does a rod from `a` to `b` (radius r) stay clear of every platform's travel
+ * (except platform `skip`, usually the machine the rod belongs to)? With
+ * `wheel`, the mill wheel counts too.
+ */
+function clearOfMachines(a: Vector3, b: Vector3, r: number, skip = -1, wheel = false): boolean {
+  const n = Math.max(1, Math.ceil(a.distanceTo(b) / 0.08));
+  const volumes = sweptVolumes();
+  const check = (v: Swept): boolean => {
+    if (
+      Math.max(a.x, b.x) + r < v.min.x || Math.min(a.x, b.x) - r > v.max.x ||
+      Math.max(a.y, b.y) + r < v.min.y || Math.min(a.y, b.y) - r > v.max.y ||
+      Math.max(a.z, b.z) + r < v.min.z || Math.min(a.z, b.z) - r > v.max.z
+    ) {
+      return true;
+    }
+    const bx = v.boxes;
+    for (let k = 0; k <= n; k++) {
+      const t = k / n;
+      const x = a.x + (b.x - a.x) * t;
+      const y = a.y + (b.y - a.y) * t;
+      const z = a.z + (b.z - a.z) * t;
+      for (let j = 0; j < bx.length; j += 6) {
+        if (
+          x + r > bx[j] && x - r < bx[j + 3] &&
+          y + r > bx[j + 1] && y - r < bx[j + 4] &&
+          z + r > bx[j + 2] && z - r < bx[j + 5]
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  for (let i = 0; i < volumes.length; i++) if (i !== skip && !check(volumes[i])) return false;
+  if (wheel) for (const v of keepOuts()) if (!check(v)) return false;
+  return true;
+}
+
 /** Low rails along the open edges of a deck. */
 function addRails(b: GeometryBuilder, spec: PlatformSpec, gaps: Set<string> | undefined, height: number, color: Color) {
   for (const { sq, edge } of railEdges(spec, gaps)) {
@@ -643,12 +804,13 @@ function frameMaterial(): MeshStandardMaterial {
   return m;
 }
 
-/** A hanging lantern: iron cage with a warm glow. */
+/** A lantern sitting on a post top: iron cage with a warm glow and a ring to carry it by. */
 function addLantern(b: GeometryBuilder, x: number, y: number, z: number) {
-  box(b, 0.14, 0.02, 0.14, x, y + 0.1, z, IRON);
   box(b, 0.12, 0.02, 0.12, x, y - 0.1, z, IRON);
+  box(b, 0.14, 0.02, 0.14, x, y + 0.1, z, IRON);
   for (const [cx, cz] of CORNERS) box(b, 0.012, 0.2, 0.012, x + cx * 0.06, y, z + cz * 0.06, IRON);
   b.add(new SphereGeometry(0.05, 8, 6), placed(x, y, z), new Color(3.2, 2.0, 0.8));
+  b.add(new TorusGeometry(0.035, 0.008, 4, 10), placed(x, y + 0.145, z), IRON);
 }
 
 /**
@@ -811,17 +973,14 @@ function buildStationFrame(spec: PlatformSpec, index: number, gaps: Set<string> 
       rod(b, new Vector3(cx * 0.28, -0.3, cz * 0.28), new Vector3(0, -0.3 - brace, 0), 0.04, WOOD_DARK, 4);
     }
   }
-  // A lantern on a post at an outer rail corner.
-  const rails = railEdges(spec, gaps);
-  if (rails.length > 0) {
-    const r = rails[index % rails.length];
-    const o = sqOffset(r.sq);
-    const d = EDGE_DIR[r.edge];
-    const x = o.x + d[0] * (HALF + 0.05) + (d[0] === 0 ? 0.25 : 0);
-    const z = o.z + d[1] * (HALF + 0.05) + (d[1] === 0 ? 0.25 : 0);
-    box(b, 0.07, 1.7, 0.07, x, 0.85, z, WOOD_DARK);
-    box(b, 0.25, 0.05, 0.05, x - d[0] * 0.1, 1.68, z - d[1] * 0.1, WOOD_DARK);
-    addLantern(b, x - d[0] * 0.2, 1.52, z - d[1] * 0.2);
+  // A lantern on top of a rail corner post: a corner railed on both sides,
+  // so it is never on the way across, and clear of every passing machine.
+  const corner = lanternCorner(spec, index, gaps);
+  if (corner) {
+    const { x, z } = corner;
+    box(b, 0.07, 1.25, 0.07, x, 0.625, z, WOOD_DARK);
+    box(b, 0.13, 0.03, 0.13, x, 1.265, z, WOOD_DARK);
+    addLantern(b, x, 1.39, z);
   }
   return b;
 }
@@ -891,6 +1050,29 @@ function addTrack(b: GeometryBuilder, pts: Vector3[], self: number): void {
   }
 }
 
+/** An outer corner of a station (rails on both its sides) where a lantern post fits. */
+function lanternCorner(spec: PlatformSpec, index: number, gaps: Set<string> | undefined): { x: number; z: number } | null {
+  const at = spec.keys[0].a;
+  const rails = new Set(railEdges(spec, gaps).map((r) => `${r.sq[0]},${r.sq[1]},${r.edge}`));
+  const options: { x: number; z: number }[] = [];
+  for (const sq of spec.claim) {
+    for (const [cx, cz] of CORNERS) {
+      const ew = cx > 0 ? 'E' : 'W';
+      const ns = cz > 0 ? 'S' : 'N';
+      if (!rails.has(`${sq[0]},${sq[1]},${ew}`) || !rails.has(`${sq[0]},${sq[1]},${ns}`)) continue;
+      const o = sqOffset(sq);
+      options.push({ x: o.x + cx * (HALF - 0.03), z: o.z + cz * (HALF - 0.03) });
+    }
+  }
+  for (let k = 0; k < options.length; k++) {
+    const c = options[(k + index) % options.length];
+    tmpA.set(at.x + c.x, at.y + 0.9, at.z + c.z);
+    tmpB.set(at.x + c.x, at.y + 1.55, at.z + c.z);
+    if (clearOfMachines(tmpA, tmpB, 0.08, index)) return c;
+  }
+  return null;
+}
+
 /** Fixed works: hoist head frames, rails, the wheel's tower, cables. */
 function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
   const b = new GeometryBuilder();
@@ -906,14 +1088,35 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
       const x = lo.x + o.x;
       const z = lo.z + o.z;
       const top = hi.y + 2.2 + HEADFRAME;
-      // Guide posts either side of the cage and a pulley beam on top.
+      // Guide posts either side of the cage, pushed out wherever another
+      // machine passes close by, and a pulley beam across their tops.
       const side = Math.abs(o.x) > 0 ? 'z' : 'x';
+      const reach: number[] = [];
       for (const s of [-1, 1]) {
-        const px = x + (side === 'x' ? s * 0.42 : 0);
-        const pz = z + (side === 'z' ? s * 0.42 : 0);
+        let d = 0.42;
+        for (const tryD of [0.42, 0.62, 0.82, 1.02, 1.12, 1.25]) {
+          d = tryD;
+          tmpA.set(x + (side === 'x' ? s * d : 0), lo.y - 1.2, z + (side === 'z' ? s * d : 0));
+          tmpB.set(tmpA.x, top, tmpA.z);
+          if (clearOfMachines(tmpA, tmpB, 0.07)) break;
+        }
+        reach.push(d);
+        const px = x + (side === 'x' ? s * d : 0);
+        const pz = z + (side === 'z' ? s * d : 0);
         box(b, 0.12, top - (lo.y - 1.2), 0.12, px, (top + lo.y - 1.2) / 2, pz, WOOD_DARK);
       }
-      box(b, side === 'x' ? 1.0 : 0.16, 0.18, side === 'z' ? 1.0 : 0.16, x, top, z, WOOD_DARK);
+      const span = reach[0] + reach[1] + 0.16;
+      const mid = (reach[1] - reach[0]) / 2;
+      box(
+        b,
+        side === 'x' ? span : 0.16,
+        0.18,
+        side === 'z' ? span : 0.16,
+        x + (side === 'x' ? mid : 0),
+        top,
+        z + (side === 'z' ? mid : 0),
+        WOOD_DARK,
+      );
       b.add(
         new CylinderGeometry(0.22, 0.22, 0.08, 16),
         new Matrix4()
@@ -932,20 +1135,85 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
     } else if (spec.kind === 'incline' || spec.kind === 'skip' || spec.kind === 'corner') {
       // The track along the cart's whole path: rails on timber stringers,
       // evenly spaced sleepers square to the track, and braced trestle bents.
+      // The cart rides level, so on a slope the track drops away under it:
+      // wherever the cart covers a point its chassis stays above the rail.
+      // Over the trolley's lift shaft, and wherever another machine crosses,
+      // the track stops.
       const loop = spec.loopBars ?? 8;
       const t0 = spec.keys[0].bar;
-      const pts: Vector3[] = [];
+      // Every pose of the cart, then track points every TRACK_STEP along the run.
+      const poses: Vector3[] = [];
       const a = { x: 0, y: 0, z: 0 };
-      for (let k = 0; k <= 96; k++) {
-        anchorAt(spec, t0 + (k / 96) * (loop / 2), a);
-        const p = new Vector3(a.x + o.x, a.y - 0.42, a.z + o.z);
-        if (pts.length === 0 || p.distanceToSquared(pts[pts.length - 1]) > 1e-4) pts.push(p);
+      for (let k = 0; k <= 256; k++) {
+        anchorAt(spec, t0 + (k / 256) * (loop / 2), a);
+        poses.push(new Vector3(a.x + o.x, a.y, a.z + o.z));
       }
-      addTrack(b, pts, i);
+      const path: Vector3[] = [poses[0]];
+      let run = 0;
+      for (let k = 1; k < poses.length; k++) {
+        run += Math.hypot(poses[k].x - poses[k - 1].x, poses[k].z - poses[k - 1].z);
+        if (run >= TRACK_STEP || k === poses.length - 1) {
+          path.push(poses[k]);
+          run = 0;
+        }
+      }
+      const N = path.length - 1;
+      const railY = path.map((p) => {
+        let y = p.y - RAIL_DROP;
+        for (const q of poses) {
+          if (Math.abs(q.x - p.x) < CART_HALF && Math.abs(q.z - p.z) < CART_HALF) y = Math.min(y, q.y - CHASSIS_CLEAR);
+        }
+        return y;
+      });
+      const onTrack = (k: number) => path[k].y - RAIL_DROP - railY[k] < MAX_DIP;
+      // Split the clear stretches into runs, each laid as one track.
+      const runs: Vector3[][] = [];
+      let current: Vector3[] = [];
+      const endRun = () => {
+        if (current.length > 1) runs.push(current);
+        current = [];
+      };
+      const ra = new Vector3();
+      const rb = new Vector3();
+      for (let k = 0; k < N; k++) {
+        const p = path[k];
+        const q = path[k + 1];
+        const dx = q.x - p.x;
+        const dz = q.z - p.z;
+        const len = Math.hypot(dx, dz);
+        // Vertical run (the trolley's lift): guide posts, no rails.
+        if (len < 1e-4 || Math.abs(q.y - p.y) > len || !onTrack(k) || !onTrack(k + 1)) {
+          endRun();
+          continue;
+        }
+        const ya = railY[k];
+        const yb = railY[k + 1];
+        // Rails, and the sleepers' full width just under them.
+        let clear = true;
+        for (const w of [GAUGE, GAUGE + 0.15]) {
+          const sx = (-dz / len) * w;
+          const sz = (dx / len) * w;
+          const drop = w > GAUGE ? 0.07 : 0;
+          for (const s of [-1, 1]) {
+            ra.set(p.x + s * sx, ya - drop, p.z + s * sz);
+            rb.set(q.x + s * sx, yb - drop, q.z + s * sz);
+            if (!clearOfMachines(ra, rb, 0.05, i, true)) clear = false;
+          }
+        }
+        if (!clear) {
+          endRun();
+          continue;
+        }
+        if (current.length === 0) current.push(new Vector3(p.x, ya, p.z));
+        current.push(new Vector3(q.x, yb, q.z));
+      }
+      endRun();
+      for (const r of runs) addTrack(b, r, i);
       if (spec.kind === 'corner') {
         // The lift half of the trolley's run rides up between guide posts.
-        const lo = pts[0];
-        const hi = pts.find((p) => Math.abs(p.y - pts[pts.length - 1].y) < 1e-3) ?? pts[pts.length - 1];
+        const lo = path[0].clone().setY(path[0].y - RAIL_DROP);
+        const top = path.find((p) => Math.abs(p.y - path[N].y) < 1e-3) ?? path[N];
+        const hi = top.clone().setY(top.y - RAIL_DROP);
         for (const s of [-1, 1]) box(b, 0.1, hi.y - lo.y + 3.2, 0.1, lo.x + 0.42, (hi.y + lo.y) / 2 + 1.2, lo.z + s * 0.32, WOOD_DARK);
       }
     } else if (spec.kind === 'swing') {
@@ -954,9 +1222,23 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
       // A short beam at the pivot, slung from the rock above on chains.
       box(b, 0.22, 0.22, 1.6, pivot.x, pivot.y + 0.1, pz, WOOD_DARK);
       box(b, 0.12, 0.12, 0.6, pivot.x, pivot.y - 0.05, pz, IRON);
+      // Chains splayed as wide as the machines around (and the wheel) allow.
+      let spread = CHAIN_SPREADS[CHAIN_SPREADS.length - 1];
+      for (const sp of CHAIN_SPREADS) {
+        let clear = true;
+        for (const s of [-1, 1]) {
+          for (const t of [-1, 1]) {
+            tmpA.set(pivot.x, pivot.y + 0.2, pz + s * 0.7);
+            tmpB.set(pivot.x + t * sp[0], pivot.y + 9, pz + s * sp[1]);
+            if (!clearOfMachines(tmpA, tmpB, 0.04, -1, true)) clear = false;
+          }
+        }
+        spread = sp;
+        if (clear) break;
+      }
       for (const s of [-1, 1]) {
         for (const t of [-1, 1]) {
-          rod(b, new Vector3(pivot.x, pivot.y + 0.2, pz + s * 0.7), new Vector3(pivot.x + t * 2.2, pivot.y + 9, pz + s * 1.4), 0.025, IRON, 4);
+          rod(b, new Vector3(pivot.x, pivot.y + 0.2, pz + s * 0.7), new Vector3(pivot.x + t * spread[0], pivot.y + 9, pz + s * spread[1]), 0.025, IRON, 4);
         }
       }
       ropes.push({
@@ -966,10 +1248,21 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
       });
     } else if (spec.kind === 'ropeway' || spec.kind === 'raft') {
       const ends = berths.map((a) => new Vector3(a.x + o.x, a.y + (spec.kind === 'raft' ? 1.3 : CABLE_H + 0.06), a.z + (spec.kind === 'raft' ? o.z - 0.22 : o.z)));
-      // Extend the cable past both berths to anchor posts.
+      // Extend the cable past both berths to anchor posts, beyond where
+      // anything (the raft itself included) ever passes.
       const dir = ends[1].clone().sub(ends[0]).normalize();
-      const p0 = ends[0].clone().addScaledVector(dir, -1.2);
-      const p1 = ends[1].clone().addScaledVector(dir, 1.2);
+      const post = (end: Vector3, sign: number): Vector3 => {
+        const p = end.clone();
+        for (const ext of [1.2, 1.6, 2.0, 2.4, 2.8, 3.2]) {
+          p.copy(end).addScaledVector(dir, sign * ext);
+          tmpA.set(p.x, p.y + 0.3, p.z);
+          tmpB.set(p.x, FLOOR_Y, p.z);
+          if (clearOfMachines(tmpA, tmpB, 0.12)) break;
+        }
+        return p;
+      };
+      const p0 = post(ends[0], -1);
+      const p1 = post(ends[1], 1);
       rod(b, p0, p1, 0.022, ROPE, 5);
       for (const p of [p0, p1]) {
         box(b, 0.2, p.y + 0.3 - FLOOR_Y, 0.2, p.x, (p.y + 0.3 + FLOOR_Y) / 2, p.z, WOOD_DARK);
@@ -979,8 +1272,19 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
 
   // The mill wheel's A-frame tower on the east side of the gondolas.
   const hub = new Vector3(WHEEL_X, WHEEL_C.y + GONDOLA_HANG, WHEEL_C.z);
+  // Legs splayed as wide as the swings and hoists passing by allow.
+  let foot = 1.6;
+  for (const tryFoot of [3.4, 3.0, 2.6, 2.2, 1.9, 1.6]) {
+    foot = tryFoot;
+    let clear = true;
+    for (const s of [-1, 1]) {
+      tmpA.set(WHEEL_X + 0.35, FLOOR_Y, WHEEL_C.z + s * foot);
+      if (!clearOfMachines(tmpA, tmpB.copy(hub).setX(WHEEL_X + 0.35), 0.18)) clear = false;
+    }
+    if (clear) break;
+  }
   for (const s of [-1, 1]) {
-    rod(b, new Vector3(WHEEL_X + 0.35, FLOOR_Y, WHEEL_C.z + s * 3.4), hub.clone().setX(WHEEL_X + 0.35), 0.16, WOOD_DARK, 6);
+    rod(b, new Vector3(WHEEL_X + 0.35, FLOOR_Y, WHEEL_C.z + s * foot), hub.clone().setX(WHEEL_X + 0.35), 0.16, WOOD_DARK, 6);
   }
   box(b, 0.3, 0.3, 0.5, WHEEL_X + 0.3, hub.y, hub.z, IRON);
 
@@ -1231,6 +1535,14 @@ export function buildCave(): CaveVisuals {
     partGlow[spec.part] = glow;
   }
 
+  // The first rack on the route says what to do with it.
+  const firstPart = PLATFORMS.find((p) => p.part)!.part!;
+  const partLabel = labelSprite(['Pick up the glider part', 'Close your hand on it'], 0.9);
+  const partLabelHome = parts[firstPart].position.clone().add(new Vector3(0, 0.62, 0));
+  partLabel.position.copy(partLabelHome);
+  partLabel.name = 'PartLabel';
+  root.add(partLabel);
+
   // The beacon: brazier on the top deck's east side, torch on a hook.
   const top = PLATFORMS.find((p) => p.beacon)!;
   const topAt = top.keys[0].a;
@@ -1295,6 +1607,8 @@ export function buildCave(): CaveVisuals {
     marker,
     parts,
     partGlow,
+    partLabel,
+    partLabelHome,
     torch,
     torchFlame,
     torchHalo,

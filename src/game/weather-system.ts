@@ -21,6 +21,7 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import { audio } from './audio.js';
+import { mistHooks } from './glide-mist.js';
 import { landUniforms } from './land-material.js';
 import { fogCullables } from './fog-cull.js';
 import { forestUniforms } from './trees.js';
@@ -244,6 +245,18 @@ export class WeatherSystem extends createSystem({}) {
       level.fogRange(storm, this.fogRange);
       near = this.fogRange.near;
       far = this.fogRange.far;
+    }
+    // A light haze over the glide, and in a bank of mist the fog closes right in.
+    const haze = mistHooks.haze;
+    if (haze > 0) {
+      near += (Math.min(near, mistHooks.hazeNear) - near) * haze;
+      far += (Math.min(far, mistHooks.hazeFar) - far) * haze;
+    }
+    const mist = mistHooks.inside;
+    if (mist > 0) {
+      near += (1 - near) * mist;
+      far += (Math.min(far, mistHooks.far) - far) * mist;
+      this.fogColor.lerp(mistHooks.color, 0.6 * mist);
     }
     // Inside the ice cave: a deep blue haze of its own.
     if (game.indoors > 0) {
