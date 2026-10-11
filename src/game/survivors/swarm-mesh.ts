@@ -496,7 +496,7 @@ attribute float aGlow;
 attribute vec2 aRig;    // part, beat (which half of the gait)
 attribute vec3 aPivot;  // where the part turns
 attribute vec4 iPose;   // x, z, heading, radius
-attribute vec4 iAnim;   // stride, flash, burn, rise
+attribute vec4 iAnim;   // stride, flash, chilled/frozen, rise
 attribute vec3 iAct;    // height off the floor, flailing (0..1), biting (0..1)
 uniform float uTime;
 uniform vec4 uGait;     // cadence, leg swing, foot lift, body bob
@@ -619,10 +619,13 @@ void main() {
   vec3 col = mix(shell, uAccent * (0.5 + 0.45 * ramp + 0.15 * sky), lit);
   // Past 1: eyes, knees, tips and the core keep a small warm glow.
   col = mix(col, vec3(1.0, 0.84, 0.5), clamp((vGlow - 1.0) * 0.5, 0.0, 0.7));
-  // On fire: it flickers toward flame.
-  float flick = 0.6 + 0.4 * sin(uTime * 37.0 + vW.x * 60.0 + vW.z * 40.0);
-  col = mix(col, vec3(1.0, 0.5, 0.12), vBurn * 0.55 * flick);
-  col = mix(col, vec3(1.0), vFlash);
+  // Chilled, it frosts over; frozen solid, it is a block of blue ice
+  // with a glint on the facets facing the light.
+  vec3 ice = vec3(0.62, 0.84, 1.0) * (0.75 + 0.35 * ramp) + vec3(0.6) * pow(key, 6.0);
+  col = mix(col, ice, vBurn * 0.85);
+  // A hit flashes it pale (only partly, so a boss under constant fire
+  // keeps its colours).
+  col = mix(col, vec3(1.0, 0.95, 0.9), vFlash * 0.45);
   // The scene's fog, by distance.
   col = mix(col, uFogColor, smoothstep(uFogNear, uFogFar, length(vW - cameraPosition)));
   gl_FragColor = vec4(col, 1.0);
@@ -930,7 +933,7 @@ export class SwarmMesh {
       pose[o + 3] = KINDS[k].radius * h.scale[i];
       anim[o] = h.stride[i];
       anim[o + 1] = h.flash[i] > 0 ? Math.min(1, h.flash[i] / 0.1) : 0;
-      anim[o + 2] = h.burn[i] > 0 ? 1 : 0;
+      anim[o + 2] = h.ice[i] > 0 ? 1 : h.chill[i] > 0 ? 0.3 : 0;
       anim[o + 3] = h.rise[i];
       const q = n * 3;
       act[q] = duneHeight(h.x[i], h.z[i]) + (h.rise[i] - 1) * KINDS[k].radius * 1.4;

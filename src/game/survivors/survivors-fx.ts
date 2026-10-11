@@ -1,7 +1,7 @@
 /**
  * Snow Survivors' weapons and pickups, drawn: pooled and instanced so a
  * screen full of bolts, swords, crystals and lightning costs a handful of
- * draws. The survivors system owns the rules; these only hold state that
+ * draws. Also the ice boulders the big ones hurl back at you. The survivors system owns the rules; these only hold state that
  * moves on its own (a bolt's flight, a crystal's bob) and draw it.
  */
 
@@ -124,9 +124,119 @@ export class Bolts {
   }
 }
 
+// ------------------------------------------------------------ boulders ---
+
+const HURL_CAP = 48;
+const GRAVITY = 9.8;
+
+/**
+ * Ice boulders the titans (and later the brutes) lob at you: a glowing rock
+ * on a high arc, with a red ring on the snow where it will come down, so you
+ * can see it coming and pole out of the way.
+ */
+export class Hurls {
+  readonly rock: InstancedMesh;
+  readonly ring: InstancedMesh;
+  n = 0;
+  readonly x = new Float32Array(HURL_CAP);
+  readonly y = new Float32Array(HURL_CAP);
+  readonly z = new Float32Array(HURL_CAP);
+  readonly vx = new Float32Array(HURL_CAP);
+  readonly vy = new Float32Array(HURL_CAP);
+  readonly vz = new Float32Array(HURL_CAP);
+  /** Where it lands, its flight time and time flown, and its damage. */
+  readonly tx = new Float32Array(HURL_CAP);
+  readonly tz = new Float32Array(HURL_CAP);
+  readonly flight = new Float32Array(HURL_CAP);
+  readonly age = new Float32Array(HURL_CAP);
+  readonly dmg = new Float32Array(HURL_CAP);
+  readonly size = new Float32Array(HURL_CAP);
+
+  constructor(parent: Group) {
+    this.rock = new InstancedMesh(
+      new IcosahedronGeometry(0.3, 0),
+      new MeshBasicMaterial({ color: new Color(1.5, 0.45, 0.25), toneMapped: false }),
+      HURL_CAP,
+    );
+    this.rock.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.rock.count = 0;
+    this.rock.frustumCulled = false;
+    this.rock.name = 'IceBoulders';
+    parent.add(this.rock);
+    this.ring = new InstancedMesh(
+      new RingGeometry(0.78, 1, 32).rotateX(-Math.PI / 2),
+      new MeshBasicMaterial({ color: new Color(1.4, 0.15, 0.1), transparent: true, opacity: 0.75, depthWrite: false, side: DoubleSide, toneMapped: false }),
+      HURL_CAP,
+    );
+    this.ring.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.ring.count = 0;
+    this.ring.frustumCulled = false;
+    this.ring.name = 'BoulderMarks';
+    parent.add(this.ring);
+  }
+
+  /** Lob one from (x, y, z) to land on (tx, tz) after `flight` seconds. */
+  throw(x: number, y: number, z: number, tx: number, tz: number, flight: number, dmg: number, size: number): boolean {
+    if (this.n >= HURL_CAP) return false;
+    const i = this.n++;
+    const gy = duneHeight(tx, tz);
+    this.x[i] = x;
+    this.y[i] = y;
+    this.z[i] = z;
+    this.vx[i] = (tx - x) / flight;
+    this.vz[i] = (tz - z) / flight;
+    this.vy[i] = (gy - y + 0.5 * GRAVITY * flight * flight) / flight;
+    this.tx[i] = tx;
+    this.tz[i] = tz;
+    this.flight[i] = flight;
+    this.age[i] = 0;
+    this.dmg[i] = dmg;
+    this.size[i] = size;
+    return true;
+  }
+
+  remove(i: number): void {
+    const j = --this.n;
+    if (i === j) return;
+    for (const a of [this.x, this.y, this.z, this.vx, this.vy, this.vz, this.tx, this.tz, this.flight, this.age, this.dmg, this.size]) a[i] = a[j];
+  }
+
+  /** Fly them; returns nothing (the system checks `age >= flight` for landings). */
+  move(dt: number): void {
+    for (let i = 0; i < this.n; i++) {
+      this.age[i] += dt;
+      this.x[i] += this.vx[i] * dt;
+      this.z[i] += this.vz[i] * dt;
+      this.vy[i] -= GRAVITY * dt;
+      this.y[i] += this.vy[i] * dt;
+    }
+  }
+
+  draw(time: number): void {
+    for (let i = 0; i < this.n; i++) {
+      tmpP.set(this.x[i], this.y[i], this.z[i]);
+      tmpQ.setFromAxisAngle(UP, time * 5 + i);
+      const s = this.size[i];
+      tmpS.set(s, s, s);
+      this.rock.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
+      // The landing mark tightens as it falls.
+      const left = Math.max(0, 1 - this.age[i] / this.flight[i]);
+      tmpP.set(this.tx[i], duneHeight(this.tx[i], this.tz[i]) + 0.06, this.tz[i]);
+      tmpQ.identity();
+      const r = (0.9 + 0.8 * left) * s;
+      tmpS.set(r, 1, r);
+      this.ring.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
+    }
+    this.rock.count = this.n;
+    this.ring.count = this.n;
+    this.rock.instanceMatrix.needsUpdate = true;
+    this.ring.instanceMatrix.needsUpdate = true;
+  }
+}
+
 // ------------------------------------------------------------ blades ---
 
-export const BLADE_CAP = 14;
+export const BLADE_CAP = 30;
 
 /** Swords that spin round you: a blade, a guard and a grip, glowing gold. */
 export class Blades {
@@ -146,8 +256,13 @@ export class Blades {
     parent.add(this.mesh);
   }
 
-  /** Lay out `count` swords on a circle round (x, y, z), pointing outward, spun to `angle`. */
-  draw(count: number, x: number, y: number, z: number, radius: number, angle: number, size: number): void {
+  /**
+   * Lay out `count` swords on a circle round (x, y, z), pointing outward,
+   * spun to `angle`, from instance `start` on (so two rings can share the
+   * mesh). Returns the next free instance.
+   */
+  draw(count: number, x: number, y: number, z: number, radius: number, angle: number, size: number, start = 0): number {
+    count = Math.min(count, BLADE_CAP - start);
     for (let k = 0; k < count; k++) {
       const a = angle + (k / count) * Math.PI * 2;
       const dx = Math.sin(a);
@@ -155,10 +270,11 @@ export class Blades {
       tmpP.set(x + dx * radius * 0.35, y, z + dz * radius * 0.35);
       tmpQ.setFromAxisAngle(UP, a);
       tmpS.set(size, size, size * (radius * 0.75));
-      this.mesh.setMatrixAt(k, tmpM.compose(tmpP, tmpQ, tmpS));
+      this.mesh.setMatrixAt(start + k, tmpM.compose(tmpP, tmpQ, tmpS));
     }
-    this.mesh.count = count;
+    this.mesh.count = start + count;
     this.mesh.instanceMatrix.needsUpdate = true;
+    return start + count;
   }
 }
 
@@ -169,7 +285,7 @@ export class Novas {
   private readonly rings: { mesh: Mesh; t: number; r: number }[] = [];
 
   constructor(parent: Group) {
-    for (let k = 0; k < 6; k++) {
+    for (let k = 0; k < 12; k++) {
       const mesh = new Mesh(
         new RingGeometry(0.85, 1, 48).rotateX(-Math.PI / 2),
         new MeshBasicMaterial({ color: new Color(0.7, 0.6, 1.6), transparent: true, blending: AdditiveBlending, depthWrite: false, side: DoubleSide, toneMapped: false }),

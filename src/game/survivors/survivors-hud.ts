@@ -2,7 +2,9 @@
  * Snow Survivors' heads-up display: a card that floats low in front of you
  * (it eases after your gaze rather than sticking to it), with your health,
  * level and experience, the clock and your kills, and a banner line that
- * announces every upgrade as you take it. Redrawn a few times a second.
+ * announces every upgrade as you take it. Under it, your kill combo and
+ * the damage bonus your speed is giving you, and a boss's health while one
+ * is on the field. Redrawn a few times a second.
  *
  * Also the red flash when something bites you: a dim red shell round your
  * head that pulses up and fades.
@@ -29,10 +31,18 @@ export interface HudState {
   time: number;
   kills: number;
   weapons: string;
+  /** Kills in the current streak, and how much of its window is left (0..1). */
+  combo: number;
+  comboLeft: number;
+  /** Damage multiplier from your speed (1 = standing still). */
+  speedMul: number;
+  /** The boss on the field ('' for none) and its health (0..1). */
+  boss: string;
+  bossHp: number;
 }
 
 const W = 1024;
-const H = 300;
+const H = 430;
 
 export class SurvivorsHud {
   readonly card: Mesh;
@@ -77,6 +87,11 @@ export class SurvivorsHud {
     this.redraw = 0;
   }
 
+  /** No banner showing (so a hint can have the stage). */
+  idle(): boolean {
+    return performance.now() / 1000 > this.bannerUntil;
+  }
+
   bitten(amount: number): void {
     this.hurtLevel = Math.min(0.45, this.hurtLevel + amount);
   }
@@ -118,7 +133,7 @@ export class SurvivorsHud {
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = 'rgba(8,12,24,0.72)';
     ctx.beginPath();
-    ctx.roundRect(6, 70, W - 12, H - 76, 36);
+    ctx.roundRect(6, 70, W - 12, 224, 36);
     ctx.fill();
     // Banner: the upgrade you just took.
     const now = performance.now() / 1000;
@@ -174,6 +189,48 @@ export class SurvivorsHud {
     ctx.fillStyle = '#c9d6ee';
     ctx.textAlign = 'center';
     ctx.fillText(s.weapons, W / 2, 268);
+    // Speed bonus and combo, as two chips under the card.
+    const chip = (x: number, w: number, text: string, color: string, fill: number) => {
+      ctx.fillStyle = 'rgba(8,12,24,0.78)';
+      ctx.beginPath();
+      ctx.roundRect(x, 304, w, 54, 27);
+      ctx.fill();
+      if (fill > 0) {
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.28;
+        ctx.beginPath();
+        ctx.roundRect(x, 304, Math.max(54, w * fill), 54, 27);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillStyle = color;
+      ctx.font = '800 32px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(text, x + w / 2, 332);
+    };
+    if (s.speedMul >= 1.05) {
+      const hot = Math.min(1, (s.speedMul - 1) / 1.2);
+      chip(30, 400, `SPEED ×${s.speedMul.toFixed(1)}`, hot > 0.6 ? '#7fe9ff' : '#c9e8ff', hot);
+    }
+    if (s.combo >= 10) {
+      const big = s.combo >= 500 ? '#ff6b6b' : s.combo >= 100 ? '#ffb347' : '#ffd166';
+      chip(W - 430, 400, `${s.combo.toLocaleString()} COMBO`, big, s.comboLeft);
+    }
+    // A boss's health, across the bottom.
+    if (s.boss) {
+      ctx.fillStyle = 'rgba(30,6,12,0.85)';
+      ctx.beginPath();
+      ctx.roundRect(30, 366, W - 60, 56, 20);
+      ctx.fill();
+      ctx.fillStyle = '#ff4d6d';
+      ctx.beginPath();
+      ctx.roundRect(36, 372, Math.max(20, (W - 72) * Math.max(0, Math.min(1, s.bossHp))), 44, 16);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '800 28px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(s.boss, W / 2, 395);
+    }
     this.texture.needsUpdate = true;
   }
 }

@@ -13,7 +13,20 @@
  *
  * Weapons: Icicle Volley (at the nearest), Orbit Blades (swords spinning
  * round you), Compass Shards (every way at once), Frost Nova (a blast ring
- * that freezes and throws them back) and Chain Lightning.
+ * that freezes and throws them back) and Chain Lightning. Each evolves (see
+ * upgrades.ts) once it is levelled up alongside its partner passive: the
+ * next treasure chest turns it into something else entirely.
+ *
+ * Speed is power: every metre a second you are moving adds to all your
+ * damage, and moving fast you ram straight through them, throwing them
+ * aside (Pole Power makes it lethal; the Avalanche Rider evolution makes it
+ * a weapon of its own). Kills chain into a combo that pays out in bonus
+ * experience and a blast at every milestone.
+ *
+ * The horde's shape changes as it grows: rings that close round you,
+ * stampedes from one side, walls of brutes across your path, and every
+ * two and a half minutes a boss titan with its own health bar that drops a
+ * treasure chest when it falls.
  *
  * Started from the guide panel ("Snow Survivors") or with ?survivors.
  */
@@ -32,13 +45,28 @@ import { WALL_Z } from '../terrain.js';
 import { startTutorialKit } from '../tutorial-kit.js';
 import { tutorialLevel } from '../tutorial-level.js';
 import { CAP, Horde, KINDS } from './horde.js';
-import { Blades, Bolts, Chests, Gems, Novas, Orbs, Zaps } from './survivors-fx.js';
+import { Blades, Bolts, Chests, Gems, Hurls, Novas, Orbs, Zaps } from './survivors-fx.js';
 import { SurvivorsHud } from './survivors-hud.js';
-import { ARENA_X, ARENA_Z, survivorsLevel, survivorsView } from './survivors-level.js';
+import { ARENA_X, ARENA_Z, duneHeight, survivorsLevel, survivorsView } from './survivors-level.js';
 import { survivors, survivorsControl } from './survivors-state.js';
 import { buildSurvivorsWorld } from './survivors-world.js';
 import { Shards, SwarmMesh } from './swarm-mesh.js';
-import { freshStats, HEART, rollUpgrade, type Stats, type Upgrade, WEAPONS, type WeaponId } from './upgrades.js';
+import {
+  EVOLUTIONS,
+  type Evolution,
+  type EvolutionId,
+  evolutionBaseReady,
+  evolutionUpgrade,
+  freshStats,
+  HEART,
+  readyEvolution,
+  rollUpgrade,
+  type Stats,
+  type Upgrade,
+  VACUUM,
+  WEAPONS,
+  type WeaponId,
+} from './upgrades.js';
 
 const GHOUL = 0;
 const BRUTE = 1;
@@ -51,6 +79,16 @@ const SPAWN_FAR = 34;
 const RECYCLE = 58;
 /** Walk this close to an orb or a chest to take it (m). */
 const TAKE_REACH = 1.3;
+/** Seconds between kills before a combo breaks. */
+const COMBO_WINDOW = 2.2;
+/** Combo milestones: each one blasts the crowd back and is announced. */
+const MILESTONES = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000];
+/** Faster than this (m/s) you ram through them (slower as the Avalanche Rider). */
+const RAM_SPEED = 2.8;
+const RIDER_RAM_SPEED = 1.8;
+/** A boss every this many seconds. */
+const BOSS_EVERY = 150;
+const BOSS_NAMES = ['THE FROST TITAN', 'THE ELDER TITAN', 'THE WINTER KING', 'THE HOWLING DARK'];
 
 export class SurvivorsSystem extends createSystem({}) {
   private built = false;
@@ -65,6 +103,7 @@ export class SurvivorsSystem extends createSystem({}) {
   private gems!: Gems;
   private orbs!: Orbs;
   private chests!: Chests;
+  private hurls!: Hurls;
   private hud = new SurvivorsHud();
 
   private stats: Stats = freshStats();
@@ -84,15 +123,45 @@ export class SurvivorsSystem extends createSystem({}) {
   private spawnAcc = 0;
   private nextChest = 30;
   private nextTitan = 75;
-  private nextSurge = 60;
+  private nextEvent = 45;
+  private eventIndex = 0;
+  private nextBoss = BOSS_EVERY;
+  private bosses = 0;
+  private bossName = '';
+  private bossMaxHp = 1;
+  private nextOrb = 8;
+  private nextVacuum = 80;
+  private nextHeart = 20;
   private killSounds = 0;
   private biteSound = 0;
+
+  // Game feel.
+  private combo = 0;
+  private comboT = 0;
+  /** Damage taken during this combo: too much and it breaks. */
+  private comboHurt = 0;
+  private bestCombo = 0;
+  private milestone = 0;
+  private gemStep = 0;
+  private gemT = 0;
+  private gemBudget = 0;
+  private killPulse = 0;
+  private hapticT = 0;
+  private speed = 0;
+  private speedMul = 1;
+  private puffT = 0;
+  private wakeT = 0;
+  private levelBlast = false;
+  /** Evolution hints already given, and one waiting for a quiet banner. */
+  private readonly hinted = new Set<string>();
+  private pendingHint: { text: string; color: string } | null = null;
 
   private readonly head = new Vector3();
   private readonly near = new Int32Array(512);
   private readonly hitSet = new Set<number>();
   private readonly lastHead = new Vector3();
   private readonly moveDir = new Vector3(0, 0, -1);
+  private readonly puffAt = new Vector3();
 
   init(): void {
     survivorsControl.start = () => this.start();
@@ -120,6 +189,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.gems = new Gems(this.root);
     this.orbs = new Orbs(this.root);
     this.chests = new Chests(this.root);
+    this.hurls = new Hurls(this.root);
     this.root.visible = false;
     this.world.createTransformEntity(this.root, { persistent: true });
     this.world.createTransformEntity(this.hud.card, { persistent: true });
@@ -195,17 +265,37 @@ export class SurvivorsSystem extends createSystem({}) {
     this.spawnAcc = 0;
     this.nextChest = 30;
     this.nextTitan = 75;
-    this.nextSurge = 60;
+    this.nextEvent = 45;
+    this.eventIndex = 0;
+    this.nextBoss = BOSS_EVERY;
+    this.bosses = 0;
+    this.bossName = '';
+    this.nextOrb = 8;
+    this.nextVacuum = 80;
+    this.nextHeart = 20;
+    this.combo = 0;
+    this.comboT = 0;
+    this.bestCombo = 0;
+    this.milestone = 0;
+    this.gemStep = 0;
+    this.gemT = 0;
+    this.killPulse = 0;
+    this.speedMul = 1;
+    this.hinted.clear();
+    this.pendingHint = null;
     for (const id of Object.keys(this.cd) as WeaponId[]) this.cd[id] = 0.5;
     this.horde.clear();
     this.bolts.n = 0;
     this.gems.n = 0;
+    this.hurls.n = 0;
     this.orbs.clear();
     this.chests.clear();
     survivors.dead.value = false;
     survivors.time.value = 0;
     survivors.kills.value = 0;
     survivors.level.value = 1;
+    survivors.bestCombo.value = 0;
+    survivors.bosses.value = 0;
     this.applyTuning();
   }
 
@@ -244,16 +334,25 @@ export class SurvivorsSystem extends createSystem({}) {
 
     if (!this.dead) {
       this.time += dt;
+      this.levelBlast = false;
+      // Speed is power: every m/s adds to all your damage.
+      this.speed = Math.hypot(game.velocity.x, game.velocity.z);
+      const rider = !!this.stats.evolved.rider;
+      this.speedMul = 1 + (rider ? 0.13 : 0.08) * Math.max(0, this.speed - 1);
       this.spawn(dt, px, pz);
-      const speedScale = 1 + Math.min(0.55, this.time / 540);
+      // The horde quickens: by six minutes the ghouls outrun a lazy pole.
+      const speedScale = 1 + Math.min(0.8, this.time / 360);
       const dps = this.horde.step(dt, px, pz, speedScale);
       this.hurt(dps * this.stats.armor * dt, dt);
       this.hp = Math.min(this.stats.maxHp, this.hp + this.stats.regen * dt);
+      this.ram(dt, px, pz);
+      this.hurl(dt, px, pz);
       this.fireWeapons(dt, time, px, pz);
       this.moveBolts(dt);
       this.collect(dt, px, pz);
       this.recycle(px, pz);
       this.horde.sweep();
+      this.feel(dt);
     } else {
       this.blades.mesh.count = 0;
     }
@@ -264,6 +363,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.novas.tick(dt);
     this.zaps.tick(dt);
     this.gems.draw(time);
+    this.hurls.draw(time);
     this.orbs.tick(dt, time);
     this.chests.tick(dt, time);
     this.killSounds = Math.max(0, this.killSounds - dt * 14);
@@ -277,56 +377,64 @@ export class SurvivorsSystem extends createSystem({}) {
       xpNext: this.xpNext,
       time: this.time,
       kills: this.kills,
-      weapons: (Object.keys(WEAPONS) as WeaponId[])
-        .filter((id) => this.stats.weapons[id] > 0)
-        .map((id) => `${WEAPONS[id].name} ${this.stats.weapons[id]}`)
-        .join('  ·  '),
+      weapons: this.weaponLine(),
+      combo: this.combo,
+      comboLeft: Math.max(0, this.comboT / COMBO_WINDOW),
+      speedMul: this.speedMul,
+      boss: this.bossName,
+      bossHp: this.bossHealth(),
     });
     if (Math.floor(this.time) !== survivors.time.peek()) survivors.time.value = Math.floor(this.time);
   }
 
   // ----------------------------------------------------------- the horde ---
 
-  /** Health, toughness and numbers all climb with the clock. */
+  /**
+   * Health, toughness and numbers all climb with the clock, and a little
+   * with your level too, so a strong build meets a tougher horde.
+   */
   private hpScale(): number {
     const m = this.time / 60;
-    return 1 + m * 0.6 + m * m * 0.15;
+    return (1 + m * 0.6 + m * m * 0.3) * (1 + 0.04 * this.lvl);
   }
 
   private spawn(dt: number, px: number, pz: number): void {
     const t = this.time;
     const m = t / 60;
-    // Thousands by the third minute (up to the cap), and a steady flood in.
-    const want = Math.min(CAP - 250, Math.floor(60 + t * 8 + m * m * 120));
-    this.spawnAcc += dt * (10 + t * 0.9);
+    // A trickle to start, a flood by the third minute (up to the cap). The
+    // flood keeps coming however fast you cut it down: the fewer there are
+    // than there should be, the faster they pour in (eased in over the first
+    // two minutes, so the opening is something you can learn on).
+    const want = Math.min(CAP - 250, Math.floor(15 + t * 4 + m * m * 220));
+    const flow = 0.8 + 0.03 * t + 0.002 * t * t;
+    const ease = Math.min(1, t / 120);
+    this.spawnAcc += dt * Math.max(flow, (want - this.horde.n) * 1.2 * ease * ease);
     while (this.spawnAcc >= 1 && this.horde.n < want) {
       this.spawnAcc -= 1;
       const brute = Math.random() < Math.min(0.32, Math.max(0, (t - 40) / 260));
       this.spawnOne(brute ? BRUTE : GHOUL, px, pz, 1);
     }
-    if (this.spawnAcc > 8) this.spawnAcc = 8;
+    if (this.spawnAcc > 20) this.spawnAcc = 20;
     // Elites, more often as the run goes on: each one carries an upgrade.
     if (t >= this.nextTitan) {
       this.nextTitan = t + Math.max(14, 42 - m * 4);
       const i = this.spawnOne(TITAN, px, pz, 1 + Math.min(0.5, m * 0.05));
       if (i >= 0) this.horde.carrier[i] = 1;
     }
-    // Every minute, a ring of them all round you at once.
-    if (t >= this.nextSurge) {
-      this.nextSurge = t + 60;
-      const count = Math.min(CAP - this.horde.n - 50, Math.floor(80 + m * 60));
-      const r = 20;
-      for (let k = 0; k < count; k++) {
-        const a = (k / count) * Math.PI * 2;
-        const i = this.horde.spawn(m > 3 && k % 6 === 0 ? BRUTE : GHOUL, px + Math.cos(a) * r, pz + Math.sin(a) * r, this.hpScale());
-        if (i >= 0) this.horde.pace[i] *= 1.15;
-      }
-      this.hud.announce('They are surrounding you!', '#ff6b6b', 3);
-      audio.whoosh();
+    // Something different every 45 s: a ring closing round you, a
+    // stampede from one side, a wall of brutes across your path.
+    if (t >= this.nextEvent) {
+      this.nextEvent = t + 45;
+      this.waveEvent(this.eventIndex++ % 3, px, pz);
+    }
+    // A boss every two and a half minutes.
+    if (t >= this.nextBoss) {
+      this.nextBoss = t + BOSS_EVERY;
+      this.spawnBoss(px, pz);
     }
     // Treasure: a chest under a pillar of light, not too close.
     if (t >= this.nextChest) {
-      this.nextChest = t + 40 + Math.random() * 15;
+      this.nextChest = t + (readyEvolution(this.stats) ? 22 : 40) + Math.random() * 15;
       const a = Math.random() * Math.PI * 2;
       const r = 16 + Math.random() * 10;
       if (this.chests.place(px + Math.cos(a) * r, pz + Math.sin(a) * r)) {
@@ -340,7 +448,151 @@ export class SurvivorsSystem extends createSystem({}) {
     let a = Math.random() * Math.PI * 2;
     if (Math.random() < 0.45) a = Math.atan2(this.moveDir.z, this.moveDir.x) + (Math.random() - 0.5) * 1.6;
     const r = SPAWN_NEAR + Math.random() * (SPAWN_FAR - SPAWN_NEAR);
-    return this.horde.spawn(kind, px + Math.cos(a) * r, pz + Math.sin(a) * r, this.hpScale(), scale);
+    // As the run goes on they come bigger (and, being bigger, tougher).
+    const grow = 1 + Math.random() * Math.min(0.5, this.time / 600);
+    return this.horde.spawn(kind, px + Math.cos(a) * r, pz + Math.sin(a) * r, this.hpScale(), scale * grow);
+  }
+
+  private waveEvent(kind: number, px: number, pz: number): void {
+    const m = this.time / 60;
+    const h = this.horde;
+    const room = CAP - h.n - 60;
+    if (room <= 0) return;
+    if (kind === 0) {
+      // A ring of them all round you at once.
+      const count = Math.min(room, Math.floor(40 + m * 70));
+      const r = 20;
+      for (let k = 0; k < count; k++) {
+        const a = (k / count) * Math.PI * 2;
+        const i = h.spawn(m > 3 && k % 6 === 0 ? BRUTE : GHOUL, px + Math.cos(a) * r, pz + Math.sin(a) * r, this.hpScale());
+        if (i >= 0) h.pace[i] *= 1.15;
+      }
+      this.hud.announce('They are surrounding you!', '#ff6b6b', 3);
+      audio.whoosh();
+    } else if (kind === 1) {
+      // A stampede: a dense, fast pack charging in from one side.
+      const yaw = getHeadYaw(this.world);
+      const side = Math.floor(Math.random() * 4);
+      const a = Math.atan2(-Math.cos(yaw), -Math.sin(yaw)) + side * (Math.PI / 2);
+      const cx = px + Math.cos(a) * 30;
+      const cz = pz + Math.sin(a) * 30;
+      const count = Math.min(room, Math.floor(50 + m * 30));
+      for (let k = 0; k < count; k++) {
+        const i = h.spawn(GHOUL, cx + (Math.random() - 0.5) * 9, cz + (Math.random() - 0.5) * 9, this.hpScale());
+        if (i >= 0) {
+          h.pace[i] = 2.1 + Math.random() * 0.3;
+          h.veer[i] = 0;
+        }
+      }
+      const where = ['AHEAD', 'ON YOUR RIGHT', 'BEHIND YOU', 'ON YOUR LEFT'][side];
+      this.hud.announce(`STAMPEDE ${where}!`, '#ffb347', 3);
+      audio.rumble(1);
+      audio.whoosh();
+    } else {
+      // A wall of brutes across the way you are going.
+      const fx = this.moveDir.x;
+      const fz = this.moveDir.z;
+      const count = Math.min(room, Math.floor(10 + m * 5));
+      for (let k = 0; k < count; k++) {
+        const off = (k - (count - 1) / 2) * 1.6;
+        h.spawn(BRUTE, px + fx * 24 - fz * off, pz + fz * 24 + fx * off, this.hpScale(), 1.1);
+      }
+      this.hud.announce('A wall of brutes ahead! Ram through or go round', '#e0c8a0', 3.5);
+      audio.thud();
+    }
+  }
+
+  private spawnBoss(px: number, pz: number): void {
+    const h = this.horde;
+    const n = this.bosses;
+    const a = Math.atan2(this.moveDir.z, this.moveDir.x) + (Math.random() - 0.5) * 1.2;
+    const scale = Math.min(3.6, 2.4 + 0.4 * n);
+    const i = h.spawn(TITAN, px + Math.cos(a) * 28, pz + Math.sin(a) * 28, 1, scale);
+    if (i < 0) return;
+    h.hp[i] = KINDS[TITAN].hp * this.hpScale() * (10 + 9 * n);
+    h.pace[i] = 1.05;
+    h.veer[i] = 0;
+    h.carrier[i] = 2;
+    this.bossMaxHp = h.hp[i];
+    this.bossName = BOSS_NAMES[Math.min(n, BOSS_NAMES.length - 1)] + (n >= BOSS_NAMES.length ? ` ${n - BOSS_NAMES.length + 2}` : '');
+    this.hud.announce(`BOSS: ${this.bossName}!`, '#ff4d6d', 4);
+    this.novas.burst(h.x[i], h.z[i], 8, 0xff4d6d);
+    audio.roar();
+    for (const hand of HANDS) this.pulse(hand.handedness, 1, 600);
+  }
+
+  /** The boss's health (0..1), clearing the bar once it is gone. */
+  private bossHealth(): number {
+    if (!this.bossName) return 0;
+    const h = this.horde;
+    for (let i = 0; i < h.n; i++) {
+      if (h.carrier[i] === 2 && !h.dead[i]) return h.hp[i] / this.bossMaxHp;
+    }
+    this.bossName = '';
+    return 0;
+  }
+
+  /**
+   * The big ones fight back: titans (and, from the third minute, one brute
+   * in five) lob ice boulders on a high arc at where you are heading, and a
+   * boss throws a spread of three. Each lands on a red ring: be elsewhere.
+   */
+  private hurl(dt: number, px: number, pz: number): void {
+    const h = this.horde;
+    const t = this.time;
+    const m = t / 60;
+    const vx = game.velocity.x;
+    const vz = game.velocity.z;
+    for (let i = 0; i < h.n; i++) {
+      const kind = h.kind[i];
+      if (h.dead[i] || h.rise[i] < 1 || h.ice[i] > 0) continue;
+      if (kind === GHOUL || (kind === BRUTE && (t < 180 || i % 5 !== 0))) continue;
+      h.throwT[i] -= dt;
+      if (h.throwT[i] > 0) continue;
+      const dx = px - h.x[i];
+      const dz = pz - h.z[i];
+      const d = Math.hypot(dx, dz);
+      if (d > 34 || d < 3) {
+        h.throwT[i] = 0.5;
+        continue;
+      }
+      const boss = h.carrier[i] === 2;
+      h.throwT[i] = boss ? 2.6 : kind === TITAN ? 3.5 + Math.random() * 2 : 7 + Math.random() * 5;
+      const flight = 1.1 + d / 14;
+      // Aimed at where you will be if you keep going (half the lead, so
+      // turning is how you dodge).
+      const ax = px + vx * flight * 0.6;
+      const az = pz + vz * flight * 0.6;
+      const r = h.radius(i);
+      const dmg = (boss ? 24 : kind === TITAN ? 16 : 12) + 3.5 * m;
+      const shots = boss ? 3 : 1;
+      for (let k = 0; k < shots; k++) {
+        const spread = shots > 1 ? (k - 1) * 2.4 : 0;
+        const ox = (-dz / d) * spread;
+        const oz = (dx / d) * spread;
+        this.hurls.throw(h.x[i], duneHeight(h.x[i], h.z[i]) + r * 1.4, h.z[i], ax + ox, az + oz, flight, dmg, boss ? 1.6 : kind === TITAN ? 1.2 : 0.85);
+      }
+    }
+    // Fly them, and see what comes down on you.
+    const hu = this.hurls;
+    hu.move(dt);
+    for (let i = hu.n - 1; i >= 0; i--) {
+      if (hu.age[i] < hu.flight[i]) continue;
+      const x = hu.tx[i];
+      const z = hu.tz[i];
+      const reach = 0.75 + 0.35 * hu.size[i];
+      const gy = duneHeight(x, z);
+      this.shards.burst(x, gy + 0.2, z, 10, 0xff7a4a, 0.09 * hu.size[i], 3, 3);
+      if (Math.hypot(px - x, pz - z) < reach) {
+        this.hurt(hu.dmg[i] * this.stats.armor, 0.3);
+        this.hud.bitten(0.35);
+        audio.impact(1);
+        for (const hand of HANDS) this.pulse(hand.handedness, 1, 120);
+      } else if (Math.hypot(px - x, pz - z) < 12) {
+        audio.impact(0.4);
+      }
+      hu.remove(i);
+    }
   }
 
   /** Anything left far behind comes round in front again (VS's endless field). */
@@ -359,15 +611,18 @@ export class SurvivorsSystem extends createSystem({}) {
     }
   }
 
-  private hit(i: number, dmg: number, kx: number, kz: number, knock: number, freeze = 0): void {
+  /** Damage enemy i (your speed adds to it), shove it along (kx, kz), chill or freeze it. */
+  private hit(i: number, dmg: number, kx: number, kz: number, knock: number, chill = 0, ice = 0): void {
     const h = this.horde;
     if (h.dead[i]) return;
-    h.hp[i] -= dmg;
+    const boss = h.carrier[i] === 2;
+    h.hp[i] -= dmg * this.speedMul;
     h.flash[i] = 0.1;
-    if (freeze > 0) h.burn[i] = Math.max(h.burn[i], freeze);
+    if (chill > 0) h.chill[i] = Math.max(h.chill[i], chill);
+    if (ice > 0) h.ice[i] = Math.max(h.ice[i], boss ? ice * 0.3 : ice);
     if (knock > 0) {
       const d = Math.hypot(kx, kz) || 1;
-      const heavy = h.kind[i] === TITAN ? 0.25 : h.kind[i] === BRUTE ? 0.6 : 1;
+      const heavy = boss ? 0.04 : h.kind[i] === TITAN ? 0.25 : h.kind[i] === BRUTE ? 0.6 : 1;
       h.kvx[i] = (kx / d) * knock * heavy;
       h.kvz[i] = (kz / d) * knock * heavy;
       h.kT[i] = 0.18;
@@ -379,28 +634,80 @@ export class SurvivorsSystem extends createSystem({}) {
     const h = this.horde;
     h.dead[i] = 1;
     this.kills++;
+    this.killPulse++;
     const kind = h.kind[i];
     const k = KINDS[kind];
     const r = h.radius(i);
-    // A few shards each: with a hundred kills a second, more would bury the view.
-    this.shards.burst(h.x[i], r * 0.6, h.z[i], kind === TITAN ? 22 : kind === BRUTE ? 4 : 2, k.accent, r * 0.16, 1.5 + r, 1.5 + r * 0.8);
-    this.gems.drop(h.x[i], h.z[i], k.xp);
-    if (kind === TITAN) {
-      for (let g = 0; g < 6; g++) this.gems.drop(h.x[i] + (Math.random() - 0.5) * 2, h.z[i] + (Math.random() - 0.5) * 2, 4);
+    const x = h.x[i];
+    const z = h.z[i];
+    // The combo: kills in quick succession, paying out in bonus experience.
+    if (this.combo === 0) this.comboHurt = 0;
+    this.combo++;
+    this.comboT = COMBO_WINDOW;
+    if (this.combo > this.bestCombo) this.bestCombo = this.combo;
+    if (this.milestone < MILESTONES.length && this.combo >= MILESTONES[this.milestone]) this.comboMilestone(MILESTONES[this.milestone++]);
+    const frenzy = 1 + Math.min(0.5, this.combo / 2000);
+    if (h.carrier[i] === 2) {
+      this.bossDown(x, z, r);
+      return;
     }
-    // Drops: elites always carry an upgrade; the rest now and then.
-    const roll = Math.random();
-    if (h.carrier[i] || (kind === BRUTE && roll < 0.035) || (kind === GHOUL && roll < 0.006)) {
-      this.dropOrb(h.x[i], h.z[i], rollUpgrade(this.stats));
-    } else if (roll > 0.995) {
-      this.dropOrb(h.x[i], h.z[i], HEART);
+    // A few shards each: with a hundred kills a second, more would bury the view.
+    this.shards.burst(x, r * 0.6, z, kind === TITAN ? 22 : kind === BRUTE ? 4 : 2, k.accent, r * 0.16, 1.5 + r, 1.5 + r * 0.8);
+    this.gems.drop(x, z, k.xp * frenzy);
+    if (kind === TITAN) {
+      for (let g = 0; g < 6; g++) this.gems.drop(x + (Math.random() - 0.5) * 2, z + (Math.random() - 0.5) * 2, 4 * frenzy);
+    }
+    // Drops: elites always carry an upgrade; otherwise one now and then
+    // (by the clock, not the kill count, or a big fight would rain them),
+    // a heart when you are hurt, and a Snow Globe every minute or so.
+    const t = this.time;
+    if (h.carrier[i]) {
+      this.dropOrb(x, z, rollUpgrade(this.stats));
+    } else if (kind === BRUTE && t >= this.nextVacuum) {
+      this.nextVacuum = t + 70 + Math.random() * 30;
+      this.dropOrb(x, z, VACUUM);
+    } else if (t >= this.nextHeart && this.hp < this.stats.maxHp * 0.6) {
+      this.nextHeart = t + 18 + Math.random() * 12;
+      this.dropOrb(x, z, HEART);
+    } else if (t >= this.nextOrb && (kind === BRUTE || Math.random() < 0.05)) {
+      this.nextOrb = t + 7 + Math.random() * 5;
+      this.dropOrb(x, z, rollUpgrade(this.stats));
     }
     if (this.killSounds < 3) {
       this.killSounds += 1;
-      if (kind === GHOUL) audio.clack();
+      if (kind === GHOUL) audio.crunch(0.7);
       else audio.thud();
     }
     if (this.kills % 100 === 0) survivors.kills.value = this.kills;
+  }
+
+  private comboMilestone(m: number): void {
+    const color = m >= 1000 ? '#ff6b6b' : m >= 250 ? '#ffb347' : '#ffd166';
+    this.hud.announce(`${m.toLocaleString()} COMBO!${m >= 1000 ? ' UNSTOPPABLE' : ''}`, color, 2.5);
+    this.blast(this.head.x, this.head.z, 5 + Math.min(5, m / 500), 10 + m * 0.05, parseInt(color.slice(1), 16));
+    audio.levelUp();
+    for (const hand of HANDS) this.pulse(hand.handedness, 0.9, 120);
+  }
+
+  private bossDown(x: number, z: number, r: number): void {
+    this.bosses++;
+    survivors.bosses.value = this.bosses;
+    this.bossName = '';
+    this.shards.burst(x, r * 0.6, z, 140, KINDS[TITAN].accent, 0.3, 7, 8);
+    this.shards.burst(x, r * 0.6, z, 60, 0xffffff, 0.2, 5, 10);
+    this.novas.burst(x, z, 10, 0xffb54a);
+    this.novas.burst(x, z, 16, 0xff4d6d);
+    for (let g = 0; g < 40; g++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = Math.random() * 4;
+      this.gems.drop(x + Math.cos(a) * d, z + Math.sin(a) * d, 12);
+    }
+    // Its hoard: a chest where it fell (opened on the spot if every chest is out).
+    if (!this.chests.place(x, z)) this.openTreasure(x, z);
+    this.hud.announce(`${BOSS_NAMES[Math.min(this.bosses - 1, BOSS_NAMES.length - 1)]} FALLS! Take its treasure`, '#ffd166', 5);
+    audio.fanfare();
+    audio.crack();
+    for (const hand of HANDS) this.pulse(hand.handedness, 1, 500);
   }
 
   private dropOrb(x: number, z: number, u: Upgrade): void {
@@ -415,6 +722,7 @@ export class SurvivorsSystem extends createSystem({}) {
   private hurt(amount: number, dt: number): void {
     if (amount <= 0) return;
     this.hp -= amount;
+    this.comboHurt += amount;
     this.hud.bitten(amount * 0.04 + dt * 0.6);
     if (this.biteSound <= 0) {
       this.biteSound = 0.35;
@@ -427,10 +735,14 @@ export class SurvivorsSystem extends createSystem({}) {
   private die(): void {
     this.hp = 0;
     this.dead = true;
-    survivors.dead.value = true;
+    this.bossName = '';
+    // The tallies first: the guide panel reads them as soon as `dead` flips.
     survivors.time.value = Math.floor(this.time);
     survivors.kills.value = this.kills;
     survivors.level.value = this.lvl;
+    survivors.bestCombo.value = this.bestCombo;
+    survivors.bosses.value = this.bosses;
+    survivors.dead.value = true;
     this.resetTuning();
     poleTuning.gain = 0;
     game.velocity.set(0, 0, 0);
@@ -454,7 +766,9 @@ export class SurvivorsSystem extends createSystem({}) {
 
   private grant(u: Upgrade, flourish: boolean): string {
     const line = u.apply(this.stats, (hp) => this.heal(hp));
-    if (u.id === 'pole' || u.id === 'glide') this.applyTuning();
+    if (u.id === 'pole' || u.id === 'glide' || u.id === 'evolve-rider') this.applyTuning();
+    if (u.id === 'vacuum') this.vacuum();
+    this.evolutionHints();
     if (flourish) {
       this.hud.announce(line, u.color, 3.5);
       this.novas.burst(this.head.x, this.head.z, 3, parseInt(u.color.slice(1), 16));
@@ -478,9 +792,16 @@ export class SurvivorsSystem extends createSystem({}) {
       if (d < 0.6) {
         this.gainXp(g.value[i]);
         g.remove(i);
+        // Each pickup a note, climbing while they keep coming.
+        this.gemStep = this.gemT > 0 ? this.gemStep + 1 : 0;
+        this.gemT = 0.45;
+        if (this.gemBudget < 1) {
+          this.gemBudget += 0.08;
+          audio.gem(this.gemStep);
+        }
         continue;
       }
-      const v = Math.max(9, d * 7) * dt;
+      const v = Math.max(9, Math.min(d * 7, 30 + d * 0.5)) * dt;
       g.x[i] += (dx / d) * Math.min(v, d);
       g.z[i] += (dz / d) * Math.min(v, d);
       g.y[i] += (this.head.y - 0.7 - g.y[i]) * Math.min(1, dt * 6);
@@ -496,18 +817,33 @@ export class SurvivorsSystem extends createSystem({}) {
       if (!chest.active) continue;
       if (Math.hypot(px - chest.x, pz - chest.z) > TAKE_REACH + 0.3) continue;
       this.chests.open(chest);
-      const names: string[] = [];
-      for (let k = 0; k < 3; k++) {
-        const u = rollUpgrade(this.stats);
-        this.grant(u, false);
-        names.push(u.name);
-      }
+      this.openTreasure(chest.x, chest.z);
+    }
+  }
+
+  /** A treasure chest's haul: an evolution if one is ready, and upgrades. */
+  private openTreasure(x: number, z: number): void {
+    const evo = readyEvolution(this.stats);
+    const names: string[] = [];
+    if (evo) this.grant(evolutionUpgrade(evo), false);
+    for (let k = evo ? 2 : 3; k > 0; k--) {
+      const u = rollUpgrade(this.stats);
+      this.grant(u, false);
+      names.push(u.name);
+    }
+    if (evo) {
+      this.hud.announce(`EVOLUTION! ${evo.name}: ${EVOLUTIONS.find((e) => e.id === evo.id)!.blurb}`, evo.color, 6);
+      this.novas.burst(x, z, 14, parseInt(evo.color.slice(1), 16));
+      this.shards.burst(x, 0.8, z, 90, parseInt(evo.color.slice(1), 16), 0.14, 5, 9);
+      audio.evolve();
+      for (const hand of HANDS) this.pulse(hand.handedness, 1, 400);
+    } else {
       this.hud.announce(`TREASURE! ${names.join(' + ')}`, '#ffd166', 5);
-      this.novas.burst(chest.x, chest.z, 6, 0xffd166);
-      this.shards.burst(chest.x, 0.6, chest.z, 50, 0xffc94a, 0.12, 4, 6);
       audio.fanfare();
       for (const hand of HANDS) this.pulse(hand.handedness, 1, 150);
     }
+    this.novas.burst(x, z, 6, 0xffd166);
+    this.shards.burst(x, 0.6, z, 50, 0xffc94a, 0.12, 4, 6);
   }
 
   private gainXp(value: number): void {
@@ -515,11 +851,150 @@ export class SurvivorsSystem extends createSystem({}) {
     while (this.xp >= this.xpNext) {
       this.xp -= this.xpNext;
       this.lvl++;
-      this.xpNext = Math.floor(8 + this.lvl * 7 + 0.75 * this.lvl * this.lvl);
+      this.xpNext = Math.floor(8 + this.lvl * 10 + 1.5 * this.lvl * this.lvl);
       survivors.level.value = this.lvl;
       const u = rollUpgrade(this.stats);
       const line = this.grant(u, true);
       this.hud.announce(`LEVEL ${this.lvl}!  ${line}`, u.color, 3.5);
+      // Levelling up throws the crowd back off you (once a frame).
+      if (!this.levelBlast) {
+        this.levelBlast = true;
+        this.blast(this.head.x, this.head.z, 6.5, 20 + this.lvl * 2, 0xffe066);
+        audio.levelUp();
+      }
+    }
+  }
+
+  /** A shock ring from (x, z): damage and a hard shove outward. */
+  private blast(x: number, z: number, radius: number, dmg: number, color: number): void {
+    this.novas.burst(x, z, radius, color);
+    const n = this.horde.gather(x, z, radius, this.near);
+    for (let j = 0; j < n; j++) {
+      const i = this.near[j];
+      this.hit(i, dmg * this.stats.might, this.horde.x[i] - x, this.horde.z[i] - z, 11);
+    }
+  }
+
+  /** Snow Globe: every crystal on the field streams in. */
+  private vacuum(): void {
+    const g = this.gems;
+    for (let i = 0; i < g.n; i++) g.pulled[i] = 1;
+    this.novas.burst(this.head.x, this.head.z, 30, 0x7fdcff);
+    audio.whoosh();
+  }
+
+  /** Tell the player what an evolution needs, and when one is ready. */
+  private evolutionHints(): void {
+    const s = this.stats;
+    for (const e of EVOLUTIONS) {
+      if (s.evolved[e.id] || !evolutionBaseReady(s, e)) continue;
+      const ready = (s.levels[e.passive] ?? 0) >= e.passiveLevel;
+      const key = `${e.id}:${ready ? 'ready' : 'need'}`;
+      if (this.hinted.has(key)) continue;
+      this.hinted.add(key);
+      this.pendingHint = ready
+        ? { text: `${e.name} is ready! Open a treasure chest to evolve`, color: e.color }
+        : { text: `${this.baseName(e)} can evolve: find ${e.passiveName}`, color: e.color };
+      if (ready) this.nextChest = Math.min(this.nextChest, this.time + 8);
+      return;
+    }
+  }
+
+  private baseName(e: Evolution): string {
+    return e.id === 'rider' ? 'Pole Power' : WEAPONS[e.id as WeaponId].name;
+  }
+
+  private weaponLine(): string {
+    const s = this.stats;
+    const parts: string[] = [];
+    for (const id of Object.keys(WEAPONS) as WeaponId[]) {
+      if (s.weapons[id] <= 0) continue;
+      const evo = s.evolved[id as EvolutionId] ? EVOLUTIONS.find((e) => e.id === id) : null;
+      parts.push(evo ? `★ ${evo.name}` : `${WEAPONS[id].name} ${s.weapons[id]}`);
+    }
+    if (s.evolved.rider) parts.push('★ Avalanche Rider');
+    return parts.join('  ·  ');
+  }
+
+  // ------------------------------------------------------------- feel ---
+
+  /** Combo window, pickup notes, and a buzz in the hands for every kill. */
+  private feel(dt: number): void {
+    this.comboT -= dt;
+    // A streak lasts while the kills keep coming and you are not being
+    // eaten: a fifth of your health lost in one combo breaks it.
+    if (this.combo > 0 && this.comboHurt > this.stats.maxHp * 0.2) this.comboT = 0;
+    if (this.comboT <= 0 && this.combo > 0) {
+      this.combo = 0;
+      this.milestone = 0;
+    }
+    this.gemT -= dt;
+    this.gemBudget = Math.max(0, this.gemBudget - dt);
+    this.hapticT -= dt;
+    if (this.killPulse > 0 && this.hapticT <= 0) {
+      const v = Math.min(0.7, 0.12 + 0.025 * this.killPulse);
+      for (const hand of HANDS) this.pulse(hand.handedness, v, 16);
+      this.killPulse = 0;
+      this.hapticT = 0.07;
+    }
+    if (this.pendingHint && this.hud.idle()) {
+      this.hud.announce(this.pendingHint.text, this.pendingHint.color, 4);
+      this.pendingHint = null;
+    }
+  }
+
+  /**
+   * Ramming: moving fast, whatever is in front of you is thrown aside and
+   * hurt by how fast you hit it. Pole Power makes it deadly; the Avalanche
+   * Rider makes it wide and leaves a wake of frost behind you.
+   */
+  private ram(dt: number, px: number, pz: number): void {
+    const s = this.stats;
+    const rider = !!s.evolved.rider;
+    const speed = this.speed;
+    this.puffT -= dt;
+    this.wakeT -= dt;
+    if (speed < (rider ? RIDER_RAM_SPEED : RAM_SPEED)) return;
+    const vx = game.velocity.x / speed;
+    const vz = game.velocity.z / speed;
+    const fx = px + vx * 0.7;
+    const fz = pz + vz * 0.7;
+    const radius = (0.9 + 0.07 * speed) * (rider ? 1.9 : 1);
+    const dmg = (2 + 3 * s.pole) * speed * s.might * (rider ? 3 : 1);
+    const n = this.horde.gather(fx, fz, radius, this.near);
+    let rammed = 0;
+    for (let j = 0; j < n; j++) {
+      const i = this.near[j];
+      if (this.horde.kT[i] > 0) continue;
+      // Thrown off to the side you hit them on, and forward with you.
+      const ox = this.horde.x[i] - px;
+      const oz = this.horde.z[i] - pz;
+      const side = ox * -vz + oz * vx >= 0 ? 1 : -1;
+      this.hit(i, dmg, -vz * side + vx * 0.7, vx * side + vz * 0.7, 5 + speed * 1.3);
+      rammed++;
+    }
+    if (rammed > 0) {
+      this.killPulse += rammed;
+      if (this.puffT <= 0) {
+        this.puffT = 0.08;
+        this.puffAt.set(fx, this.head.y - 1.5, fz);
+        sceneRefs.puffs?.emit(this.puffAt, 6, 1.4);
+        if (this.killSounds < 3) {
+          this.killSounds += 1;
+          audio.crunch(1.2);
+        }
+      }
+    }
+    // The Avalanche Rider's wake: a ring of frost every few metres.
+    if (rider && this.wakeT <= 0) {
+      this.wakeT = 0.3;
+      const wake = 2.6 * s.area;
+      this.novas.burst(px, pz, wake, 0x7fe9ff);
+      const m = this.horde.gather(px, pz, wake, this.near);
+      for (let j = 0; j < m; j++) {
+        const i = this.near[j];
+        this.hit(i, dmg * 0.5, this.horde.x[i] - px, this.horde.z[i] - pz, 3, 1.5);
+      }
     }
   }
 
@@ -528,89 +1003,95 @@ export class SurvivorsSystem extends createSystem({}) {
   private fireWeapons(dt: number, time: number, px: number, pz: number): void {
     const s = this.stats;
     const w = s.weapons;
+    const evo = s.evolved;
     const y = this.head.y - 0.55;
     for (const id of Object.keys(this.cd) as WeaponId[]) this.cd[id] -= dt;
 
     // Icicle Volley: at the nearest few, a different one each.
+    // Hailstorm: twice as often, three more, bigger, and through everything.
     if (w.icicles > 0 && this.cd.icicles <= 0) {
       const L = w.icicles;
-      this.cd.icicles = (1.05 - 0.06 * L) * s.haste;
-      const count = 1 + Math.floor((L + 1) / 3) + s.amount;
+      const hail = !!evo.icicles;
+      this.cd.icicles = (1.05 - 0.06 * L) * s.haste * (hail ? 0.5 : 1);
+      const count = 1 + Math.floor((L + 1) / 3) + s.amount + (hail ? 3 : 0);
       this.hitSet.clear();
       for (let k = 0; k < count; k++) {
-        const t = this.horde.nearest(px, pz, 26, this.hitSet);
+        const t = this.horde.nearest(px, pz, hail ? 32 : 26, this.hitSet);
         if (t < 0) break;
         this.hitSet.add(t);
         const dx = this.horde.x[t] - px;
         const dz = this.horde.z[t] - pz;
         const d = Math.hypot(dx, dz) || 1;
-        this.bolts.fire(px, y, pz, dx / d, dz / d, 24, (7 + 3.5 * L) * s.might, 0.35 * s.area, L >= 7 ? 4 : L >= 4 ? 2 : 0, 1.3, 0x8fe3ff);
+        const pierce = hail ? 99 : L >= 7 ? 4 : L >= 4 ? 2 : 0;
+        this.bolts.fire(px, y, pz, dx / d, dz / d, hail ? 30 : 24, (7 + 3.5 * L) * s.might, (hail ? 0.5 : 0.35) * s.area, pierce, 1.3, hail ? 0xbff4ff : 0x8fe3ff);
       }
     }
 
     // Compass Shards: every way at once, the spread turning each volley.
+    // Starfall: twice the directions, twice as often, each shard piercing.
     if (w.compass > 0 && this.cd.compass <= 0) {
       const L = w.compass;
-      this.cd.compass = 1.45 * (1 - 0.04 * L) * s.haste;
-      const dirs = Math.min(24, 4 + 2 * (L - 1) + 2 * s.amount);
+      const star = !!evo.compass;
+      this.cd.compass = 1.45 * (1 - 0.04 * L) * s.haste * (star ? 0.5 : 1);
+      const dirs = Math.min(star ? 48 : 24, (4 + 2 * (L - 1) + 2 * s.amount) * (star ? 2 : 1));
       this.compassTurn += 2.39996;
       for (let k = 0; k < dirs; k++) {
         const a = this.compassTurn + (k / dirs) * Math.PI * 2;
-        this.bolts.fire(px, y, pz, Math.sin(a), Math.cos(a), 17, (6 + 3 * L) * s.might, 0.3 * s.area, 1, 1.15, 0x7dffb2);
+        this.bolts.fire(px, y, pz, Math.sin(a), Math.cos(a), star ? 20 : 17, (6 + 3 * L) * s.might, 0.3 * s.area, star ? 3 : 1, 1.15, star ? 0xa8ffd0 : 0x7dffb2);
       }
     }
 
     // Orbit Blades: swords spinning round you, each pass one hit.
+    // Blizzard Blades: a second, wider ring spinning the other way.
     const blades = w.blades > 0 ? Math.min(12, 1 + w.blades + s.amount) : 0;
     if (blades > 0) {
       const L = w.blades;
+      const storm = !!evo.blades;
       const radius = (1.7 + 0.08 * L) * s.area;
       const size = 0.9 + 0.08 * L * s.area;
       this.bladeAngle += dt * (3.3 + 0.25 * L);
-      this.blades.draw(blades, px, y + 0.15, pz, radius, this.bladeAngle, size);
-      const dmg = (10 + 4.5 * L) * s.might;
-      for (let k = 0; k < blades; k++) {
-        const a = this.bladeAngle + (k / blades) * Math.PI * 2;
-        const bx = px + Math.sin(a) * radius * 0.72;
-        const bz = pz + Math.cos(a) * radius * 0.72;
-        const n = this.horde.gather(bx, bz, radius * 0.35, this.near);
-        for (let j = 0; j < n; j++) {
-          const i = this.near[j];
-          if (this.horde.bladeCd[i] > 0) continue;
-          this.horde.bladeCd[i] = 0.32;
-          this.hit(i, dmg, this.horde.x[i] - px, this.horde.z[i] - pz, 4);
-        }
+      const dmg = (10 + 4.5 * L) * s.might * (storm ? 1.5 : 1);
+      const used = this.blades.draw(blades, px, y + 0.15, pz, radius, this.bladeAngle, size);
+      this.bladeRing(blades, px, pz, radius, this.bladeAngle, dmg);
+      if (storm) {
+        const outer = radius * 1.9;
+        this.blades.draw(blades + 2, px, y + 0.05, pz, outer, -this.bladeAngle * 0.8, size * 1.2, used);
+        this.bladeRing(blades + 2, px, pz, outer, -this.bladeAngle * 0.8, dmg);
       }
     } else {
       this.blades.mesh.count = 0;
     }
 
     // Frost Nova: a blast ring that throws them back and slows them.
+    // Absolute Zero: wider, more often, and everything in it freezes solid.
     if (w.nova > 0 && this.cd.nova <= 0) {
       const L = w.nova;
-      this.cd.nova = (3.6 - 0.22 * L) * s.haste;
-      const radius = (4.2 + 0.65 * L) * s.area;
-      this.novas.burst(px, pz, radius, 0xb9a4ff);
+      const zero = !!evo.nova;
+      this.cd.nova = (3.6 - 0.22 * L) * s.haste * (zero ? 0.75 : 1);
+      const radius = (4.2 + 0.65 * L) * s.area * (zero ? 1.4 : 1);
+      this.novas.burst(px, pz, radius, zero ? 0xd8ccff : 0xb9a4ff);
       const n = this.horde.gather(px, pz, radius, this.near);
-      const dmg = (14 + 8 * L) * s.might;
+      const dmg = (14 + 8 * L) * s.might * (zero ? 1.5 : 1);
       for (let j = 0; j < n; j++) {
         const i = this.near[j];
-        this.hit(i, dmg, this.horde.x[i] - px, this.horde.z[i] - pz, 9, 2);
+        this.hit(i, dmg, this.horde.x[i] - px, this.horde.z[i] - pz, zero ? 4 : 9, 2, zero ? 2.5 : 0);
       }
       audio.whoosh();
     }
 
     // Chain Lightning: to the nearest, then leaping on through the crowd.
+    // Thunderhead: half again as many leaps, more often, and every strike forks.
     if (w.lightning > 0 && this.cd.lightning <= 0) {
       const L = w.lightning;
-      this.cd.lightning = (1.5 - 0.08 * L) * s.haste;
-      const chains = 2 + L + s.amount;
-      const dmg = (12 + 6 * L) * s.might;
+      const thunder = !!evo.lightning;
+      this.cd.lightning = (1.5 - 0.08 * L) * s.haste * (thunder ? 0.6 : 1);
+      const chains = Math.floor((2 + L + s.amount) * (thunder ? 1.5 : 1));
+      const dmg = (12 + 6 * L) * s.might * (thunder ? 1.3 : 1);
       this.hitSet.clear();
       let fx = px;
       let fy = y + 0.3;
       let fz = pz;
-      let t = this.horde.nearest(px, pz, 15, this.hitSet);
+      let t = this.horde.nearest(px, pz, thunder ? 20 : 15, this.hitSet);
       for (let c = 0; c < chains && t >= 0; c++) {
         this.hitSet.add(t);
         const tx = this.horde.x[t];
@@ -618,14 +1099,38 @@ export class SurvivorsSystem extends createSystem({}) {
         const ty = this.horde.radius(t) * 0.8;
         this.zaps.zap(fx, fy, fz, tx, ty, tz);
         this.hit(t, dmg, tx - fx, tz - fz, 1.5);
+        if (thunder) {
+          const f = this.horde.nearest(tx, tz, 5, this.hitSet);
+          if (f >= 0) {
+            this.hitSet.add(f);
+            this.zaps.zap(tx, ty, tz, this.horde.x[f], this.horde.radius(f) * 0.8, this.horde.z[f]);
+            this.hit(f, dmg, this.horde.x[f] - tx, this.horde.z[f] - tz, 1.5);
+          }
+        }
         fx = tx;
         fy = ty;
         fz = tz;
         t = this.horde.nearest(tx, tz, 5, this.hitSet);
       }
-      if (this.hitSet.size > 0) audio.clack();
+      if (this.hitSet.size > 0) audio.zap();
     }
     void time;
+  }
+
+  /** One ring of blades: each sword hits what it passes through, once a pass. */
+  private bladeRing(count: number, px: number, pz: number, radius: number, angle: number, dmg: number): void {
+    for (let k = 0; k < count; k++) {
+      const a = angle + (k / count) * Math.PI * 2;
+      const bx = px + Math.sin(a) * radius * 0.72;
+      const bz = pz + Math.cos(a) * radius * 0.72;
+      const n = this.horde.gather(bx, bz, radius * 0.35, this.near);
+      for (let j = 0; j < n; j++) {
+        const i = this.near[j];
+        if (this.horde.bladeCd[i] > 0) continue;
+        this.horde.bladeCd[i] = 0.32;
+        this.hit(i, dmg, this.horde.x[i] - px, this.horde.z[i] - pz, 4);
+      }
+    }
   }
 
   private moveBolts(dt: number): void {

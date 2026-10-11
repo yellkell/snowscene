@@ -35,11 +35,11 @@ export interface Kind {
 
 export const KINDS: Kind[] = [
   // The ghoul: skittering, frail, endless.
-  { name: 'ghoul', radius: 0.42, speed: 2.4, hp: 5, dps: 7, xp: 1, body: 0x2c3652, accent: 0xc4e8ff },
+  { name: 'ghoul', radius: 0.42, speed: 1.9, hp: 5, dps: 3.5, xp: 1, body: 0x2c3652, accent: 0xc4e8ff },
   // The brute: a shelled thing that takes a volley or five.
-  { name: 'brute', radius: 0.7, speed: 1.7, hp: 28, dps: 12, xp: 4, body: 0x4a3830, accent: 0xf0dfc0 },
+  { name: 'brute', radius: 0.7, speed: 1.7, hp: 28, dps: 7, xp: 4, body: 0x4a3830, accent: 0xf0dfc0 },
   // The titan: an elite. Always drops something worth walking to.
-  { name: 'titan', radius: 1.45, speed: 1.2, hp: 240, dps: 26, xp: 25, body: 0x2a2833, accent: 0xffb54a },
+  { name: 'titan', radius: 1.45, speed: 1.2, hp: 240, dps: 16, xp: 25, body: 0x2a2833, accent: 0xffb54a },
 ];
 
 /** Crowd and hash grid: cell edge (m) and cells per side, centred on the player. */
@@ -62,9 +62,10 @@ export class Horde {
   readonly veer = new Float32Array(CAP);
   /** Distance walked (the legs' cycle). */
   readonly stride = new Float32Array(CAP);
-  /** Hit flash (s left) and burning/frozen tint (s left). */
+  /** Hit flash (s left); chilled (slowed, frosted) and frozen solid (s left). */
   readonly flash = new Float32Array(CAP);
-  readonly burn = new Float32Array(CAP);
+  readonly chill = new Float32Array(CAP);
+  readonly ice = new Float32Array(CAP);
   /** Climbing out of the snow, 0 → 1. */
   readonly rise = new Float32Array(CAP);
   /** Biting you (0..1, eased). */
@@ -75,7 +76,9 @@ export class Horde {
   readonly kT = new Float32Array(CAP);
   /** Per-enemy cooldown for the orbiting blades (s), so one pass is one hit. */
   readonly bladeCd = new Float32Array(CAP);
-  /** Drops something (an upgrade orb) when it dies. */
+  /** Seconds until it next hurls an ice boulder (the big ones). */
+  readonly throwT = new Float32Array(CAP);
+  /** Drops something when it dies: 1 an upgrade orb, 2 (a boss) a chest. */
   readonly carrier = new Uint8Array(CAP);
 
   /** Crowd density per cell, and the hash: first enemy per cell, next in cell. */
@@ -100,12 +103,14 @@ export class Horde {
     this.veer[i] = (Math.random() - 0.5) * 0.7;
     this.stride[i] = Math.random() * 10;
     this.flash[i] = 0;
-    this.burn[i] = 0;
+    this.chill[i] = 0;
+    this.ice[i] = 0;
     this.rise[i] = 0;
     this.bite[i] = 0;
     this.kT[i] = 0;
     this.bladeCd[i] = 0;
     this.carrier[i] = 0;
+    this.throwT[i] = 3 + Math.random() * 5;
     return i;
   }
 
@@ -132,7 +137,8 @@ export class Horde {
     this.veer[to] = this.veer[from];
     this.stride[to] = this.stride[from];
     this.flash[to] = this.flash[from];
-    this.burn[to] = this.burn[from];
+    this.chill[to] = this.chill[from];
+    this.ice[to] = this.ice[from];
     this.rise[to] = this.rise[from];
     this.bite[to] = this.bite[from];
     this.kvx[to] = this.kvx[from];
@@ -140,6 +146,7 @@ export class Horde {
     this.kT[to] = this.kT[from];
     this.bladeCd[to] = this.bladeCd[from];
     this.carrier[to] = this.carrier[from];
+    this.throwT[to] = this.throwT[from];
   }
 
   clear(): void {
@@ -164,7 +171,7 @@ export class Horde {
       const k = KINDS[this.kind[i]];
       const r = k.radius * this.scale[i];
       this.flash[i] = Math.max(0, this.flash[i] - dt);
-      this.burn[i] = Math.max(0, this.burn[i] - dt);
+      this.chill[i] = Math.max(0, this.chill[i] - dt);
       this.bladeCd[i] = Math.max(0, this.bladeCd[i] - dt);
       if (this.rise[i] < 1) {
         // Clawing out of the snow first.
@@ -177,6 +184,17 @@ export class Horde {
       const reach = r + 0.45;
       let mx = 0;
       let mz = 0;
+      if (this.ice[i] > 0) {
+        // Frozen solid: a statue until it thaws (it can still be shoved).
+        this.ice[i] -= dt;
+        if (this.kT[i] > 0) {
+          this.kT[i] -= dt;
+          x[i] += this.kvx[i] * dt;
+          z[i] += this.kvz[i] * dt;
+        }
+        this.bite[i] = Math.max(0, this.bite[i] - dt * 8);
+        continue;
+      }
       if (this.kT[i] > 0) {
         this.kT[i] -= dt;
         mx = this.kvx[i];
@@ -188,7 +206,7 @@ export class Horde {
         const s = Math.sin(lean);
         const ux = dx / d;
         const uz = dz / d;
-        const v = k.speed * this.pace[i] * speedScale * (this.burn[i] > 0 ? 0.55 : 1);
+        const v = k.speed * this.pace[i] * speedScale * (this.chill[i] > 0 ? 0.55 : 1);
         mx = (ux * c - uz * s) * v;
         mz = (ux * s + uz * c) * v;
       }
@@ -215,7 +233,7 @@ export class Horde {
       }
       const biting = e < reach + 0.08 && this.kT[i] <= 0;
       this.bite[i] += ((biting ? 1 : 0) - this.bite[i]) * Math.min(1, dt * 8);
-      if (biting) dps += k.dps;
+      if (biting) dps += k.dps * this.scale[i];
       const moved = Math.hypot(mx, mz) * dt;
       this.stride[i] += moved;
       // Face where it is going (or at you, when it bites).

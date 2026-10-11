@@ -16,6 +16,9 @@ export const survivors = {
   time: signal(0),
   kills: signal(0),
   level: signal(1),
+  /** Best kill streak and bosses felled, for the same line. */
+  bestCombo: signal(0),
+  bosses: signal(0),
 };
 
 export const survivorsControl = {

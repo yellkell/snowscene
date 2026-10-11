@@ -323,7 +323,10 @@ export class GuideSystem extends createSystem({}) {
       return {
         step: 'SNOW SURVIVORS',
         title: 'You fell!',
-        body: `Survived ${Math.floor(t / 60)}:${(t % 60).toString().padStart(2, '0')} with ${survivors.kills.peek().toLocaleString()} kills, level ${survivors.level.peek()}.`,
+        body:
+          `Survived ${Math.floor(t / 60)}:${(t % 60).toString().padStart(2, '0')} with ${survivors.kills.peek().toLocaleString()} kills, level ${survivors.level.peek()}. ` +
+          `Best combo ${survivors.bestCombo.peek().toLocaleString()}` +
+          (survivors.bosses.peek() > 0 ? `, ${survivors.bosses.peek()} boss${survivors.bosses.peek() > 1 ? 'es' : ''} down.` : '.'),
         hint: '',
       };
     }
@@ -331,8 +334,8 @@ export class GuideSystem extends createSystem({}) {
       step: 'SNOW SURVIVORS',
       title: 'Survive the horde',
       body: immersive
-        ? 'Pole about: fist, plant, pull. Your weapons fire by themselves. Walk over crystals, orbs and chests to grow stronger.'
-        : 'W to move, drag to look. Your weapons fire by themselves. Walk over crystals, orbs and chests to grow stronger.',
+        ? 'Pole about: fist, plant, pull. Your weapons fire by themselves. Walk over crystals, orbs and chests to grow stronger. Go fast to ram straight through them.'
+        : 'W to move, drag to look. Your weapons fire by themselves. Walk over crystals, orbs and chests to grow stronger. Go fast to ram straight through them.',
       hint: '',
     };
   }

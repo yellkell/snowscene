@@ -3,6 +3,12 @@
  * once: no menu, no pause (it is VR; you are busy). Level-ups, orbs dropped
  * by elites and treasure chests all draw from the same pool, weighted
  * toward levelling what you already have.
+ *
+ * Evolutions are the long game: take a weapon to level EVOLVE_LEVEL while
+ * holding its partner passive, then open a treasure chest, and the weapon
+ * becomes something else entirely (Vampire Survivors' best trick). The
+ * movement upgrades evolve too: enough Pole Power and Glide Wax turns you
+ * into the Avalanche Rider, ploughing through the horde at speed.
  */
 
 export type WeaponId = 'icicles' | 'blades' | 'compass' | 'nova' | 'lightning';
@@ -16,6 +22,33 @@ export const WEAPONS: Record<WeaponId, { name: string; color: string; blurb: str
 };
 
 export const MAX_WEAPON_LEVEL = 8;
+/** A weapon this level (with its partner passive) evolves from the next chest. */
+export const EVOLVE_LEVEL = 6;
+
+export type EvolutionId = WeaponId | 'rider';
+
+export interface Evolution {
+  id: EvolutionId;
+  name: string;
+  color: string;
+  blurb: string;
+  /** The passive it needs (and how many levels of it). */
+  passive: string;
+  passiveLevel: number;
+  passiveName: string;
+}
+
+export const EVOLUTIONS: Evolution[] = [
+  { id: 'icicles', name: 'Hailstorm', color: '#bff4ff', blurb: 'icicles rip through everything', passive: 'amount', passiveLevel: 1, passiveName: 'Multishot' },
+  { id: 'blades', name: 'Blizzard Blades', color: '#fff3a0', blurb: 'a second storm of swords', passive: 'area', passiveLevel: 1, passiveName: 'Area' },
+  { id: 'compass', name: 'Starfall', color: '#a8ffd0', blurb: 'shards every way, twice as fast', passive: 'haste', passiveLevel: 1, passiveName: 'Haste' },
+  { id: 'nova', name: 'Absolute Zero', color: '#d8ccff', blurb: 'freezes the horde solid', passive: 'armor', passiveLevel: 1, passiveName: 'Armour' },
+  { id: 'lightning', name: 'Thunderhead', color: '#fffbb0', blurb: 'every strike forks', passive: 'might', passiveLevel: 1, passiveName: 'Might' },
+  { id: 'rider', name: 'Avalanche Rider', color: '#7fe9ff', blurb: 'plough through them at speed', passive: 'glide', passiveLevel: 2, passiveName: 'Glide Wax' },
+];
+
+/** Pole Power the Avalanche Rider needs (it stands in for a weapon level). */
+const RIDER_POLE = 3;
 const MAX_PASSIVE = 6;
 
 export interface Stats {
@@ -36,6 +69,8 @@ export interface Stats {
   glide: number;
   /** Passive levels, for the caps and the HUD. */
   levels: Record<string, number>;
+  /** Evolutions taken. */
+  evolved: Partial<Record<EvolutionId, boolean>>;
 }
 
 export function freshStats(): Stats {
@@ -52,6 +87,33 @@ export function freshStats(): Stats {
     pole: 0,
     glide: 0,
     levels: {},
+    evolved: {},
+  };
+}
+
+/** Has this evolution's base reached its level (whatever the passive)? */
+export function evolutionBaseReady(s: Stats, e: Evolution): boolean {
+  return e.id === 'rider' ? s.pole >= RIDER_POLE : s.weapons[e.id] >= EVOLVE_LEVEL;
+}
+
+/** The first evolution waiting for a chest, if any. */
+export function readyEvolution(s: Stats): Evolution | null {
+  for (const e of EVOLUTIONS) {
+    if (s.evolved[e.id]) continue;
+    if (evolutionBaseReady(s, e) && (s.levels[e.passive] ?? 0) >= e.passiveLevel) return e;
+  }
+  return null;
+}
+
+export function evolutionUpgrade(e: Evolution): Upgrade {
+  return {
+    id: `evolve-${e.id}`,
+    name: e.name,
+    color: e.color,
+    apply: (s) => {
+      s.evolved[e.id] = true;
+      return `EVOLVED: ${e.name}! ${e.blurb}`;
+    },
   };
 }
 
@@ -122,6 +184,14 @@ export const HEART: Upgrade = {
   },
 };
 
+/** Vacuum: every crystal on the field flies to you at once. */
+export const VACUUM: Upgrade = {
+  id: 'vacuum',
+  name: 'Snow Globe',
+  color: '#7fdcff',
+  apply: () => 'SNOW GLOBE! Every crystal comes to you',
+};
+
 /** Roll an upgrade you can still take, weighted toward what you already have. */
 export function rollUpgrade(s: Stats): Upgrade {
   const pool: { u: Upgrade; w: number }[] = [];
@@ -133,7 +203,16 @@ export function rollUpgrade(s: Stats): Upgrade {
   }
   for (const p of PASSIVES) {
     const lvl = s.levels[p.id] ?? 0;
-    if (lvl < p.max) pool.push({ u: p, w: p.id === 'pole' || p.id === 'glide' ? 1.8 : 1.4 });
+    if (lvl >= p.max) continue;
+    let w = p.id === 'pole' || p.id === 'glide' ? 1.8 : 1.4;
+    // A passive that would complete an evolution you are building toward
+    // turns up far more often.
+    for (const e of EVOLUTIONS) {
+      if (e.passive !== p.id || s.evolved[e.id] || lvl >= e.passiveLevel) continue;
+      const base = e.id === 'rider' ? s.pole : s.weapons[e.id];
+      if (base >= 3) w += 2.5;
+    }
+    pool.push({ u: p, w });
   }
   const total = pool.reduce((a, b) => a + b.w, 0);
   if (total <= 0) return HEART;

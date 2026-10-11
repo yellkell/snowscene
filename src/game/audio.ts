@@ -365,6 +365,42 @@ class SnowAudio {
     this.tone(f * 4, 0.08, 0.04, 'sine');
   }
 
+  /**
+   * A crystal picked up: a glassy blip that climbs a pentatonic scale while
+   * pickups keep coming (`step`), so a stream of them sings upward.
+   */
+  gem(step: number): void {
+    const penta = [0, 2, 4, 7, 9];
+    const f = 880 * Math.pow(2, (penta[step % 5] + 12 * Math.min(2, Math.floor(step / 5))) / 12);
+    this.tone(f, 0.09, 0.05, 'sine');
+    this.tone(f * 2, 0.05, 0.015, 'triangle');
+  }
+
+  /** Lightning: a dry electric snap. */
+  zap(): void {
+    this.burst(4200, 1.2, 0.06, 0.22, 'highpass');
+    this.tone(90 + Math.random() * 40, 0.08, 0.06, 'sawtooth');
+  }
+
+  /** Level up: a bright arpeggio rushing upward over a soft swell. */
+  levelUp(): void {
+    [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((f, i) => this.tone(f, 0.5, 0.12, 'triangle', i * 0.045));
+    this.burst(2400, 0.6, 0.4, 0.08, 'highpass');
+  }
+
+  /** A boss arrives: a deep growl under a rumble. */
+  roar(): void {
+    this.tone(55, 1.6, 0.35, 'sawtooth');
+    this.tone(82, 1.3, 0.2, 'sawtooth', 0.1);
+    this.burst(90, 0.7, 1.8, 0.6, 'lowpass');
+  }
+
+  /** An evolution: a long, swelling major chord. */
+  evolve(): void {
+    [261.63, 329.63, 392, 523.25, 659.25, 783.99, 1046.5].forEach((f, i) => this.tone(f, 2.4, 0.1, i % 2 ? 'sine' : 'triangle', i * 0.06));
+    this.burst(600, 0.5, 1.4, 0.25, 'lowpass');
+  }
+
   /** The ground went without you. */
   thud(): void {
     this.burst(160, 1.4, 0.32, 0.55, 'lowpass');
