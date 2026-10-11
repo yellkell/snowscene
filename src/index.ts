@@ -12,6 +12,8 @@ import projectOptions from 'virtual:iwsdk-project';
 import { audio } from './game/audio.js';
 import { BackpackSystem } from './game/backpack-system.js';
 import { CaveSystem } from './game/cave/cave-system.js';
+import { SurvivorsSystem } from './game/survivors/survivors-system.js';
+import { survivorsControl } from './game/survivors/survivors-state.js';
 import { CampfireSystem } from './game/campfire.js';
 import { ClimbSystem } from './game/climb-system.js';
 import { DesktopLookSystem } from './game/desktop-look-system.js';
@@ -67,6 +69,7 @@ World.create(
     .registerSystem(GliderBuildSystem, { priority: 12 })
     .registerSystem(GlideSystem, { priority: 13 })
     .registerSystem(CaveSystem, { priority: 14 })
+    .registerSystem(SurvivorsSystem, { priority: 16 })
     .registerSystem(CaveBluffSystem, { priority: 15 })
     .registerSystem(GuideSystem, { priority: 30 })
     // The expedition (?expedition / ?expedition&s=5000 start it directly).
@@ -100,6 +103,8 @@ World.create(
       cave: world.getSystem(CaveSystem),
       equipment,
       addToPack,
+      survivors: world.getSystem(SurvivorsSystem),
+      survivorsControl,
     };
   }
 });

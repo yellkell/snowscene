@@ -3,7 +3,8 @@
   GuideSystem (src/game/guide-system.ts) as the player moves between phases.
   Panel, Divider, Button, ButtonIcon and ButtonLabel come from the bundled
   Horizon kit; Mountain, MountainSnow, RectangleGoggles, RotateCcw,
-  SkipForward and Undo2 are Lucide icons. The expedition buttons are wired
+  SkipForward, Undo2 and Swords are Lucide icons. The Snow Survivors buttons
+  are wired in GuideSystem (src/game/survivors/survivors-state.ts). The expedition buttons are wired
   in GuideSystem too (src/game/expedition/director/exp-control.ts).
 -->
 <style>
@@ -159,5 +160,23 @@
       <Undo2></Undo2>
     </ButtonIcon>
     <ButtonLabel class="button-label">Back to the tutorial</ButtonLabel>
+  </Button>
+  <Button id="survivors-button" class="button" style="display: none">
+    <ButtonIcon>
+      <Swords></Swords>
+    </ButtonIcon>
+    <ButtonLabel class="button-label">Snow Survivors</ButtonLabel>
+  </Button>
+  <Button id="survivors-again-button" class="button" style="display: none">
+    <ButtonIcon>
+      <RotateCcw></RotateCcw>
+    </ButtonIcon>
+    <ButtonLabel class="button-label">Fight again</ButtonLabel>
+  </Button>
+  <Button id="survivors-exit-button" class="button" style="display: none">
+    <ButtonIcon>
+      <Mountain></Mountain>
+    </ButtonIcon>
+    <ButtonLabel class="button-label">Back to the mountain</ButtonLabel>
   </Button>
 </Panel>

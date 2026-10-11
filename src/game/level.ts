@@ -7,7 +7,7 @@
 
 import { Object3D, signal, Vector3 } from '@iwsdk/core';
 
-export type LevelId = 'tutorial' | 'expedition';
+export type LevelId = 'tutorial' | 'expedition' | 'survivors';
 
 /** A climbable face, treated as a vertical plane with a lane on it. */
 export interface ClimbWall {

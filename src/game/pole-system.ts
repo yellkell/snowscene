@@ -32,6 +32,17 @@ import { buildPole, POLE_TIP_DISTANCE } from './world-builders.js';
 const POLE_GAIN = 1.5;
 const MAX_SPEED = 3.4;
 const DESKTOP_SPEED = 2.4;
+
+/**
+ * Multipliers a game mode can turn up (Snow Survivors' movement upgrades):
+ * push gain per stroke, top speed, and glide (less drag between strokes).
+ * All 1 by default; reset them when the mode ends.
+ */
+export const poleTuning = {
+  gain: 1,
+  maxSpeed: 1,
+  glide: 1,
+};
 /** Hand speeds below this (m/s) are treated as tracking noise. */
 const PUSH_DEAD_ZONE = 0.12;
 /** How quickly a push brings the body up to speed (per second). */
@@ -149,10 +160,11 @@ export class PoleSystem extends createSystem({}) {
         this.head.z + game.velocity.z * 0.25,
       );
       const uphill = Math.max(0, ahead - groundHeight(this.head.x, this.head.z));
-      game.velocity.multiplyScalar(Math.exp(-(1.3 + uphill * 6) * dt));
+      game.velocity.multiplyScalar(Math.exp(-((1.3 + uphill * 6) / poleTuning.glide) * dt));
     }
     const v = Math.hypot(game.velocity.x, game.velocity.z);
-    if (v > MAX_SPEED) game.velocity.multiplyScalar(MAX_SPEED / v);
+    const top = MAX_SPEED * poleTuning.maxSpeed;
+    if (v > top) game.velocity.multiplyScalar(top / v);
     rig.position.x += game.velocity.x * dt;
     rig.position.z += game.velocity.z * dt;
 
@@ -270,7 +282,7 @@ export class PoleSystem extends createSystem({}) {
     if (handSpeed < PUSH_DEAD_ZONE) return false;
 
     // Hand moving back relative to the body => body moves forward.
-    const scale = (POLE_GAIN * (handSpeed - PUSH_DEAD_ZONE)) / handSpeed;
+    const scale = (POLE_GAIN * poleTuning.gain * (handSpeed - PUSH_DEAD_ZONE)) / handSpeed;
     const lx = -pole.handVel.x * scale;
     const lz = -pole.handVel.z * scale;
     const yaw = this.player.rotation.y;
@@ -296,7 +308,7 @@ export class PoleSystem extends createSystem({}) {
     getHeadWorld(this.world, this.head);
     // Follow the route so W always heads the right way along it.
     currentLevel().walkDirection(this.head.x, this.head.z, this.fwd);
-    const cruise = currentLevel().desktopWalkSpeed ?? DESKTOP_SPEED;
+    const cruise = (currentLevel().desktopWalkSpeed ?? DESKTOP_SPEED) * poleTuning.maxSpeed;
     const target = forward ? cruise : back ? -1.2 : 0;
     const vx = this.fwd.x * target;
     const vz = this.fwd.z * target;
