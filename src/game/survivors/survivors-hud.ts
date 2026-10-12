@@ -2,9 +2,6 @@
  * Snow Survivors' heads-up display, built as things in the world rather
  * than panels floating in front of you:
  *
- * - Health and experience are two glowing rings on the snow round your
- *   feet (red inside, blue outside), filling clockwise from where you face.
- *   Glance down at your poles and they are there.
  * - Low on health, the edge of your view pulses red; a bite flashes it.
  * - Announcements (upgrades, combos, stampedes, bosses) are TITLE CARDS
  *   (title-card.ts): spaced capitals with a glow in the message's colour on
@@ -14,10 +11,11 @@
  *   Big news (a boss, an evolution, the clock) cuts in; smaller news waits
  *   its turn.
  * - A boss has a red ring of light on the snow round it that drains as it
- *   takes damage (the same language as your own rings).
- * - The rest is built into the poles: a round screen in a steel pommel on
- *   top of each handle (health on the left, the run on the right; see
- *   pole-screens.ts). Glance down at your hands to read them.
+ *   takes damage.
+ * - Your health, experience and the run are built into the poles: a round
+ *   screen in a steel pommel on top of each handle (health and level on
+ *   the left, the clock and kills on the right; see pole-screens.ts).
+ *   Glance down at your hands to read them.
  */
 
 import {
@@ -158,14 +156,11 @@ interface Line {
 }
 
 export class SurvivorsHud {
-  /** Everything world-placed (rings, letters, the pole screens). */
+  /** Everything world-placed (the boss ring, the titles, the pole screens). */
   readonly root = new Group();
   /** The red shell round your head (bites, low health). */
   readonly hurt: Mesh;
 
-  private readonly hpRing = lightRing(0.42, 0.5, 0xff4d6d);
-  private readonly xpRing = lightRing(0.56, 0.62, 0x4dc3ff);
-  private readonly rings = new Group();
   private readonly bossRing = lightRing(0.86, 1, 0xff3048);
 
   private readonly signTex = canvasTexture(SIGN_CW, SIGN_CH);
@@ -184,17 +179,12 @@ export class SurvivorsHud {
   private readonly poleScreens = new PoleScreens();
 
   private hurtLevel = 0;
-  private xpFlash = 0;
-  private lastLevel = 1;
   private clock = 0;
   private readonly tmp = new Vector3();
 
   constructor() {
     this.root.name = 'SurvivorsHud';
     this.root.visible = false;
-    this.rings.add(this.hpRing, this.xpRing);
-    this.rings.name = 'SurvivorsFootRings';
-    this.root.add(this.rings);
     this.bossRing.name = 'SurvivorsBossRing';
     this.bossRing.visible = false;
     this.root.add(this.bossRing);
@@ -277,14 +267,12 @@ export class SurvivorsHud {
     this.held = false;
     this.sign.visible = false;
     this.poleScreens.hide();
-    this.lastLevel = 1;
   }
 
   update(dt: number, view: HudView, state: HudState): void {
     this.root.visible = true;
     this.clock += dt;
     const head = view.head;
-    this.updateRings(dt, head, view.yaw, state);
     this.updateSign(dt, view);
     this.poleScreens.update(dt, head, view.up, view.yaw, view.presenting, state);
     this.updateBossRing(head, state);
@@ -297,20 +285,6 @@ export class SurvivorsHud {
     this.hurt.visible = red > 0.01;
     this.hurt.position.copy(head);
     (this.hurt.material as MeshBasicMaterial).opacity = red;
-  }
-
-  private updateRings(dt: number, head: Vector3, yaw: number, s: HudState): void {
-    this.rings.position.set(head.x, duneHeight(head.x, head.z) + 0.04, head.z);
-    this.rings.rotation.y = yaw;
-    if (s.level > this.lastLevel) this.xpFlash = 1;
-    this.lastLevel = s.level;
-    this.xpFlash = Math.max(0, this.xpFlash - dt * 2.5);
-    const hp = (this.hpRing.material as ShaderMaterial).uniforms;
-    hp.uFrac.value = Math.max(0, Math.min(1, s.hp / s.maxHp));
-    hp.uFlash.value = this.hurtLevel > 0.2 ? 0.25 : 0;
-    const xp = (this.xpRing.material as ShaderMaterial).uniforms;
-    xp.uFrac.value = Math.max(0, Math.min(1, s.xp / s.xpNext));
-    xp.uFlash.value = this.xpFlash;
   }
 
   private updateSign(dt: number, view: HudView): void {

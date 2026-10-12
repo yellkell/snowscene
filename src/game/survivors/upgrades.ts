@@ -112,6 +112,7 @@ export function evolutionUpgrade(e: Evolution): Upgrade {
     name: e.name,
     color: e.color,
     blurb: e.blurb.charAt(0).toUpperCase() + e.blurb.slice(1),
+    kind: 'evolution',
     apply: (s) => {
       s.evolved[e.id] = true;
       return `EVOLVED: ${e.name}! ${e.blurb}`;
@@ -125,8 +126,11 @@ export interface Upgrade {
   color: string;
   /** What it does, for its card. */
   blurb?: string;
-  /** Its level now (0 = not taken), for the card's "Lv 2 → 3". */
+  /** Its level now (0 = not taken), and its top level, for the card's pips. */
   level?: (s: Stats) => number;
+  max?: number;
+  /** What sort of thing it is, for the card's ribbon. */
+  kind?: 'weapon' | 'passive' | 'evolution' | 'heal';
   /** Applies it; returns the line to announce. */
   apply: (s: Stats, heal: (hp: number) => void) => string;
 }
@@ -145,6 +149,7 @@ const passive = (
   max,
   blurb: line.charAt(0).toUpperCase() + line.slice(1),
   level: (s) => s.levels[id] ?? 0,
+  kind: 'passive',
   apply: (s, heal) => {
     s.levels[id] = (s.levels[id] ?? 0) + 1;
     apply(s, heal);
@@ -176,6 +181,8 @@ function weaponUpgrade(id: WeaponId): Upgrade {
     color: w.color,
     blurb: w.blurb,
     level: (s) => s.weapons[id],
+    max: MAX_WEAPON_LEVEL,
+    kind: 'weapon',
     apply: (s) => {
       s.weapons[id] = Math.min(MAX_WEAPON_LEVEL, s.weapons[id] + 1);
       return s.weapons[id] === 1 ? `NEW: ${w.name}! ${w.blurb}` : `${w.name} level ${s.weapons[id]}`;
@@ -189,6 +196,7 @@ export const HEART: Upgrade = {
   name: 'Heart',
   color: '#ff4d6d',
   blurb: 'Heal a third of your health',
+  kind: 'heal',
   apply: (s, heal) => {
     heal(s.maxHp * 0.35);
     return 'Healed!';

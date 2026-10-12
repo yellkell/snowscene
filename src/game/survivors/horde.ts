@@ -80,6 +80,9 @@ export class Horde {
   readonly throwT = new Float32Array(CAP);
   /** Drops something when it dies: 1 an upgrade orb, 2 (a boss) a chest. */
   readonly carrier = new Uint8Array(CAP);
+  /** A boss's number in the run (0, 1, 2) and its full health, for its ring. */
+  readonly bossNo = new Uint8Array(CAP);
+  readonly maxHp = new Float32Array(CAP);
 
   /** Crowd density per cell, and the hash: first enemy per cell, next in cell. */
   private readonly density = new Float32Array(CELLS);
@@ -146,6 +149,8 @@ export class Horde {
     this.kT[to] = this.kT[from];
     this.bladeCd[to] = this.bladeCd[from];
     this.carrier[to] = this.carrier[from];
+    this.bossNo[to] = this.bossNo[from];
+    this.maxHp[to] = this.maxHp[from];
     this.throwT[to] = this.throwT[from];
   }
 

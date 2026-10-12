@@ -564,6 +564,8 @@ export interface Chest {
   opening: number;
   /** Snow height where it stands. */
   ground: number;
+  /** Upgrade picks inside: 1, or 2 for a boss's hoard. */
+  picks: number;
 }
 
 /** Treasure chests with a pillar of light over them: walk into one for a burst of upgrades. */
@@ -571,7 +573,8 @@ export class Chests {
   readonly list: Chest[] = [];
 
   constructor(parent: Group) {
-    for (let k = 0; k < 3; k++) {
+    // Three for ordinary chests, and room kept for bosses' hoards.
+    for (let k = 0; k < 6; k++) {
       const root = new Object3D();
       const wood = new MeshStandardMaterial({ color: 0x7a4a26, roughness: 0.8 });
       const gold = new MeshStandardMaterial({ color: 0xffc94a, emissive: 0xffaa00, emissiveIntensity: 0.6, metalness: 0.6, roughness: 0.35 });
@@ -599,13 +602,18 @@ export class Chests {
       root.visible = false;
       root.name = 'Chest';
       parent.add(root);
-      this.list.push({ root, lid, beam, x: 0, z: 0, active: false, opening: -1, ground: 0 });
+      this.list.push({ root, lid, beam, x: 0, z: 0, active: false, opening: -1, ground: 0, picks: 1 });
     }
   }
 
-  place(x: number, z: number): boolean {
+  /** A chest at (x, z) with `picks` upgrades in it (a boss's hoard is bigger, under a red-gold pillar). */
+  place(x: number, z: number, picks = 1): boolean {
+    if (picks === 1 && this.list.filter((c) => c.active && c.picks === 1).length >= 3) return false;
     const chest = this.list.find((c) => !c.active && c.opening < 0);
     if (!chest) return false;
+    chest.picks = picks;
+    chest.root.scale.setScalar(picks > 1 ? 1.45 : 1);
+    (chest.beam.material as MeshBasicMaterial).color.setRGB(1.4, picks > 1 ? 0.55 : 1.1, picks > 1 ? 0.3 : 0.4);
     chest.x = x;
     chest.z = z;
     chest.active = true;

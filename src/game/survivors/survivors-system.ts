@@ -103,6 +103,8 @@ const WARNINGS: [number, string][] = [
   [30, '30 SECONDS!'],
 ];
 const DIGITS = ['Digit1', 'Digit2', 'Digit3', 'Digit4'];
+/** Seconds of warning before a boss. */
+const BOSS_WARNING = 8;
 
 export class SurvivorsSystem extends createSystem({}) {
   private built = false;
@@ -121,7 +123,7 @@ export class SurvivorsSystem extends createSystem({}) {
   private hud = new SurvivorsHud();
   private menu = new UpgradeMenu();
   /** Upgrade choices waiting their turn (a burst of levels queues several). */
-  private readonly choices: { title: string; color: string; cards: number }[] = [];
+  private readonly choices: { title: string; color: string; cards: number; sub: string }[] = [];
   private readonly tips: Vector3[] = [];
   private warning = 0;
   private lastSecond = -1;
@@ -148,7 +150,8 @@ export class SurvivorsSystem extends createSystem({}) {
   private bossIndex = 0;
   private bosses = 0;
   private bossName = '';
-  private bossMaxHp = 1;
+  /** Bosses heralded so far. */
+  private bossWarned = 0;
   /** The run's own clock for animation: it stops while you choose. */
   private simClock = 0;
   private nextOrb = 8;
@@ -251,7 +254,7 @@ export class SurvivorsSystem extends createSystem({}) {
       toast('Snow Survivors! Hold out for 8 minutes. Your weapons fire by themselves; walk over what they drop.', 6);
       this.pendingHint = this.world.renderer.xr.isPresenting
         ? { text: 'Your stats are on your pole handles', color: '#c9e8ff' }
-        : { text: 'Health and XP round your feet', color: '#c9e8ff' };
+        : { text: 'Your stats are in the bottom corners', color: '#c9e8ff' };
       this.busy = false;
     });
   }
@@ -308,6 +311,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.nextEvent = 45;
     this.eventIndex = 0;
     this.bossIndex = 0;
+    this.bossWarned = 0;
     this.bosses = 0;
     this.bossName = '';
     this.nextOrb = 8;
@@ -489,10 +493,18 @@ export class SurvivorsSystem extends createSystem({}) {
       this.nextEvent = t + 45;
       this.waveEvent(this.eventIndex++ % 3, px, pz);
     }
-    // The bosses, at 2:30, 5:00 and for the final minute.
-    if (this.bossIndex < BOSS_TIMES.length && t >= BOSS_TIMES[this.bossIndex]) {
-      this.bossIndex++;
-      this.spawnBoss(px, pz);
+    // The bosses, at 2:30, 5:00 and for the final minute, each heralded a
+    // few seconds ahead. A boss always comes: if the field is full, the
+    // furthest straggler makes way (and it tries again next frame if not).
+    if (this.bossIndex < BOSS_TIMES.length) {
+      const due = BOSS_TIMES[this.bossIndex];
+      if (this.bossWarned <= this.bossIndex && t >= due - BOSS_WARNING) {
+        this.bossWarned = this.bossIndex + 1;
+        this.hud.announce('SOMETHING HUGE IS COMING', '#ff4d6d', 3.5, 3, 'The ground is shaking');
+        audio.rumble(1);
+        for (const hand of HANDS) this.pulse(hand.handedness, 0.5, 300);
+      }
+      if (t >= due && this.spawnBoss(this.bossIndex, px, pz)) this.bossIndex++;
     }
     // Treasure: a chest under a pillar of light, not too close.
     if (t >= this.nextChest) {
@@ -564,38 +576,71 @@ export class SurvivorsSystem extends createSystem({}) {
     }
   }
 
-  private spawnBoss(px: number, pz: number): void {
+  /** Boss number `no` (0, 1, 2) comes out of the snow ahead of you. Returns whether it did. */
+  private spawnBoss(no: number, px: number, pz: number): boolean {
     const h = this.horde;
-    const n = this.bosses;
+    if (h.n >= CAP) this.makeRoom(px, pz);
     const a = Math.atan2(this.moveDir.z, this.moveDir.x) + (Math.random() - 0.5) * 1.2;
-    const final = this.bossIndex >= BOSS_TIMES.length;
-    const scale = final ? 3.8 : Math.min(3.6, 2.4 + 0.4 * n);
+    const final = no === BOSS_TIMES.length - 1;
+    const scale = final ? 3.8 : 2.4 + 0.5 * no;
     const i = h.spawn(TITAN, px + Math.cos(a) * 28, pz + Math.sin(a) * 28, 1, scale);
-    if (i < 0) return;
-    h.hp[i] = KINDS[TITAN].hp * this.hpScale() * (10 + 9 * this.bossIndex - 9);
+    if (i < 0) return false;
+    h.hp[i] = KINDS[TITAN].hp * this.hpScale() * (10 + 9 * no);
+    h.maxHp[i] = h.hp[i];
+    h.bossNo[i] = no;
     h.pace[i] = 1.05;
     h.veer[i] = 0;
     h.carrier[i] = 2;
-    this.bossMaxHp = h.hp[i];
-    this.bossName = BOSS_NAMES[Math.min(this.bossIndex - 1, BOSS_NAMES.length - 1)];
-    this.hud.announce(this.bossName, '#ff4d6d', 4, 3, final ? 'The last of them. Hold on!' : 'A boss! Its health is the ring round it');
+    const name = BOSS_NAMES[Math.min(no, BOSS_NAMES.length - 1)];
+    this.hud.announce(name, '#ff4d6d', 4, 3, final ? 'The last of them. Hold on!' : 'Its hoard holds two upgrades');
     this.novas.burst(h.x[i], h.z[i], 8, 0xff4d6d);
     audio.roar();
     for (const hand of HANDS) this.pulse(hand.handedness, 1, 600);
+    return true;
   }
 
-  /** The boss's health (0..1) and where its bar goes, clearing the bar once it is gone. */
-  private bossHealth(): number {
-    if (!this.bossName) return 0;
+  /** A full field: the straggler furthest from you (never an elite) goes back under the snow. */
+  private makeRoom(px: number, pz: number): void {
     const h = this.horde;
+    let far = -1;
+    let best = -1;
+    for (let i = 0; i < h.n; i++) {
+      if (h.dead[i] || h.carrier[i]) continue;
+      const d = (h.x[i] - px) ** 2 + (h.z[i] - pz) ** 2;
+      if (d > best) {
+        best = d;
+        far = i;
+      }
+    }
+    if (far < 0) return;
+    h.dead[far] = 1;
+    h.sweep();
+  }
+
+  /**
+   * The nearest boss on the field: its health (0..1), and where its ring
+   * goes (bossAt) and its name (bossName). 0 and no name when there is none.
+   */
+  private bossHealth(): number {
+    const h = this.horde;
+    let pick = -1;
+    let best = Infinity;
     for (let i = 0; i < h.n; i++) {
       if (h.carrier[i] !== 2 || h.dead[i]) continue;
-      // (x, radius, z): the ring on the snow round it.
-      this.bossAt.set(h.x[i], h.radius(i), h.z[i]);
-      return h.hp[i] / this.bossMaxHp;
+      const d = (h.x[i] - this.head.x) ** 2 + (h.z[i] - this.head.z) ** 2;
+      if (d < best) {
+        best = d;
+        pick = i;
+      }
     }
-    this.bossName = '';
-    return 0;
+    if (pick < 0) {
+      this.bossName = '';
+      return 0;
+    }
+    // (x, radius, z): the ring on the snow round it.
+    this.bossAt.set(h.x[pick], h.radius(pick), h.z[pick]);
+    this.bossName = BOSS_NAMES[Math.min(h.bossNo[pick], BOSS_NAMES.length - 1)];
+    return h.hp[pick] / (h.maxHp[pick] || 1);
   }
 
   /**
@@ -768,9 +813,10 @@ export class SurvivorsSystem extends createSystem({}) {
       const d = Math.random() * 4;
       this.gems.drop(x + Math.cos(a) * d, z + Math.sin(a) * d, 12);
     }
-    // Its hoard: a chest where it fell (opened on the spot if every chest is out).
-    if (!this.chests.place(x, z)) this.openTreasure(x, z);
-    this.hud.announce('BOSS DOWN!', '#ffd166', 4.5, 3, 'Take its treasure');
+    // Its hoard: a big chest where it fell with two upgrades in it (opened
+    // on the spot if every chest is out).
+    if (!this.chests.place(x, z, 2)) this.openTreasure(x, z, 2);
+    this.hud.announce('BOSS DOWN!', '#ffd166', 4.5, 3, 'Its hoard holds two upgrades');
     audio.fanfare();
     audio.crack();
     for (const hand of HANDS) this.pulse(hand.handedness, 1, 500);
@@ -855,8 +901,8 @@ export class SurvivorsSystem extends createSystem({}) {
   // ---------------------------------------------------------- choices ---
 
   /** Offer an upgrade choice as soon as the one before it is done. */
-  private queueChoice(title: string, color: string, cards: number): void {
-    this.choices.push({ title, color, cards });
+  private queueChoice(title: string, color: string, cards: number, sub = ''): void {
+    this.choices.push({ title, color, cards, sub });
   }
 
   /**
@@ -869,7 +915,7 @@ export class SurvivorsSystem extends createSystem({}) {
       const next = this.choices.shift()!;
       const offers = offerUpgrades(this.stats, next.cards);
       const presenting = this.world.renderer.xr.isPresenting;
-      this.menu.open(next.title, next.color, offers, this.stats, this.head, getHeadYaw(this.world), presenting);
+      this.menu.open(next.title, next.color, offers, this.stats, this.head, getHeadYaw(this.world), presenting, next.sub);
       poleTuning.gain = 0;
       this.hud.clearSign();
       audio.setMusicLevel(0.3, 0.3);
@@ -996,17 +1042,23 @@ export class SurvivorsSystem extends createSystem({}) {
       if (!chest.active) continue;
       if (Math.hypot(px - chest.x, pz - chest.z) > TAKE_REACH + 0.3) continue;
       this.chests.open(chest);
-      this.openTreasure(chest.x, chest.z);
+      this.openTreasure(chest.x, chest.z, chest.picks);
     }
   }
 
-  /** A treasure chest's haul: an evolution if one is ready, and upgrades. */
-  private openTreasure(x: number, z: number): void {
+  /**
+   * A treasure chest's haul: an evolution if one is ready, then `picks`
+   * upgrade choices of four cards each (two from a boss's hoard).
+   */
+  private openTreasure(x: number, z: number, picks = 1): void {
     const evo = readyEvolution(this.stats);
     if (evo) this.grant(evolutionUpgrade(evo), false);
-    this.queueChoice('TREASURE!', '#ffd166', 4);
+    for (let k = 0; k < picks; k++) {
+      // The first heading tells of the evolution (the cards take the stage at once).
+      if (k === 0 && evo) this.queueChoice('EVOLUTION!', evo.color, 4, `${evo.name}: ${evo.blurb}`);
+      else this.queueChoice(picks > 1 ? `BOSS HOARD ${k + 1} OF ${picks}` : 'TREASURE!', '#ffd166', 4);
+    }
     if (evo) {
-      this.hud.announce(`EVOLUTION! ${evo.name}`, evo.color, 6, 4, EVOLUTIONS.find((e) => e.id === evo.id)!.blurb);
       this.novas.burst(x, z, 14, parseInt(evo.color.slice(1), 16));
       this.shards.burst(x, 0.8, z, 90, parseInt(evo.color.slice(1), 16), 0.14, 5, 9);
       audio.evolve();
