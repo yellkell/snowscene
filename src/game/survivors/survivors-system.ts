@@ -48,7 +48,7 @@ import { WALL_Z } from '../terrain.js';
 import { startTutorialKit } from '../tutorial-kit.js';
 import { tutorialLevel } from '../tutorial-level.js';
 import { CAP, Horde, KINDS } from './horde.js';
-import { Blades, Bolts, Chests, Gems, Hurls, Novas, Orbs, Zaps } from './survivors-fx.js';
+import { Blades, Bolts, Chests, Gems, Hurls, Impacts, Novas, Orbs, Zaps } from './survivors-fx.js';
 import { SurvivorsHud } from './survivors-hud.js';
 import { ARENA_X, ARENA_Z, duneHeight, survivorsLevel, survivorsView } from './survivors-level.js';
 import { survivors, survivorsControl } from './survivors-state.js';
@@ -120,6 +120,7 @@ export class SurvivorsSystem extends createSystem({}) {
   private orbs!: Orbs;
   private chests!: Chests;
   private hurls!: Hurls;
+  private impacts!: Impacts;
   private hud = new SurvivorsHud();
   private menu = new UpgradeMenu();
   /** Upgrade choices waiting their turn (a burst of levels queues several). */
@@ -158,6 +159,8 @@ export class SurvivorsSystem extends createSystem({}) {
   private nextVacuum = 80;
   private nextHeart = 20;
   private killSounds = 0;
+  /** Blade sparks shown this frame. */
+  private bladeSparks = 0;
   private biteSound = 0;
 
   // Game feel.
@@ -219,6 +222,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.orbs = new Orbs(this.root);
     this.chests = new Chests(this.root);
     this.hurls = new Hurls(this.root);
+    this.impacts = new Impacts(this.root);
     this.root.visible = false;
     this.world.createTransformEntity(this.root, { persistent: true });
     this.world.createTransformEntity(this.hud.root, { persistent: true });
@@ -332,6 +336,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.bolts.n = 0;
     this.gems.n = 0;
     this.hurls.n = 0;
+    this.impacts.clear();
     this.orbs.clear();
     this.chests.clear();
     survivors.dead.value = false;
@@ -408,7 +413,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.feel(dt);
       this.clock();
     } else if (this.dead) {
-      this.blades.mesh.count = 0;
+      this.blades.hide();
     }
 
     this.swarm.update(this.horde, clock, this.scene.fog as Fog | null);
@@ -416,6 +421,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.bolts.draw();
     this.novas.tick(simDt);
     this.zaps.tick(simDt);
+    this.impacts.tick(simDt, this.head);
     this.gems.draw(clock);
     this.hurls.draw(clock);
     this.orbs.tick(simDt, clock);
@@ -1267,6 +1273,7 @@ export class SurvivorsSystem extends createSystem({}) {
     // Orbit Blades: swords spinning round you, each pass one hit.
     // Blizzard Blades: a second, wider ring spinning the other way.
     const blades = w.blades > 0 ? Math.min(12, 1 + w.blades + s.amount) : 0;
+    this.bladeSparks = 0;
     if (blades > 0) {
       const L = w.blades;
       const storm = !!evo.blades;
@@ -1274,15 +1281,15 @@ export class SurvivorsSystem extends createSystem({}) {
       const size = 0.9 + 0.08 * L * s.area;
       this.bladeAngle += dt * (3.3 + 0.25 * L);
       const dmg = (10 + 4.5 * L) * s.might * (storm ? 1.5 : 1);
-      const used = this.blades.draw(blades, px, y + 0.15, pz, radius, this.bladeAngle, size);
+      const used = this.blades.draw(blades, px, y + 0.15, pz, radius, this.bladeAngle, size, 0, storm ? 0xfff3a0 : 0xffd36a, 1);
       this.bladeRing(blades, px, pz, radius, this.bladeAngle, dmg);
       if (storm) {
         const outer = radius * 1.9;
-        this.blades.draw(blades + 2, px, y + 0.05, pz, outer, -this.bladeAngle * 0.8, size * 1.2, used);
+        this.blades.draw(blades + 2, px, y + 0.05, pz, outer, -this.bladeAngle * 0.8, size * 1.2, used, 0xfff8d0, -1);
         this.bladeRing(blades + 2, px, pz, outer, -this.bladeAngle * 0.8, dmg);
       }
     } else {
-      this.blades.mesh.count = 0;
+      this.blades.hide();
     }
 
     // Frost Nova: a blast ring that throws them back and slows them.
@@ -1307,6 +1314,7 @@ export class SurvivorsSystem extends createSystem({}) {
     if (w.lightning > 0 && this.cd.lightning <= 0) {
       const L = w.lightning;
       const thunder = !!evo.lightning;
+      this.zaps.setColor(thunder ? 0xfffbb0 : 0xfff27a);
       this.cd.lightning = (1.5 - 0.08 * L) * s.haste * (thunder ? 0.6 : 1);
       const chains = Math.floor((2 + L + s.amount) * (thunder ? 1.5 : 1));
       const dmg = (12 + 6 * L) * s.might * (thunder ? 1.3 : 1);
@@ -1322,12 +1330,14 @@ export class SurvivorsSystem extends createSystem({}) {
         const ty = this.horde.radius(t) * 0.8;
         this.zaps.zap(fx, fy, fz, tx, ty, tz);
         this.hit(t, dmg, tx - fx, tz - fz, 1.5);
+        this.impacts.spawn(tx, ty, tz, 0xfff27a, 0.9);
         if (thunder) {
           const f = this.horde.nearest(tx, tz, 5, this.hitSet);
           if (f >= 0) {
             this.hitSet.add(f);
             this.zaps.zap(tx, ty, tz, this.horde.x[f], this.horde.radius(f) * 0.8, this.horde.z[f]);
             this.hit(f, dmg, this.horde.x[f] - tx, this.horde.z[f] - tz, 1.5);
+            this.impacts.spawn(this.horde.x[f], this.horde.radius(f) * 0.8, this.horde.z[f], 0xfffbb0, 0.7);
           }
         }
         fx = tx;
@@ -1351,6 +1361,11 @@ export class SurvivorsSystem extends createSystem({}) {
         const i = this.near[j];
         if (this.horde.bladeCd[i] > 0) continue;
         this.horde.bladeCd[i] = 0.32;
+        // A spark where the blade bites (a few a frame at most).
+        if (this.bladeSparks < 6) {
+          this.bladeSparks++;
+          this.impacts.spawn(this.horde.x[i], this.horde.radius(i) * 0.7, this.horde.z[i], 0xffe28a, 0.45);
+        }
         this.hit(i, dmg, this.horde.x[i] - px, this.horde.z[i] - pz, 4);
       }
     }
@@ -1374,6 +1389,7 @@ export class SurvivorsSystem extends createSystem({}) {
       if (n === 0) continue;
       const e = this.near[0];
       this.hit(e, b.dmg[i], b.vx[i], b.vz[i], 2.5);
+      this.impacts.spawn(b.x[i], b.y[i], b.z[i], b.color[i], 0.35 + b.radius[i]);
       if (b.pierce[i] > 0) {
         b.pierce[i]--;
         b.cool[i] = 0.07;
