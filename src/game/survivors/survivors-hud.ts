@@ -1,36 +1,47 @@
 /**
- * Snow Survivors' heads-up display, with nothing parked in front of your
- * face:
+ * Snow Survivors' heads-up display, built as things in the world rather
+ * than panels floating in front of you:
  *
  * - Health and experience are two glowing rings on the snow round your
  *   feet (red inside, blue outside), filling clockwise from where you face.
  *   Glance down at your poles and they are there.
  * - Low on health, the edge of your view pulses red; a bite flashes it.
- * - Announcements (upgrades, combos, stampedes, bosses) are big words that
- *   appear in the world a few metres ahead, drift up and fade.
- * - A boss carries its own health bar over its head.
- * - The rest (clock, kills, level, combo, speed bonus, your weapons) is on
- *   a watch on your LEFT wrist: turn the inside of the wrist toward your
- *   face and look at it (hand open). On a desktop it sits small in the
- *   corner of the view.
+ * - Announcements (upgrades, combos, stampedes, bosses) are FROST LETTERS:
+ *   they burst up out of the snow a few steps ahead, stand there a moment,
+ *   then crumble into ice.
+ * - A boss has a red ring of light on the snow round it that drains as it
+ *   takes damage (the same language as your own rings).
+ * - The rest (clock, kills, level, combo, speed bonus) is on the SURVIVOR'S
+ *   BRACER strapped to your left wrist: a padded cuff with brass rims and a
+ *   little steel-cased screen on the inside of the wrist. It is always
+ *   there; turn the inside of the wrist toward your face (hand open) and
+ *   look at it, and the screen lights up. On a desktop the bracer hangs low
+ *   in the corner of the view.
  */
 
 import {
   BackSide,
+  BoxGeometry,
   CanvasTexture,
   Color,
+  CylinderGeometry,
   DoubleSide,
   Group,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
+  MeshStandardMaterial,
   PlaneGeometry,
+  Quaternion,
   RingGeometry,
   ShaderMaterial,
   SphereGeometry,
   SRGBColorSpace,
+  TorusGeometry,
   Vector3,
 } from '@iwsdk/core';
 import { hands } from '../hand-input.js';
+import { sceneRefs } from '../scene-system.js';
 import { duneHeight } from './survivors-level.js';
 
 export interface HudState {
@@ -47,12 +58,12 @@ export interface HudState {
   comboLeft: number;
   /** Damage multiplier from your speed (1 = standing still). */
   speedMul: number;
-  /** The boss on the field ('' for none), its health (0..1) and where its head is. */
+  /** The boss on the field ('' for none), its health (0..1), where it stands and its radius. */
   boss: string;
   bossHp: number;
   bossX: number;
-  bossY: number;
   bossZ: number;
+  bossR: number;
 }
 
 /** What the system tells the HUD about you this frame. */
@@ -64,7 +75,7 @@ export interface HudView {
   presenting: boolean;
 }
 
-// ----------------------------------------------------------- foot rings ---
+// ---------------------------------------------------------- rings of light ---
 
 const RING_VERT = /* glsl */ `
 varying vec2 vP;
@@ -91,7 +102,7 @@ void main() {
 }
 `;
 
-function footRing(inner: number, outer: number, color: number): Mesh {
+function lightRing(inner: number, outer: number, color: number): Mesh {
   const mesh = new Mesh(
     new RingGeometry(inner, outer, 72).rotateX(-Math.PI / 2),
     new ShaderMaterial({
@@ -116,63 +127,132 @@ function footRing(inner: number, outer: number, color: number): Mesh {
   return mesh;
 }
 
-function canvasPlane(w: number, h: number, cw: number, ch: number): { mesh: Mesh; ctx: CanvasRenderingContext2D; texture: CanvasTexture } {
+function canvasTexture(cw: number, ch: number): { ctx: CanvasRenderingContext2D; texture: CanvasTexture } {
   const canvas = document.createElement('canvas');
   canvas.width = cw;
   canvas.height = ch;
-  const ctx = canvas.getContext('2d')!;
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
-  const mesh = new Mesh(
-    new PlaneGeometry(w, h),
-    new MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false, fog: false }),
-  );
-  return { mesh, ctx, texture };
+  return { ctx: canvas.getContext('2d')!, texture };
 }
 
-// ---------------------------------------------------------------- wrist ---
+// --------------------------------------------------------------- bracer ---
 
-const WATCH_W = 0.12;
-const WATCH_H = 0.075;
-const WATCH_CW = 512;
-const WATCH_CH = 320;
-const OPEN_FACING = 0.6;
-const STAY_FACING = 0.35;
-const OPEN_GAZE_COS = Math.cos((28 * Math.PI) / 180);
-const STAY_GAZE_COS = Math.cos((42 * Math.PI) / 180);
+/** The wrist, in the left grip's frame: behind the hand, along +Z. */
+const WRIST_Z = 0.08;
+const CUFF_R = 0.036;
+/** The screen, on the inside of the wrist (+X is out of the left palm). */
+const SCREEN_W = 0.04;
+const SCREEN_H = 0.054;
+const SCREEN_CW = 320;
+const SCREEN_CH = 432;
+const OPEN_FACING = 0.55;
+const STAY_FACING = 0.3;
+const OPEN_GAZE_COS = Math.cos((30 * Math.PI) / 180);
+const STAY_GAZE_COS = Math.cos((45 * Math.PI) / 180);
 const PACK_UP = 0.6;
 
-// --------------------------------------------------------------- banner ---
+/**
+ * The Survivor's Bracer, in the left grip's local frame (-Z toward the
+ * fingers, +X out of the palm): a padded cuff round the wrist with a brass
+ * rim at each end, a steel case on the inside of the wrist with the screen
+ * set into it, and a status light at the finger end.
+ */
+function buildBracer(screenMap: CanvasTexture): { group: Group; screen: Mesh; led: Mesh } {
+  const group = new Group();
+  group.name = 'SurvivorsBracer';
+  const cloth = new MeshStandardMaterial({ color: 0x2a3550, roughness: 0.95, metalness: 0 });
+  const brass = new MeshStandardMaterial({ color: 0xc9a04a, roughness: 0.35, metalness: 0.75 });
+  const steel = new MeshStandardMaterial({ color: 0x8d99aa, roughness: 0.4, metalness: 0.6 });
 
-const BANNER_CW = 1024;
-const BANNER_CH = 160;
-const BANNER_W = 2.6;
-const BANNER_DIST = 3.0;
+  const cuff = new Mesh(new CylinderGeometry(CUFF_R, CUFF_R * 1.08, 0.075, 18, 1, true).rotateX(Math.PI / 2), cloth);
+  (cuff.material as MeshStandardMaterial).side = DoubleSide;
+  cuff.position.z = WRIST_Z;
+  group.add(cuff);
+  for (const dz of [-0.036, 0.036]) {
+    const rim = new Mesh(new TorusGeometry(CUFF_R * (dz < 0 ? 1.02 : 1.1), 0.0035, 6, 24), brass);
+    rim.position.z = WRIST_Z + dz;
+    group.add(rim);
+  }
+  // A couple of stitched straps across the cuff, on the back of the wrist.
+  for (const dz of [-0.016, 0.016]) {
+    const strap = new Mesh(new BoxGeometry(0.004, 0.022, 0.009), brass);
+    strap.position.set(-CUFF_R - 0.002, 0, WRIST_Z + dz);
+    group.add(strap);
+  }
+
+  // The case: a steel block on the inside of the wrist, a brass bezel, the screen.
+  const caseMesh = new Mesh(new BoxGeometry(0.012, SCREEN_W + 0.012, SCREEN_H + 0.014), steel);
+  caseMesh.position.set(CUFF_R + 0.004, 0, WRIST_Z);
+  group.add(caseMesh);
+  const bezelT = 0.003;
+  const bx = CUFF_R + 0.0105;
+  for (const [y, z, h, d] of [
+    [(SCREEN_W + bezelT) / 2, 0, bezelT, SCREEN_H + bezelT * 2],
+    [-(SCREEN_W + bezelT) / 2, 0, bezelT, SCREEN_H + bezelT * 2],
+    [0, (SCREEN_H + bezelT) / 2, SCREEN_W, bezelT],
+    [0, -(SCREEN_H + bezelT) / 2, SCREEN_W, bezelT],
+  ] as const) {
+    const edge = new Mesh(new BoxGeometry(0.003, h, d), brass);
+    edge.position.set(bx, y, WRIST_Z + z);
+    group.add(edge);
+  }
+  // The screen faces +X; its "up" is toward the fingers (-Z) and its right
+  // is -Y, so it reads upright when you turn the inside of the wrist to you.
+  const screen = new Mesh(
+    new PlaneGeometry(SCREEN_W, SCREEN_H).applyMatrix4(
+      new Matrix4().makeBasis(new Vector3(0, -1, 0), new Vector3(0, 0, -1), new Vector3(1, 0, 0)),
+    ),
+    new MeshBasicMaterial({ map: screenMap, toneMapped: false }),
+  );
+  screen.position.set(bx + 0.0005, 0, WRIST_Z);
+  group.add(screen);
+  const led = new Mesh(new SphereGeometry(0.0028, 8, 6), new MeshBasicMaterial({ color: 0x66ff99, toneMapped: false }));
+  led.position.set(CUFF_R + 0.0095, 0, WRIST_Z - SCREEN_H / 2 - 0.0085);
+  group.add(led);
+  return { group, screen, led };
+}
+
+// -------------------------------------------------------- frost letters ---
+
+const SIGN_CW = 1024;
+const SIGN_CH = 280;
+const SIGN_W = 7;
+const SIGN_H = (SIGN_W * SIGN_CH) / SIGN_CW;
+const SIGN_DIST = 6.5;
+const RISE = 0.35;
+const CRUMBLE = 0.4;
 
 export class SurvivorsHud {
-  /** Everything world-placed (rings, banner, watch, boss bar). */
+  /** Everything world-placed (rings, letters, bracer). */
   readonly root = new Group();
   /** The red shell round your head (bites, low health). */
   readonly hurt: Mesh;
+  /** Called as frost letters crumble (x, y, z, width, facing yaw) so the system can burst ice. */
+  onCrumble: ((x: number, y: number, z: number, width: number, yaw: number) => void) | null = null;
 
-  private readonly hpRing = footRing(0.42, 0.5, 0xff4d6d);
-  private readonly xpRing = footRing(0.56, 0.62, 0x4dc3ff);
+  private readonly hpRing = lightRing(0.42, 0.5, 0xff4d6d);
+  private readonly xpRing = lightRing(0.56, 0.62, 0x4dc3ff);
   private readonly rings = new Group();
+  private readonly bossRing = lightRing(0.86, 1, 0xff3048);
 
-  private readonly banner = canvasPlane(BANNER_W, (BANNER_W * BANNER_CH) / BANNER_CW, BANNER_CW, BANNER_CH);
-  private bannerAge = 0;
-  private bannerLife = 0;
-  private placeBanner = false;
+  private readonly signTex = canvasTexture(SIGN_CW, SIGN_CH);
+  private readonly sign: Mesh;
+  private signAge = 0;
+  private signLife = 0;
+  private placeSign = false;
+  private crumbled = false;
+  private signYaw = 0;
 
-  private readonly watch = canvasPlane(WATCH_W, WATCH_H, WATCH_CW, WATCH_CH);
-  private watchShown = false;
-  private watchScale = 0;
+  private readonly screenTex = canvasTexture(SCREEN_CW, SCREEN_CH);
+  private readonly bracer: Group;
+  private readonly screen: Mesh;
+  private readonly led: Mesh;
+  private lit = false;
+  private glow = 0;
   private poseFor = 0;
   private lostFor = 0;
-  private watchRedraw = 0;
-
-  private readonly bossBar = canvasPlane(4, 0.5, 512, 64);
-  private bossKey = '';
+  private screenRedraw = 0;
 
   private hurtLevel = 0;
   private xpFlash = 0;
@@ -180,7 +260,12 @@ export class SurvivorsHud {
   private clock = 0;
   private readonly toHand = new Vector3();
   private readonly toHead = new Vector3();
-  private readonly wristDir = new Vector3();
+  private readonly bx = new Vector3();
+  private readonly by = new Vector3();
+  private readonly bz = new Vector3();
+  private readonly basis = new Matrix4();
+  private readonly q = new Quaternion();
+  private readonly tmp = new Vector3();
 
   constructor() {
     this.root.name = 'SurvivorsHud';
@@ -188,19 +273,26 @@ export class SurvivorsHud {
     this.rings.add(this.hpRing, this.xpRing);
     this.rings.name = 'SurvivorsFootRings';
     this.root.add(this.rings);
-    this.banner.mesh.name = 'SurvivorsBanner';
-    this.banner.mesh.renderOrder = 40;
-    this.banner.mesh.visible = false;
-    this.root.add(this.banner.mesh);
-    this.watch.mesh.name = 'SurvivorsWatch';
-    this.watch.mesh.renderOrder = 41;
-    (this.watch.mesh.material as MeshBasicMaterial).depthTest = false;
-    this.watch.mesh.visible = false;
-    this.root.add(this.watch.mesh);
-    this.bossBar.mesh.name = 'SurvivorsBossBar';
-    this.bossBar.mesh.renderOrder = 39;
-    this.bossBar.mesh.visible = false;
-    this.root.add(this.bossBar.mesh);
+    this.bossRing.name = 'SurvivorsBossRing';
+    this.bossRing.visible = false;
+    this.root.add(this.bossRing);
+
+    this.sign = new Mesh(
+      new PlaneGeometry(SIGN_W, SIGN_H).translate(0, SIGN_H / 2, 0),
+      new MeshBasicMaterial({ map: this.signTex.texture, transparent: true, depthWrite: false, toneMapped: false, side: DoubleSide }),
+    );
+    this.sign.name = 'SurvivorsFrostLetters';
+    this.sign.renderOrder = 30;
+    this.sign.visible = false;
+    this.root.add(this.sign);
+
+    const bracer = buildBracer(this.screenTex.texture);
+    this.bracer = bracer.group;
+    this.screen = bracer.screen;
+    this.led = bracer.led;
+    this.bracer.visible = false;
+    this.root.add(this.bracer);
+
     this.hurt = new Mesh(
       new SphereGeometry(0.25, 16, 12),
       new MeshBasicMaterial({ color: new Color(0.9, 0.02, 0.02), transparent: true, opacity: 0, side: BackSide, depthTest: false, depthWrite: false }),
@@ -210,47 +302,75 @@ export class SurvivorsHud {
     this.hurt.visible = false;
   }
 
-  /** Words in the world ahead of you, drifting up and fading. */
+  /** Frost letters: up out of the snow ahead of you, then crumbling to ice. */
   announce(text: string, color: string, seconds = 3): void {
-    const ctx = this.banner.ctx;
-    ctx.clearRect(0, 0, BANNER_CW, BANNER_CH);
+    const ctx = this.signTex.ctx;
+    ctx.clearRect(0, 0, SIGN_CW, SIGN_CH);
     ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    let size = 76;
+    ctx.textBaseline = 'alphabetic';
+    // Long lines break in two at the space nearest the middle.
+    const lines = [text];
+    if (text.length > 24) {
+      let best = -1;
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] === ' ' && (best < 0 || Math.abs(i - text.length / 2) < Math.abs(best - text.length / 2))) best = i;
+      }
+      if (best > 0) lines.splice(0, 1, text.slice(0, best), text.slice(best + 1));
+    }
+    let size = lines.length > 1 ? 112 : 128;
+    const widest = () => Math.max(...lines.map((l) => ctx.measureText(l).width));
     ctx.font = `900 ${size}px system-ui, sans-serif`;
-    while (ctx.measureText(text).width > BANNER_CW - 60 && size > 30) {
+    while (widest() > SIGN_CW - 50 && size > 40) {
       size -= 4;
       ctx.font = `900 ${size}px system-ui, sans-serif`;
     }
     ctx.lineJoin = 'round';
-    ctx.lineWidth = Math.max(8, size * 0.16);
-    ctx.strokeStyle = 'rgba(6, 10, 22, 0.85)';
-    ctx.strokeText(text, BANNER_CW / 2, BANNER_CH / 2);
-    ctx.fillStyle = color;
-    ctx.fillText(text, BANNER_CW / 2, BANNER_CH / 2);
-    this.banner.texture.needsUpdate = true;
-    this.bannerLife = seconds;
-    this.bannerAge = 0;
-    this.placeBanner = true;
+    const lineH = size * 1.08;
+    lines.forEach((line, n) => {
+      const base = SIGN_CH - 24 - (lines.length - 1 - n) * lineH;
+      // A dark rim, the message's colour as a glow line inside it, then
+      // ice: white at the top shading to pale blue.
+      ctx.lineWidth = Math.max(10, size * 0.18);
+      ctx.strokeStyle = 'rgba(14, 30, 64, 0.9)';
+      ctx.strokeText(line, SIGN_CW / 2, base);
+      ctx.lineWidth = Math.max(4, size * 0.07);
+      ctx.strokeStyle = color;
+      ctx.strokeText(line, SIGN_CW / 2, base);
+      const ice = ctx.createLinearGradient(0, base - size, 0, base);
+      ice.addColorStop(0, '#ffffff');
+      ice.addColorStop(0.55, '#e6f6ff');
+      ice.addColorStop(1, '#9fd2f2');
+      ctx.fillStyle = ice;
+      ctx.fillText(line, SIGN_CW / 2, base);
+      // Frost glints on the letters.
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      const w = ctx.measureText(line).width;
+      for (let k = 0; k < 12; k++) ctx.fillRect(SIGN_CW / 2 - w / 2 + Math.random() * w, base - Math.random() * size * 0.7, 3, 3);
+    });
+    this.signTex.texture.needsUpdate = true;
+    this.signLife = Math.max(seconds, RISE + CRUMBLE + 0.6);
+    this.signAge = 0;
+    this.crumbled = false;
+    this.placeSign = true;
   }
 
   bitten(amount: number): void {
     this.hurtLevel = Math.min(0.45, this.hurtLevel + amount);
   }
 
-  /** No announcement showing (so a hint can have the stage). */
+  /** No letters standing (so a hint can have the stage). */
   idle(): boolean {
-    return this.bannerAge >= this.bannerLife;
+    return this.signAge >= this.signLife;
   }
 
   hide(): void {
     this.root.visible = false;
     this.hurt.visible = false;
     this.hurtLevel = 0;
-    this.bannerAge = this.bannerLife = 0;
-    this.banner.mesh.visible = false;
-    this.watchShown = false;
-    this.watchScale = 0;
+    this.signAge = this.signLife = 0;
+    this.sign.visible = false;
+    this.lit = false;
+    this.glow = 0;
     this.lastLevel = 1;
   }
 
@@ -259,9 +379,9 @@ export class SurvivorsHud {
     this.clock += dt;
     const head = view.head;
     this.updateRings(dt, head, view.yaw, state);
-    this.updateBanner(dt, view);
-    this.updateWatch(dt, view, state);
-    this.updateBossBar(head, state);
+    this.updateSign(dt, view);
+    this.updateBracer(dt, view, state);
+    this.updateBossRing(head, state);
 
     // Red at the edge of sight: a bite flashes it; low health pulses it.
     this.hurtLevel = Math.max(0, this.hurtLevel - dt * 0.9);
@@ -287,50 +407,76 @@ export class SurvivorsHud {
     xp.uFlash.value = this.xpFlash;
   }
 
-  private updateBanner(dt: number, view: HudView): void {
-    const mesh = this.banner.mesh;
-    if (this.bannerAge >= this.bannerLife) {
+  private updateSign(dt: number, view: HudView): void {
+    const mesh = this.sign;
+    if (this.signAge >= this.signLife) {
       mesh.visible = false;
       return;
     }
     const head = view.head;
-    // Placed out in the world where you are looking when it fires; a new
-    // line while you still face the old spot reuses it.
-    if (this.placeBanner) {
-      this.placeBanner = false;
+    // Planted where you are looking when it fires; a new line while you
+    // still face the old spot comes up in the same place.
+    if (this.placeSign) {
+      this.placeSign = false;
       const fx = -Math.sin(view.yaw);
       const fz = -Math.cos(view.yaw);
       const dx = mesh.position.x - head.x;
       const dz = mesh.position.z - head.z;
       const d = Math.hypot(dx, dz) || 1;
       const facing = mesh.visible ? (dx * fx + dz * fz) / d : -1;
-      if (facing < 0.85) mesh.position.set(head.x + fx * BANNER_DIST, head.y + 0.45, head.z + fz * BANNER_DIST);
+      if (facing < 0.85 || d < 3) {
+        const x = head.x + fx * SIGN_DIST;
+        const z = head.z + fz * SIGN_DIST;
+        mesh.position.set(x, duneHeight(x, z) - 0.04, z);
+      }
+      this.tmp.set(mesh.position.x, mesh.position.y + 0.05, mesh.position.z);
+      sceneRefs.puffs?.emit(this.tmp, 14, 1.6);
     }
-    this.bannerAge += dt;
+    this.signAge += dt;
     mesh.visible = true;
-    mesh.position.y += dt * 0.08;
-    mesh.lookAt(head);
-    const fadeIn = Math.min(1, this.bannerAge / 0.15);
-    const fadeOut = Math.min(1, (this.bannerLife - this.bannerAge) / 0.6);
-    const pop = 1 + 0.15 * Math.max(0, 1 - this.bannerAge / 0.2);
-    mesh.scale.setScalar(pop);
-    (mesh.material as MeshBasicMaterial).opacity = Math.max(0, Math.min(fadeIn, fadeOut));
+    // Upright, turned to face you.
+    this.signYaw = Math.atan2(head.x - mesh.position.x, head.z - mesh.position.z);
+    mesh.rotation.set(0, this.signYaw, 0);
+    const material = mesh.material as MeshBasicMaterial;
+    const left = this.signLife - this.signAge;
+    if (this.signAge < RISE) {
+      // Bursting up out of the snow, overshooting a little.
+      const t = this.signAge / RISE;
+      const back = 1 + 2.2 * Math.pow(t - 1, 3) + 1.2 * Math.pow(t - 1, 2);
+      mesh.scale.set(1, Math.max(0.01, back), 1);
+      material.opacity = Math.min(1, t * 3);
+    } else if (left < CRUMBLE) {
+      if (!this.crumbled) {
+        this.crumbled = true;
+        this.onCrumble?.(mesh.position.x, mesh.position.y + SIGN_H * 0.45, mesh.position.z, SIGN_W * 0.8, this.signYaw);
+      }
+      const t = 1 - left / CRUMBLE;
+      mesh.scale.set(1, Math.max(0.01, 1 - t * t), 1);
+      material.opacity = 1 - t;
+    } else {
+      mesh.scale.set(1, 1, 1);
+      material.opacity = 1;
+    }
   }
 
-  /** The left-wrist watch (or the desktop corner readout). */
-  private updateWatch(dt: number, view: HudView, s: HudState): void {
-    const mesh = this.watch.mesh;
-    let want: boolean;
+  /** The bracer on the left wrist (or hanging in the desktop view's corner). */
+  private updateBracer(dt: number, view: HudView, s: HudState): void {
+    const g = this.bracer;
+    const head = view.head;
+    const h = hands.left;
+    let look = false;
     if (view.presenting) {
-      const h = hands.left;
-      this.toHand.subVectors(h.position, view.head).normalize();
+      g.visible = h.tracked;
+      if (!g.visible) return;
+      g.position.copy(h.position);
+      g.quaternion.copy(h.quaternion);
+      // Lit while you turn the inside of the wrist to your face and look at it.
+      this.toHand.subVectors(h.position, head).normalize();
       this.toHead.copy(this.toHand).negate();
       const facing = h.palmNormal.dot(this.toHead);
-      const look = view.gaze.dot(this.toHand);
-      const ok = h.tracked && !h.grip && h.palmNormal.y < PACK_UP;
-      const holding = this.watchShown
-        ? ok && facing > STAY_FACING && look > STAY_GAZE_COS
-        : ok && facing > OPEN_FACING && look > OPEN_GAZE_COS;
+      const gaze = view.gaze.dot(this.toHand);
+      const ok = !h.grip && h.palmNormal.y < PACK_UP;
+      const holding = this.lit ? ok && facing > STAY_FACING && gaze > STAY_GAZE_COS : ok && facing > OPEN_FACING && gaze > OPEN_GAZE_COS;
       if (holding) {
         this.poseFor += dt;
         this.lostFor = 0;
@@ -338,128 +484,99 @@ export class SurvivorsHud {
         this.lostFor += dt;
         this.poseFor = 0;
       }
-      want = this.watchShown ? this.lostFor < 0.35 : this.poseFor >= 0.12;
+      look = this.lit ? this.lostFor < 0.35 : this.poseFor >= 0.1;
     } else {
-      want = true;
-    }
-    this.watchShown = want;
-    this.watchScale = Math.min(1, Math.max(0, this.watchScale + (want ? dt : -dt) / 0.12));
-    mesh.visible = this.watchScale > 0;
-    if (!mesh.visible) return;
-    const head = view.head;
-    if (view.presenting) {
-      const h = hands.left;
-      this.wristDir.subVectors(h.position, h.indexTip);
-      const len = this.wristDir.length();
-      if (len > 1e-4) this.wristDir.multiplyScalar(1 / len);
-      mesh.position.copy(h.position).addScaledVector(this.wristDir, 0.06).addScaledVector(h.palmNormal, 0.025);
-      mesh.scale.setScalar(Math.max(0.001, this.watchScale));
-    } else {
-      // Small, low in the left corner of the view.
+      // Desktop: low in the left corner, screen turned to the eyes.
+      g.visible = true;
       const fx = -Math.sin(view.yaw);
       const fz = -Math.cos(view.yaw);
-      mesh.position.set(head.x + fx * 0.36 + fz * 0.17, head.y - 0.15, head.z + fz * 0.36 - fx * 0.17);
-      mesh.scale.setScalar(1.15);
+      g.position.set(head.x + fx * 0.3 + fz * 0.14, head.y - 0.14, head.z + fz * 0.3 - fx * 0.14);
+      // Grip +X (the screen) toward the eyes, grip -Z (toward the fingers) up.
+      this.bx.subVectors(head, g.position).normalize();
+      this.bz.set(0, -1, 0).addScaledVector(this.bx, this.bx.y).normalize();
+      this.by.crossVectors(this.bz, this.bx);
+      this.basis.makeBasis(this.bx, this.by, this.bz);
+      g.quaternion.setFromRotationMatrix(this.basis);
+      // Shift so the screen (not the grip) sits at that spot, and enlarge it.
+      this.tmp.set(0, 0, WRIST_Z).applyQuaternion(g.quaternion);
+      g.position.sub(this.tmp);
+      look = true;
     }
-    mesh.lookAt(head);
-    this.watchRedraw -= dt;
-    if (this.watchRedraw > 0) return;
-    this.watchRedraw = 0.2;
-    this.drawWatch(s);
+    this.lit = look;
+    this.glow += ((look ? 1 : 0.22) - this.glow) * Math.min(1, dt * 10);
+    (this.screen.material as MeshBasicMaterial).color.setScalar(this.glow);
+    // Status light: green when healthy, amber, then a red blink.
+    const f = s.hp / s.maxHp;
+    const led = (this.led.material as MeshBasicMaterial).color;
+    if (f > 0.6) led.setRGB(0.3, 1.4, 0.6);
+    else if (f > 0.3) led.setRGB(1.5, 0.9, 0.2);
+    else led.setRGB(Math.sin(this.clock * 10) > 0 ? 1.8 : 0.3, 0.1, 0.1);
+    this.screenRedraw -= dt;
+    if (this.screenRedraw > 0) return;
+    this.screenRedraw = look ? 0.2 : 0.6;
+    this.drawScreen(s);
   }
 
-  private drawWatch(s: HudState): void {
-    const ctx = this.watch.ctx;
-    const W = WATCH_CW;
-    const H = WATCH_CH;
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = 'rgba(10, 16, 30, 0.9)';
-    ctx.beginPath();
-    ctx.roundRect(4, 4, W - 8, H - 8, 40);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(160, 180, 210, 0.6)';
-    ctx.lineWidth = 6;
-    ctx.stroke();
+  private drawScreen(s: HudState): void {
+    const ctx = this.screenTex.ctx;
+    const W = SCREEN_CW;
+    const H = SCREEN_CH;
+    const bg = ctx.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#16233a');
+    bg.addColorStop(1, '#0a111f');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
     ctx.textBaseline = 'middle';
-    // Clock and kills.
+    ctx.textAlign = 'center';
+    // Clock.
     const mm = Math.floor(s.time / 60);
     const ss = Math.floor(s.time % 60);
-    ctx.textAlign = 'left';
     ctx.fillStyle = '#ffffff';
-    ctx.font = '800 72px system-ui, sans-serif';
-    ctx.fillText(`${mm}:${ss.toString().padStart(2, '0')}`, 32, 66);
-    ctx.textAlign = 'right';
+    ctx.font = '800 76px system-ui, sans-serif';
+    ctx.fillText(`${mm}:${ss.toString().padStart(2, '0')}`, W / 2, 58);
+    // Kills.
     ctx.fillStyle = '#ffd166';
-    ctx.font = '800 48px system-ui, sans-serif';
-    ctx.fillText(`${s.kills.toLocaleString()}`, W - 32, 56);
-    ctx.font = '600 22px system-ui, sans-serif';
-    ctx.fillText('KILLS', W - 32, 94);
-    // Level (with the XP fill) and health.
+    ctx.font = '800 46px system-ui, sans-serif';
+    ctx.fillText(s.kills.toLocaleString(), W / 2, 124);
+    ctx.font = '700 18px system-ui, sans-serif';
+    ctx.fillText('KILLS', W / 2, 156);
+    // Health and level bars.
     const bar = (y: number, frac: number, color: string, label: string) => {
       ctx.fillStyle = 'rgba(255,255,255,0.12)';
       ctx.beginPath();
-      ctx.roundRect(32, y, W - 64, 34, 17);
+      ctx.roundRect(22, y, W - 44, 40, 20);
       ctx.fill();
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.roundRect(32, y, Math.max(34, (W - 64) * Math.max(0, Math.min(1, frac))), 34, 17);
+      ctx.roundRect(22, y, Math.max(40, (W - 44) * Math.max(0, Math.min(1, frac))), 40, 20);
       ctx.fill();
       ctx.fillStyle = '#fff';
-      ctx.textAlign = 'left';
-      ctx.font = '700 22px system-ui, sans-serif';
-      ctx.fillText(label, 48, y + 18);
+      ctx.font = '800 24px system-ui, sans-serif';
+      ctx.fillText(label, W / 2, y + 21);
     };
-    bar(124, s.hp / s.maxHp, s.hp / s.maxHp < 0.3 ? '#ff3b4e' : '#ff6b81', `${Math.ceil(s.hp)} / ${Math.round(s.maxHp)}`);
-    bar(168, s.xp / s.xpNext, '#4dc3ff', `LEVEL ${s.level}`);
+    bar(184, s.hp / s.maxHp, s.hp / s.maxHp < 0.3 ? '#ff3b4e' : '#ff6b81', `${Math.ceil(s.hp)} / ${Math.round(s.maxHp)}`);
+    bar(236, s.xp / s.xpNext, '#4dc3ff', `LEVEL ${s.level}`);
     // Combo and speed.
-    ctx.font = '800 30px system-ui, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillStyle = s.combo >= 10 ? (s.combo >= 500 ? '#ff6b6b' : '#ffb347') : 'rgba(200,215,235,0.5)';
-    ctx.fillText(s.combo >= 10 ? `${s.combo.toLocaleString()} COMBO` : 'NO COMBO', 32, 236);
-    ctx.textAlign = 'right';
-    ctx.fillStyle = s.speedMul >= 1.05 ? '#7fe9ff' : 'rgba(200,215,235,0.5)';
-    ctx.fillText(`SPEED ×${s.speedMul.toFixed(1)}`, W - 32, 236);
-    // Weapons, small.
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#c9d6ee';
-    let size = 22;
-    ctx.font = `600 ${size}px system-ui, sans-serif`;
-    while (ctx.measureText(s.weapons).width > W - 56 && size > 13) {
-      size -= 1;
-      ctx.font = `600 ${size}px system-ui, sans-serif`;
-    }
-    ctx.fillText(s.weapons, W / 2, 284);
-    this.watch.texture.needsUpdate = true;
+    ctx.font = '800 34px system-ui, sans-serif';
+    ctx.fillStyle = s.combo >= 10 ? (s.combo >= 500 ? '#ff6b6b' : '#ffb347') : 'rgba(200,215,235,0.45)';
+    ctx.fillText(s.combo >= 10 ? `${s.combo.toLocaleString()} COMBO` : 'NO COMBO', W / 2, 318);
+    ctx.fillStyle = s.speedMul >= 1.05 ? '#7fe9ff' : 'rgba(200,215,235,0.45)';
+    ctx.fillText(`SPEED ×${s.speedMul.toFixed(1)}`, W / 2, 372);
+    // Scanline sheen, so it reads as a little screen.
+    ctx.fillStyle = 'rgba(255,255,255,0.035)';
+    for (let y = 0; y < H; y += 6) ctx.fillRect(0, y, W, 2);
+    this.screenTex.texture.needsUpdate = true;
   }
 
-  /** A boss's own health bar, floating over its head and facing you. */
-  private updateBossBar(head: Vector3, s: HudState): void {
-    const mesh = this.bossBar.mesh;
-    mesh.visible = !!s.boss;
-    if (!s.boss) {
-      this.bossKey = '';
-      return;
-    }
-    mesh.position.set(s.bossX, s.bossY, s.bossZ);
-    mesh.lookAt(head);
-    const key = `${s.boss}|${Math.round(s.bossHp * 200)}`;
-    if (key === this.bossKey) return;
-    this.bossKey = key;
-    const ctx = this.bossBar.ctx;
-    ctx.clearRect(0, 0, 512, 64);
-    ctx.fillStyle = 'rgba(30, 6, 12, 0.85)';
-    ctx.beginPath();
-    ctx.roundRect(2, 2, 508, 60, 18);
-    ctx.fill();
-    ctx.fillStyle = '#ff4d6d';
-    ctx.beginPath();
-    ctx.roundRect(8, 8, Math.max(16, 496 * Math.max(0, Math.min(1, s.bossHp))), 48, 14);
-    ctx.fill();
-    ctx.fillStyle = '#fff';
-    ctx.font = '800 26px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(s.boss, 256, 33);
-    this.bossBar.texture.needsUpdate = true;
+  /** A boss's health: a red ring of light on the snow round it, draining clockwise. */
+  private updateBossRing(head: Vector3, s: HudState): void {
+    const ring = this.bossRing;
+    ring.visible = !!s.boss;
+    if (!s.boss) return;
+    ring.position.set(s.bossX, duneHeight(s.bossX, s.bossZ) + 0.06, s.bossZ);
+    ring.scale.setScalar(s.bossR * 1.45);
+    // Full end of the ring toward you, so you see it drain.
+    ring.rotation.y = Math.atan2(s.bossX - head.x, s.bossZ - head.z);
+    (ring.material as ShaderMaterial).uniforms.uFrac.value = Math.max(0, Math.min(1, s.bossHp));
   }
 }

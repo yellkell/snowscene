@@ -195,6 +195,15 @@ export class SurvivorsSystem extends createSystem({}) {
     this.root.visible = false;
     this.world.createTransformEntity(this.root, { persistent: true });
     this.world.createTransformEntity(this.hud.root, { persistent: true });
+    // Frost letters crumble into ice along their width.
+    this.hud.onCrumble = (x, y, z, width, yaw) => {
+      const rx = Math.cos(yaw);
+      const rz = -Math.sin(yaw);
+      for (let k = 0; k < 7; k++) {
+        const o = (k / 6 - 0.5) * width;
+        this.shards.burst(x + rx * o, y, z + rz * o, 6, 0xcfeaff, 0.07, 1.6, 2.2);
+      }
+    };
     this.world.createTransformEntity(this.hud.hurt, { persistent: true });
   }
 
@@ -224,8 +233,8 @@ export class SurvivorsSystem extends createSystem({}) {
       audio.setMusic('night');
       toast('Snow Survivors! Pole about. Your weapons fire by themselves; walk over what they drop.', 6);
       this.pendingHint = this.world.renderer.xr.isPresenting
-        ? { text: 'Health & XP glow round your feet · stats on your left wrist', color: '#c9e8ff' }
-        : { text: 'Health & XP glow round your feet', color: '#c9e8ff' };
+        ? { text: 'Look at your left wrist', color: '#c9e8ff' }
+        : { text: 'Health and XP round your feet', color: '#c9e8ff' };
       this.busy = false;
     });
   }
@@ -394,8 +403,8 @@ export class SurvivorsSystem extends createSystem({}) {
         boss: this.bossName,
         bossHp,
         bossX: this.bossAt.x,
-        bossY: this.bossAt.y,
         bossZ: this.bossAt.z,
+        bossR: this.bossAt.y,
       },
     );
     if (Math.floor(this.time) !== survivors.time.peek()) survivors.time.value = Math.floor(this.time);
@@ -541,8 +550,8 @@ export class SurvivorsSystem extends createSystem({}) {
     const h = this.horde;
     for (let i = 0; i < h.n; i++) {
       if (h.carrier[i] !== 2 || h.dead[i]) continue;
-      const r = h.radius(i);
-      this.bossAt.set(h.x[i], duneHeight(h.x[i], h.z[i]) + r * 2.1 + 0.8, h.z[i]);
+      // (x, radius, z): the ring on the snow round it.
+      this.bossAt.set(h.x[i], h.radius(i), h.z[i]);
       return h.hp[i] / this.bossMaxHp;
     }
     this.bossName = '';
