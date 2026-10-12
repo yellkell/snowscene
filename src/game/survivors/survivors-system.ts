@@ -4,12 +4,14 @@
  * You pole about an open plain of low-poly spruce while the horde comes out
  * of the mist from every side, more of them and tougher every minute, up to
  * thousands at once (Factory Fight's swarm: see horde.ts and swarm-mesh.ts).
- * Your weapons fire by themselves. Everything you kill drops an experience
- * crystal that flies to you once you are close; filling the bar levels you
- * up, and every level is an instant upgrade. Elites and the odd ghoul drop
- * glowing upgrade orbs, and treasure chests turn up under pillars of light:
- * walk into them for an upgrade, or three. Movement upgrades turn the poles
- * into a sling: each stroke flings you further, and you glide on.
+ * Survive eight minutes and you win. Your weapons fire by themselves.
+ * Everything you kill drops an experience crystal that flies to you once you
+ * are close; filling the bar levels you up, and every level stops the clock
+ * and offers three upgrade cards to poke (upgrade-menu.ts). Elites and the
+ * odd ghoul drop glowing upgrade orbs (another choice), and treasure chests
+ * turn up under pillars of light: an evolution if one is ready, and a pick
+ * of four. Movement upgrades turn the poles into a sling: each stroke flings
+ * you further, and you glide on.
  *
  * Weapons: Icicle Volley (at the nearest), Orbit Blades (swords spinning
  * round you), Compass Shards (every way at once), Frost Nova (a blast ring
@@ -26,7 +28,8 @@
  * The horde's shape changes as it grows: rings that close round you,
  * stampedes from one side, walls of brutes across your path, and every
  * two and a half minutes a boss titan with its own health bar that drops a
- * treasure chest when it falls.
+ * treasure chest when it falls; the last, the Winter King, comes for the
+ * final minute.
  *
  * Started from the guide panel ("Snow Survivors") or with ?survivors.
  */
@@ -51,7 +54,9 @@ import { ARENA_X, ARENA_Z, duneHeight, survivorsLevel, survivorsView } from './s
 import { survivors, survivorsControl } from './survivors-state.js';
 import { buildSurvivorsWorld } from './survivors-world.js';
 import { Shards, SwarmMesh } from './swarm-mesh.js';
+import { UpgradeMenu } from './upgrade-menu.js';
 import {
+  CHOICE,
   EVOLUTIONS,
   type Evolution,
   type EvolutionId,
@@ -59,8 +64,8 @@ import {
   evolutionUpgrade,
   freshStats,
   HEART,
+  offerUpgrades,
   readyEvolution,
-  rollUpgrade,
   type Stats,
   type Upgrade,
   VACUUM,
@@ -86,9 +91,18 @@ const MILESTONES = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000];
 /** Faster than this (m/s) you ram through them (slower as the Avalanche Rider). */
 const RAM_SPEED = 2.8;
 const RIDER_RAM_SPEED = 1.8;
-/** A boss every this many seconds. */
-const BOSS_EVERY = 150;
-const BOSS_NAMES = ['THE FROST TITAN', 'THE ELDER TITAN', 'THE WINTER KING', 'THE HOWLING DARK'];
+/** A run lasts this long (s): hold out to the end and you win. */
+export const RUN_SECONDS = 480;
+/** The bosses, and when each comes: the last one for the final minute. */
+const BOSS_TIMES = [150, 300, 420];
+const BOSS_NAMES = ['THE FROST TITAN', 'THE ELDER TITAN', 'THE WINTER KING'];
+/** Warnings as the clock runs down (seconds left). */
+const WARNINGS: [number, string][] = [
+  [180, 'THREE MINUTES LEFT'],
+  [60, 'ONE MINUTE LEFT!'],
+  [30, '30 SECONDS!'],
+];
+const DIGITS = ['Digit1', 'Digit2', 'Digit3', 'Digit4'];
 
 export class SurvivorsSystem extends createSystem({}) {
   private built = false;
@@ -105,6 +119,12 @@ export class SurvivorsSystem extends createSystem({}) {
   private chests!: Chests;
   private hurls!: Hurls;
   private hud = new SurvivorsHud();
+  private menu = new UpgradeMenu();
+  /** Upgrade choices waiting their turn (a burst of levels queues several). */
+  private readonly choices: { title: string; color: string; cards: number }[] = [];
+  private readonly tips: Vector3[] = [];
+  private warning = 0;
+  private lastSecond = -1;
 
   private stats: Stats = freshStats();
   private hp = 100;
@@ -125,7 +145,7 @@ export class SurvivorsSystem extends createSystem({}) {
   private nextTitan = 75;
   private nextEvent = 45;
   private eventIndex = 0;
-  private nextBoss = BOSS_EVERY;
+  private bossIndex = 0;
   private bosses = 0;
   private bossName = '';
   private bossMaxHp = 1;
@@ -165,6 +185,7 @@ export class SurvivorsSystem extends createSystem({}) {
   private readonly gaze = new Vector3();
   private readonly headUp = new Vector3();
   private readonly bossAt = new Vector3();
+  private readonly pickAt = new Vector3();
 
   init(): void {
     survivorsControl.start = () => this.start();
@@ -206,6 +227,8 @@ export class SurvivorsSystem extends createSystem({}) {
       }
     };
     this.world.createTransformEntity(this.hud.hurt, { persistent: true });
+    this.world.createTransformEntity(this.menu.root, { persistent: true });
+    this.menu.onHover = () => audio.tick();
   }
 
   // ---------------------------------------------------------- the run ---
@@ -232,7 +255,7 @@ export class SurvivorsSystem extends createSystem({}) {
       game.velocity.set(0, 0, 0);
       setPhase(Phase.Poling);
       audio.setMusic('night');
-      toast('Snow Survivors! Pole about. Your weapons fire by themselves; walk over what they drop.', 6);
+      toast('Snow Survivors! Hold out for 8 minutes. Your weapons fire by themselves; walk over what they drop.', 6);
       this.pendingHint = this.world.renderer.xr.isPresenting
         ? { text: 'Your stats are on your pole handles', color: '#c9e8ff' }
         : { text: 'Health and XP round your feet', color: '#c9e8ff' };
@@ -246,8 +269,11 @@ export class SurvivorsSystem extends createSystem({}) {
     fadeThen(() => {
       survivors.active.value = false;
       survivors.dead.value = false;
+      survivors.won.value = false;
       this.root.visible = false;
       this.hud.hide();
+      this.menu.close();
+      this.choices.length = 0;
       this.horde.clear();
       this.resetTuning();
       const tutorial = sceneRefs.tutorialRoot?.object3D;
@@ -277,12 +303,16 @@ export class SurvivorsSystem extends createSystem({}) {
     this.time = 0;
     this.kills = 0;
     this.dead = false;
+    this.warning = 0;
+    this.lastSecond = -1;
+    this.menu.close();
+    this.choices.length = 0;
     this.spawnAcc = 0;
     this.nextChest = 30;
     this.nextTitan = 75;
     this.nextEvent = 45;
     this.eventIndex = 0;
-    this.nextBoss = BOSS_EVERY;
+    this.bossIndex = 0;
     this.bosses = 0;
     this.bossName = '';
     this.nextOrb = 8;
@@ -306,6 +336,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.orbs.clear();
     this.chests.clear();
     survivors.dead.value = false;
+    survivors.won.value = false;
     survivors.time.value = 0;
     survivors.kills.value = 0;
     survivors.level.value = 1;
@@ -347,7 +378,10 @@ export class SurvivorsSystem extends createSystem({}) {
     if (mvx * mvx + mvz * mvz > 1e-6) this.moveDir.set(mvx, 0, mvz).normalize();
     this.lastHead.copy(this.head);
 
-    if (!this.dead) {
+    // An upgrade choice stops the clock: the horde freezes where it stands.
+    const choosing = !this.dead && this.updateChoice(dt);
+    this.hud.held = this.menu.choosing;
+    if (!this.dead && !choosing) {
       this.time += dt;
       this.levelBlast = false;
       // Speed is power: every m/s adds to all your damage.
@@ -368,7 +402,8 @@ export class SurvivorsSystem extends createSystem({}) {
       this.recycle(px, pz);
       this.horde.sweep();
       this.feel(dt);
-    } else {
+      this.clock();
+    } else if (this.dead) {
       this.blades.mesh.count = 0;
     }
 
@@ -397,6 +432,7 @@ export class SurvivorsSystem extends createSystem({}) {
         xp: this.xp,
         xpNext: this.xpNext,
         time: this.time,
+        timeLeft: Math.max(0, RUN_SECONDS - this.time),
         kills: this.kills,
         weapons: this.weaponLine(),
         combo: this.combo,
@@ -452,9 +488,9 @@ export class SurvivorsSystem extends createSystem({}) {
       this.nextEvent = t + 45;
       this.waveEvent(this.eventIndex++ % 3, px, pz);
     }
-    // A boss every two and a half minutes.
-    if (t >= this.nextBoss) {
-      this.nextBoss = t + BOSS_EVERY;
+    // The bosses, at 2:30, 5:00 and for the final minute.
+    if (this.bossIndex < BOSS_TIMES.length && t >= BOSS_TIMES[this.bossIndex]) {
+      this.bossIndex++;
       this.spawnBoss(px, pz);
     }
     // Treasure: a chest under a pillar of light, not too close.
@@ -463,7 +499,7 @@ export class SurvivorsSystem extends createSystem({}) {
       const a = Math.random() * Math.PI * 2;
       const r = 16 + Math.random() * 10;
       if (this.chests.place(px + Math.cos(a) * r, pz + Math.sin(a) * r)) {
-        this.hud.announce('A treasure chest! Follow the light.', '#ffd166', 4);
+        this.hud.announce('TREASURE CHEST!', '#ffd166', 3.5, 1, 'Follow the pillar of light');
       }
     }
   }
@@ -492,7 +528,7 @@ export class SurvivorsSystem extends createSystem({}) {
         const i = h.spawn(m > 3 && k % 6 === 0 ? BRUTE : GHOUL, px + Math.cos(a) * r, pz + Math.sin(a) * r, this.hpScale());
         if (i >= 0) h.pace[i] *= 1.15;
       }
-      this.hud.announce('They are surrounding you!', '#ff6b6b', 3);
+      this.hud.announce('SURROUNDED!', '#ff6b6b', 3, 2, 'Break out before the ring closes');
       audio.whoosh();
     } else if (kind === 1) {
       // A stampede: a dense, fast pack charging in from one side.
@@ -510,7 +546,7 @@ export class SurvivorsSystem extends createSystem({}) {
         }
       }
       const where = ['AHEAD', 'ON YOUR RIGHT', 'BEHIND YOU', 'ON YOUR LEFT'][side];
-      this.hud.announce(`STAMPEDE ${where}!`, '#ffb347', 3);
+      this.hud.announce('STAMPEDE!', '#ffb347', 3, 2, `Coming ${where.toLowerCase()}`);
       audio.rumble(1);
       audio.whoosh();
     } else {
@@ -522,7 +558,7 @@ export class SurvivorsSystem extends createSystem({}) {
         const off = (k - (count - 1) / 2) * 1.6;
         h.spawn(BRUTE, px + fx * 24 - fz * off, pz + fz * 24 + fx * off, this.hpScale(), 1.1);
       }
-      this.hud.announce('A wall of brutes ahead! Ram through or go round', '#e0c8a0', 3.5);
+      this.hud.announce('WALL OF BRUTES!', '#e0c8a0', 3.5, 2, 'Ram through or go round');
       audio.thud();
     }
   }
@@ -531,16 +567,17 @@ export class SurvivorsSystem extends createSystem({}) {
     const h = this.horde;
     const n = this.bosses;
     const a = Math.atan2(this.moveDir.z, this.moveDir.x) + (Math.random() - 0.5) * 1.2;
-    const scale = Math.min(3.6, 2.4 + 0.4 * n);
+    const final = this.bossIndex >= BOSS_TIMES.length;
+    const scale = final ? 3.8 : Math.min(3.6, 2.4 + 0.4 * n);
     const i = h.spawn(TITAN, px + Math.cos(a) * 28, pz + Math.sin(a) * 28, 1, scale);
     if (i < 0) return;
-    h.hp[i] = KINDS[TITAN].hp * this.hpScale() * (10 + 9 * n);
+    h.hp[i] = KINDS[TITAN].hp * this.hpScale() * (10 + 9 * this.bossIndex - 9);
     h.pace[i] = 1.05;
     h.veer[i] = 0;
     h.carrier[i] = 2;
     this.bossMaxHp = h.hp[i];
-    this.bossName = BOSS_NAMES[Math.min(n, BOSS_NAMES.length - 1)] + (n >= BOSS_NAMES.length ? ` ${n - BOSS_NAMES.length + 2}` : '');
-    this.hud.announce(`BOSS: ${this.bossName}!`, '#ff4d6d', 4);
+    this.bossName = BOSS_NAMES[Math.min(this.bossIndex - 1, BOSS_NAMES.length - 1)];
+    this.hud.announce(this.bossName, '#ff4d6d', 4, 3, final ? 'The last of them. Hold on!' : 'A boss! Its health is the ring round it');
     this.novas.burst(h.x[i], h.z[i], 8, 0xff4d6d);
     audio.roar();
     for (const hand of HANDS) this.pulse(hand.handedness, 1, 600);
@@ -690,7 +727,7 @@ export class SurvivorsSystem extends createSystem({}) {
     // a heart when you are hurt, and a Snow Globe every minute or so.
     const t = this.time;
     if (h.carrier[i]) {
-      this.dropOrb(x, z, rollUpgrade(this.stats));
+      this.dropOrb(x, z, CHOICE);
     } else if (kind === BRUTE && t >= this.nextVacuum) {
       this.nextVacuum = t + 70 + Math.random() * 30;
       this.dropOrb(x, z, VACUUM);
@@ -699,7 +736,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.dropOrb(x, z, HEART);
     } else if (t >= this.nextOrb && (kind === BRUTE || Math.random() < 0.05)) {
       this.nextOrb = t + 7 + Math.random() * 5;
-      this.dropOrb(x, z, rollUpgrade(this.stats));
+      this.dropOrb(x, z, CHOICE);
     }
     if (this.killSounds < 3) {
       this.killSounds += 1;
@@ -711,7 +748,7 @@ export class SurvivorsSystem extends createSystem({}) {
 
   private comboMilestone(m: number): void {
     const color = m >= 1000 ? '#ff6b6b' : m >= 250 ? '#ffb347' : '#ffd166';
-    this.hud.announce(`${m.toLocaleString()} COMBO!${m >= 1000 ? ' UNSTOPPABLE' : ''}`, color, 2.5);
+    this.hud.announce(`${m.toLocaleString()} COMBO!`, color, 2.5, 1, m >= 1000 ? 'UNSTOPPABLE' : m >= 250 ? 'Keep it going!' : '');
     this.blast(this.head.x, this.head.z, 5 + Math.min(5, m / 500), 10 + m * 0.05, parseInt(color.slice(1), 16));
     audio.levelUp();
     for (const hand of HANDS) this.pulse(hand.handedness, 0.9, 120);
@@ -732,7 +769,7 @@ export class SurvivorsSystem extends createSystem({}) {
     }
     // Its hoard: a chest where it fell (opened on the spot if every chest is out).
     if (!this.chests.place(x, z)) this.openTreasure(x, z);
-    this.hud.announce(`${BOSS_NAMES[Math.min(this.bosses - 1, BOSS_NAMES.length - 1)]} FALLS! Take its treasure`, '#ffd166', 5);
+    this.hud.announce('BOSS DOWN!', '#ffd166', 4.5, 3, 'Take its treasure');
     audio.fanfare();
     audio.crack();
     for (const hand of HANDS) this.pulse(hand.handedness, 1, 500);
@@ -764,6 +801,9 @@ export class SurvivorsSystem extends createSystem({}) {
     this.hp = 0;
     this.dead = true;
     this.bossName = '';
+    this.menu.close();
+    this.choices.length = 0;
+    this.hud.held = false;
     // The tallies first: the guide panel reads them as soon as `dead` flips.
     survivors.time.value = Math.floor(this.time);
     survivors.kills.value = this.kills;
@@ -778,7 +818,7 @@ export class SurvivorsSystem extends createSystem({}) {
     audio.fanfare();
     const mm = Math.floor(this.time / 60);
     const ss = Math.floor(this.time % 60).toString().padStart(2, '0');
-    this.hud.announce(`You fell at ${mm}:${ss} with ${this.kills.toLocaleString()} kills`, '#ff6b6b', 30);
+    this.hud.announce('YOU FELL', '#ff6b6b', 30, 9, `at ${mm}:${ss} with ${this.kills.toLocaleString()} kills`);
   }
 
   private heal(amount: number): void {
@@ -798,12 +838,116 @@ export class SurvivorsSystem extends createSystem({}) {
     if (u.id === 'vacuum') this.vacuum();
     this.evolutionHints();
     if (flourish) {
-      this.hud.announce(line, u.color, 3.5);
+      const colon = line.indexOf(': ');
+      const bang = line.indexOf('! ');
+      if (colon > 0) this.hud.announce(line.slice(0, colon), u.color, 3, 1, line.slice(colon + 2));
+      else if (bang > 0) this.hud.announce(line.slice(0, bang + 1), u.color, 3, 1, line.slice(bang + 2));
+      else this.hud.announce(line, u.color, 3);
       this.novas.burst(this.head.x, this.head.z, 3, parseInt(u.color.slice(1), 16));
       audio.chime();
       for (const hand of HANDS) this.pulse(hand.handedness, 0.8, 80);
     }
     return line;
+  }
+
+  // ---------------------------------------------------------- choices ---
+
+  /** Offer an upgrade choice as soon as the one before it is done. */
+  private queueChoice(title: string, color: string, cards: number): void {
+    this.choices.push({ title, color, cards });
+  }
+
+  /**
+   * Open the next waiting choice, and run the one that is up: the clock is
+   * stopped (and the poles do nothing) until a card is poked. Returns
+   * whether the run is paused this frame.
+   */
+  private updateChoice(dt: number): boolean {
+    if (!this.menu.active && this.choices.length > 0) {
+      const next = this.choices.shift()!;
+      const offers = offerUpgrades(this.stats, next.cards);
+      const presenting = this.world.renderer.xr.isPresenting;
+      this.menu.open(next.title, next.color, offers, this.stats, this.head, getHeadYaw(this.world), presenting);
+      poleTuning.gain = 0;
+      this.hud.clearSign();
+      audio.cards();
+      for (const hand of HANDS) this.pulse(hand.handedness, 0.4, 60);
+    }
+    if (!this.menu.active) return false;
+    const choosing = this.menu.choosing;
+    if (choosing) game.velocity.set(0, 0, 0);
+    this.tips.length = 0;
+    for (const hand of HANDS) if (hand.tracked) this.tips.push(hand.indexTip);
+    let key = -1;
+    const kb = this.input.keyboard;
+    for (let k = 0; k < DIGITS.length; k++) if (kb.getKeyDown(DIGITS[k])) key = k;
+    const picked = this.menu.update(dt, this.tips, key);
+    if (picked) {
+      this.grant(picked, true);
+      this.applyTuning();
+      audio.pick();
+      const at = this.menu.pickedPosition(this.pickAt);
+      this.shards.burst(at.x, at.y, at.z, 16, parseInt(picked.color.slice(1), 16), 0.011, 0.9, 0.8);
+      for (const hand of HANDS) this.pulse(hand.handedness, 0.9, 90);
+    }
+    return choosing;
+  }
+
+  // ------------------------------------------------------------ clock ---
+
+  /** Warnings as the time runs down, a tick for each of the last ten seconds, and the win. */
+  private clock(): void {
+    const left = RUN_SECONDS - this.time;
+    if (left <= 0) {
+      this.win();
+      return;
+    }
+    if (this.warning < WARNINGS.length && left <= WARNINGS[this.warning][0]) {
+      const [secs, text] = WARNINGS[this.warning++];
+      this.hud.announce(text, secs <= 60 ? '#ff8a5c' : '#ffd166', 3, 3, secs <= 60 ? 'Hold on!' : '');
+      audio.chime();
+    }
+    const whole = Math.ceil(left);
+    if (whole <= 10 && whole !== this.lastSecond) {
+      this.lastSecond = whole;
+      audio.countdown(whole);
+    }
+  }
+
+  /** Eight minutes: the horde shatters, wave on wave outward from you. */
+  private win(): void {
+    this.dead = true;
+    this.bossName = '';
+    this.menu.close();
+    this.choices.length = 0;
+    this.hud.held = false;
+    survivors.time.value = RUN_SECONDS;
+    survivors.kills.value = this.kills;
+    survivors.level.value = this.lvl;
+    survivors.bestCombo.value = this.bestCombo;
+    survivors.bosses.value = this.bosses;
+    survivors.won.value = true;
+    survivors.dead.value = true;
+    const h = this.horde;
+    const px = this.head.x;
+    const pz = this.head.z;
+    let burst = 0;
+    for (let i = 0; i < h.n; i++) {
+      if (h.dead[i]) continue;
+      h.dead[i] = 1;
+      // Not every one shatters on screen (there can be thousands).
+      if (burst < 220 && Math.hypot(h.x[i] - px, h.z[i] - pz) < 30) {
+        burst++;
+        const r = h.radius(i);
+        this.shards.burst(h.x[i], r * 0.6, h.z[i], 3, KINDS[h.kind[i]].accent, r * 0.16, 2.5, 3);
+      }
+    }
+    h.sweep();
+    for (let k = 1; k <= 4; k++) this.novas.burst(px, pz, 6 * k, k % 2 ? 0xffe066 : 0x7fdcff);
+    this.shards.burst(px, this.head.y + 1.5, pz, 120, 0xffe066, 0.08, 6, 7);
+    this.hud.announce('YOU SURVIVED!', '#ffe066', 30, 9, `${this.kills.toLocaleString()} kills · level ${this.lvl} · best combo ${this.bestCombo.toLocaleString()}`);
+    audio.victory();
+    for (const hand of HANDS) this.pulse(hand.handedness, 1, 500);
   }
 
   // --------------------------------------------------------- pickups ---
@@ -839,7 +983,8 @@ export class SurvivorsSystem extends createSystem({}) {
       if (Math.hypot(px - orb.x, pz - orb.z) > TAKE_REACH) continue;
       this.orbs.take(orb);
       const u = this.orbUpgrades.get(orb.upgradeId) ?? HEART;
-      this.grant(u, true);
+      if (u.id === CHOICE.id) this.queueChoice('UPGRADE!', CHOICE.color, 3);
+      else this.grant(u, true);
     }
     for (const chest of this.chests.list) {
       if (!chest.active) continue;
@@ -852,21 +997,15 @@ export class SurvivorsSystem extends createSystem({}) {
   /** A treasure chest's haul: an evolution if one is ready, and upgrades. */
   private openTreasure(x: number, z: number): void {
     const evo = readyEvolution(this.stats);
-    const names: string[] = [];
     if (evo) this.grant(evolutionUpgrade(evo), false);
-    for (let k = evo ? 2 : 3; k > 0; k--) {
-      const u = rollUpgrade(this.stats);
-      this.grant(u, false);
-      names.push(u.name);
-    }
+    this.queueChoice('TREASURE!', '#ffd166', 4);
     if (evo) {
-      this.hud.announce(`EVOLUTION! ${evo.name}: ${EVOLUTIONS.find((e) => e.id === evo.id)!.blurb}`, evo.color, 6);
+      this.hud.announce(`EVOLUTION! ${evo.name}`, evo.color, 6, 4, EVOLUTIONS.find((e) => e.id === evo.id)!.blurb);
       this.novas.burst(x, z, 14, parseInt(evo.color.slice(1), 16));
       this.shards.burst(x, 0.8, z, 90, parseInt(evo.color.slice(1), 16), 0.14, 5, 9);
       audio.evolve();
       for (const hand of HANDS) this.pulse(hand.handedness, 1, 400);
     } else {
-      this.hud.announce(`TREASURE! ${names.join(' + ')}`, '#ffd166', 5);
       audio.fanfare();
       for (const hand of HANDS) this.pulse(hand.handedness, 1, 150);
     }
@@ -881,9 +1020,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.lvl++;
       this.xpNext = Math.floor(8 + this.lvl * 10 + 1.5 * this.lvl * this.lvl);
       survivors.level.value = this.lvl;
-      const u = rollUpgrade(this.stats);
-      const line = this.grant(u, true);
-      this.hud.announce(`LEVEL ${this.lvl}!  ${line}`, u.color, 3.5);
+      this.queueChoice(`LEVEL ${this.lvl}!`, '#ffe066', 3);
       // Levelling up throws the crowd back off you (once a frame).
       if (!this.levelBlast) {
         this.levelBlast = true;

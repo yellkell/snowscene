@@ -630,6 +630,12 @@ export class BackpackSystem extends createSystem({}) {
   private stowHand(side: Handedness): void {
     const item = equipment.inHand[side];
     if (!item) return;
+    if (equipment.locked.has(item)) {
+      // The tutorial's poles stay with you.
+      if (this.takeCooldown <= 0) toast(`Keep your ${ITEM_LABELS[item].toLowerCase()} in your hands for the trail`);
+      this.takeCooldown = 0.7;
+      return;
+    }
     stow(side);
     if (PAIRED.has(item)) {
       const other: Handedness = side === 'left' ? 'right' : 'left';

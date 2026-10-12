@@ -17,7 +17,7 @@
 
 import { createSystem, Entity, Mesh, MeshStandardMaterial, Vector3 } from '@iwsdk/core';
 import { audio } from './audio.js';
-import { holding, stowAll } from './equipment.js';
+import { clearHands, holding } from './equipment.js';
 import { ClimbHold } from './game-components.js';
 import { HANDS, type Handedness } from './hand-input.js';
 import { currentLevel, type ClimbWall } from './level.js';
@@ -113,8 +113,9 @@ export class ClimbSystem extends createSystem({
           this.wall = currentLevel().currentWall();
           if (this.wall) {
             this.tangent.set(0, 1, 0).cross(this.wall.normal).normalize();
-            // The tutorial puts the poles away for you.
-            if (currentLevel().id === 'tutorial') stowAll();
+            // The tutorial leans the poles against the rock for you (they
+            // never go in the pack).
+            if (currentLevel().id === 'tutorial') clearHands();
             this.startApproach();
           }
         }

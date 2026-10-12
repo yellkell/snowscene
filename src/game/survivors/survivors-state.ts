@@ -10,8 +10,10 @@ import { signal } from '@iwsdk/core';
 export const survivors = {
   /** The mode is running (the arena is up instead of the mountain). */
   active: signal(false),
-  /** You fell: the run is over (the panel offers another go). */
+  /** The run is over, fallen or survived (the panel offers another go). */
   dead: signal(false),
+  /** ...and it ended with the clock run out: you survived. */
+  won: signal(false),
   /** Seconds survived, kills, level: for the panel's end-of-run line. */
   time: signal(0),
   kills: signal(0),

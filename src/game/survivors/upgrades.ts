@@ -1,8 +1,9 @@
 /**
- * Snow Survivors' upgrades. Everything you pick up makes you stronger at
- * once: no menu, no pause (it is VR; you are busy). Level-ups, orbs dropped
- * by elites and treasure chests all draw from the same pool, weighted
- * toward levelling what you already have.
+ * Snow Survivors' upgrades. Every level-up, every upgrade orb an elite drops
+ * and every treasure chest stops the clock and offers a choice: three cards
+ * (four from a chest) float in front of you and you poke the one you want
+ * (see upgrade-menu.ts). The offer is drawn from one pool, weighted toward
+ * levelling what you already have and toward finishing an evolution.
  *
  * Evolutions are the long game: take a weapon to level EVOLVE_LEVEL while
  * holding its partner passive, then open a treasure chest, and the weapon
@@ -110,6 +111,7 @@ export function evolutionUpgrade(e: Evolution): Upgrade {
     id: `evolve-${e.id}`,
     name: e.name,
     color: e.color,
+    blurb: e.blurb.charAt(0).toUpperCase() + e.blurb.slice(1),
     apply: (s) => {
       s.evolved[e.id] = true;
       return `EVOLVED: ${e.name}! ${e.blurb}`;
@@ -121,6 +123,10 @@ export interface Upgrade {
   id: string;
   name: string;
   color: string;
+  /** What it does, for its card. */
+  blurb?: string;
+  /** Its level now (0 = not taken), for the card's "Lv 2 → 3". */
+  level?: (s: Stats) => number;
   /** Applies it; returns the line to announce. */
   apply: (s: Stats, heal: (hp: number) => void) => string;
 }
@@ -137,6 +143,8 @@ const passive = (
   name,
   color,
   max,
+  blurb: line.charAt(0).toUpperCase() + line.slice(1),
+  level: (s) => s.levels[id] ?? 0,
   apply: (s, heal) => {
     s.levels[id] = (s.levels[id] ?? 0) + 1;
     apply(s, heal);
@@ -166,6 +174,8 @@ function weaponUpgrade(id: WeaponId): Upgrade {
     id,
     name: w.name,
     color: w.color,
+    blurb: w.blurb,
+    level: (s) => s.weapons[id],
     apply: (s) => {
       s.weapons[id] = Math.min(MAX_WEAPON_LEVEL, s.weapons[id] + 1);
       return s.weapons[id] === 1 ? `NEW: ${w.name}! ${w.blurb}` : `${w.name} level ${s.weapons[id]}`;
@@ -178,6 +188,7 @@ export const HEART: Upgrade = {
   id: 'heart',
   name: 'Heart',
   color: '#ff4d6d',
+  blurb: 'Heal a third of your health',
   apply: (s, heal) => {
     heal(s.maxHp * 0.35);
     return 'Healed!';
@@ -192,8 +203,16 @@ export const VACUUM: Upgrade = {
   apply: () => 'SNOW GLOBE! Every crystal comes to you',
 };
 
-/** Roll an upgrade you can still take, weighted toward what you already have. */
-export function rollUpgrade(s: Stats): Upgrade {
+/** An upgrade orb: walk into it and choose what it becomes. */
+export const CHOICE: Upgrade = {
+  id: 'choice',
+  name: 'Upgrade!',
+  color: '#ffd166',
+  apply: () => '',
+};
+
+/** Everything you can still take, weighted toward what you already have. */
+function upgradePool(s: Stats): { u: Upgrade; w: number }[] {
   const pool: { u: Upgrade; w: number }[] = [];
   const owned = (Object.keys(s.weapons) as WeaponId[]).filter((id) => s.weapons[id] > 0);
   for (const id of Object.keys(WEAPONS) as WeaponId[]) {
@@ -207,19 +226,46 @@ export function rollUpgrade(s: Stats): Upgrade {
     let w = p.id === 'pole' || p.id === 'glide' ? 1.8 : 1.4;
     // A passive that would complete an evolution you are building toward
     // turns up far more often.
-    for (const e of EVOLUTIONS) {
-      if (e.passive !== p.id || s.evolved[e.id] || lvl >= e.passiveLevel) continue;
-      const base = e.id === 'rider' ? s.pole : s.weapons[e.id];
-      if (base >= 3) w += 2.5;
-    }
+    if (evolvesWith(s, p.id)) w += 2.5;
     pool.push({ u: p, w });
   }
-  const total = pool.reduce((a, b) => a + b.w, 0);
-  if (total <= 0) return HEART;
-  let r = Math.random() * total;
-  for (const e of pool) {
-    r -= e.w;
-    if (r <= 0) return e.u;
+  return pool.filter((e) => e.w > 0);
+}
+
+/** The evolution a passive would unlock (its base well on the way), if any. */
+export function evolvesWith(s: Stats, passiveId: string): Evolution | null {
+  const lvl = s.levels[passiveId] ?? 0;
+  for (const e of EVOLUTIONS) {
+    if (e.passive !== passiveId || s.evolved[e.id] || lvl >= e.passiveLevel) continue;
+    const base = e.id === 'rider' ? s.pole : s.weapons[e.id];
+    if (base >= 3) return e;
   }
-  return pool[pool.length - 1].u;
+  return null;
+}
+
+/** Roll an upgrade you can still take, weighted toward what you already have. */
+export function rollUpgrade(s: Stats): Upgrade {
+  return offerUpgrades(s, 1)[0];
+}
+
+/**
+ * `count` different upgrades to choose between, drawn from the weighted
+ * pool. With almost everything maxed, a heart makes up the numbers.
+ */
+export function offerUpgrades(s: Stats, count: number): Upgrade[] {
+  const pool = upgradePool(s);
+  const out: Upgrade[] = [];
+  while (out.length < count && pool.length > 0) {
+    const total = pool.reduce((a, b) => a + b.w, 0);
+    let r = Math.random() * total;
+    let k = 0;
+    for (; k < pool.length - 1; k++) {
+      r -= pool[k].w;
+      if (r <= 0) break;
+    }
+    out.push(pool[k].u);
+    pool.splice(k, 1);
+  }
+  if (out.length < count) out.push(HEART);
+  return out;
 }

@@ -401,6 +401,40 @@ class SnowAudio {
     this.burst(600, 0.5, 1.4, 0.25, 'lowpass');
   }
 
+  /** Upgrade cards fanning out: a rising shimmer of glass. */
+  cards(): void {
+    [784, 987.77, 1174.66, 1567.98].forEach((f, i) => this.tone(f, 0.4, 0.07, 'triangle', i * 0.055));
+    this.burst(3200, 0.7, 0.4, 0.06, 'highpass');
+  }
+
+  /** A card lighting up under a fingertip: a soft glassy tick. */
+  tick(): void {
+    this.tone(1760, 0.06, 0.05, 'sine');
+    this.burst(5200, 4, 0.025, 0.05, 'highpass');
+  }
+
+  /** A card taken: a bright bell with a soft thump under it. */
+  pick(): void {
+    this.tone(1046.5, 0.9, 0.13, 'sine');
+    this.tone(1567.98, 0.7, 0.08, 'sine', 0.03);
+    this.tone(2093, 0.5, 0.05, 'triangle', 0.06);
+    this.burst(180, 1.2, 0.22, 0.3, 'lowpass');
+  }
+
+  /** The last seconds of a run: a hard clock tick, the last one higher. */
+  countdown(secondsLeft: number): void {
+    const last = secondsLeft <= 1;
+    this.burst(2600, 6, 0.04, 0.22, 'bandpass');
+    this.tone(last ? 1320 : 880, last ? 0.4 : 0.12, 0.12, 'square');
+  }
+
+  /** You survived: a long fanfare climbing over a swelling chord. */
+  victory(): void {
+    [523.25, 659.25, 783.99, 1046.5, 1318.5, 1567.98].forEach((f, i) => this.tone(f, 1.8, 0.12, 'triangle', i * 0.13));
+    [261.63, 392, 523.25].forEach((f) => this.tone(f, 3, 0.08, 'sine', 0.75));
+    this.burst(800, 0.4, 2, 0.2, 'lowpass');
+  }
+
   /** The ground went without you. */
   thud(): void {
     this.burst(160, 1.4, 0.32, 0.55, 'lowpass');

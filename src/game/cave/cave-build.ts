@@ -21,11 +21,13 @@ import {
   ConeGeometry,
   CylinderGeometry,
   DoubleSide,
+  Float32BufferAttribute,
   Group,
   HemisphereLight,
   IcosahedronGeometry,
   InstancedMesh,
   LatheGeometry,
+  Matrix3,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -754,23 +756,169 @@ function addRails(b: GeometryBuilder, spec: PlatformSpec, gaps: Set<string> | un
   }
 }
 
+/** Surface kinds the timber works' material draws (the `surface` attribute's w). */
+const SURF_PLAIN = 1;
+const SURF_WOOD = 2;
+const SURF_METAL = 3;
+const SURF_ROPE = 4;
+
+function surfaceOf(color: Color | unknown): number {
+  if (color === WOOD || color === WOOD_DARK || color === WOOD_PALE) return SURF_WOOD;
+  if (color === IRON || color === BRASS || color === TRACK_STEEL) return SURF_METAL;
+  if (color === ROPE) return SURF_ROPE;
+  return SURF_PLAIN;
+}
+
+/**
+ * A GeometryBuilder that also tags every piece with what it is made of and
+ * which way its grain runs (its longest side), so one material can draw
+ * wood grain along every beam and plank, hammered iron and rust on the
+ * metal, and twist on the rope: `surface` = (grain direction, kind).
+ */
+class WorksBuilder extends GeometryBuilder {
+  private readonly surface: number[] = [];
+  private readonly size = new Vector3();
+  private readonly dir = new Vector3();
+  private readonly m3 = new Matrix3();
+
+  override add(geometry: BufferGeometry, matrix: Matrix4, color: Color | Parameters<GeometryBuilder['add']>[2]): this {
+    const count = geometry.index ? geometry.index.count : geometry.getAttribute('position').count;
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    geometry.boundingBox!.getSize(this.size);
+    const { x, y, z } = this.size;
+    if (x >= y && x >= z) this.dir.set(x, 0, 0);
+    else if (z >= y) this.dir.set(0, 0, z);
+    else this.dir.set(0, y, 0);
+    this.dir.applyMatrix3(this.m3.setFromMatrix4(matrix)).normalize();
+    const kind = surfaceOf(color);
+    for (let i = 0; i < count; i++) this.surface.push(this.dir.x, this.dir.y, this.dir.z, kind);
+    return super.add(geometry, matrix, color);
+  }
+
+  override build(): BufferGeometry {
+    const out = super.build();
+    out.setAttribute('surface', new Float32BufferAttribute(this.surface, 4));
+    return out;
+  }
+}
+
+/** Value noise and its octaves, for the works' surfaces. */
+const SURFACE_NOISE = /* glsl */ `
+float wkHash( vec3 p ) {
+  p = fract( p * 0.3183099 + 0.1 );
+  p *= 17.0;
+  return fract( p.x * p.y * p.z * ( p.x + p.y + p.z ) );
+}
+float wkNoise( vec3 x ) {
+  vec3 i = floor( x );
+  vec3 f = fract( x );
+  f = f * f * ( 3.0 - 2.0 * f );
+  return mix( mix( mix( wkHash( i ), wkHash( i + vec3( 1, 0, 0 ) ), f.x ),
+                   mix( wkHash( i + vec3( 0, 1, 0 ) ), wkHash( i + vec3( 1, 1, 0 ) ), f.x ), f.y ),
+              mix( mix( wkHash( i + vec3( 0, 0, 1 ) ), wkHash( i + vec3( 1, 0, 1 ) ), f.x ),
+                   mix( wkHash( i + vec3( 0, 1, 1 ) ), wkHash( i + vec3( 1, 1, 1 ) ), f.x ), f.y ), f.z );
+}
+float wkFbm( vec3 x ) {
+  return 0.5 * wkNoise( x ) + 0.25 * wkNoise( x * 2.03 + 7.1 ) + 0.125 * wkNoise( x * 4.01 + 3.3 );
+}
+`;
+
+/** Wood grain, iron and rope, by the piece's `surface`. Runs after the vertex colour. */
+const SURFACE_FRAGMENT = /* glsl */ `
+float wkKind = floor( vWkSurf.w + 0.5 );
+float wkRough = roughness;
+float wkMetal = 0.0;
+if ( wkKind > 1.5 ) {
+  vec3 g = length( vWkSurf.xyz ) > 0.01 ? normalize( vWkSurf.xyz ) : vec3( 0.0, 1.0, 0.0 );
+  vec3 ga = normalize( cross( g, abs( g.y ) < 0.9 ? vec3( 0.0, 1.0, 0.0 ) : vec3( 1.0, 0.0, 0.0 ) ) );
+  vec3 gb = cross( g, ga );
+  float along = dot( vWkPos, g );
+  vec2 across = vec2( dot( vWkPos, ga ), dot( vWkPos, gb ) );
+  if ( wkKind < 2.5 ) {
+    // WOOD: growth rings round a pith off to one side (straight lines down
+    // a beam's long faces, arcs on its end grain), wavering along the
+    // length, with fine fibres, a board-to-board tone and the odd knot.
+    float waver = wkFbm( vec3( along * 0.9, across * 3.0 ) );
+    float rings = fract( length( across + vec2( 0.23, -0.17 ) ) * 24.0 + waver * 2.2 );
+    float late = smoothstep( 0.5, 0.8, rings ) * ( 1.0 - smoothstep( 0.88, 1.0, rings ) );
+    float fibre = wkNoise( vec3( along * 1.4, across * 55.0 ) );
+    float board = wkNoise( floor( vWkPos * 1.7 ) + 0.5 );
+    vec2 kc = across * 9.0;
+    float knotAt = wkNoise( vec3( along * 2.2, kc ) );
+    float knot = smoothstep( 0.82, 0.93, knotAt );
+    float shade = ( 1.0 - 0.42 * late ) * mix( 0.8, 1.08, fibre ) * mix( 0.84, 1.1, board );
+    shade *= 1.0 - 0.45 * knot;
+    // Worn pale on the edges you'd brush against, grimy in the grain.
+    diffuseColor.rgb *= shade;
+    diffuseColor.rgb = mix( diffuseColor.rgb, diffuseColor.rgb * vec3( 1.06, 1.02, 0.95 ), fibre * 0.3 );
+    wkRough = clamp( roughness + 0.08 * late - 0.06 * fibre, 0.55, 1.0 );
+  } else if ( wkKind < 3.5 ) {
+    // METAL: hammered, brushed along its length, with rust blooming in
+    // patches and runs.
+    float hammer = wkFbm( vWkPos * 26.0 );
+    float brush = wkNoise( vec3( along * 3.0, across * 160.0 ) );
+    float rustField = wkFbm( vWkPos * 5.0 + vec3( 0.0, along * 0.6, 0.0 ) );
+    float rust = smoothstep( 0.46, 0.66, rustField + 0.12 * ( brush - 0.5 ) );
+    vec3 rustCol = mix( vec3( 0.36, 0.15, 0.06 ), vec3( 0.55, 0.26, 0.1 ), wkNoise( vWkPos * 40.0 ) );
+    diffuseColor.rgb *= mix( 0.75, 1.2, hammer ) * mix( 0.9, 1.08, brush );
+    diffuseColor.rgb = mix( diffuseColor.rgb, rustCol, rust * 0.75 );
+    wkMetal = 0.5 * ( 1.0 - rust );
+    wkRough = mix( 0.42 + 0.2 * hammer, 0.95, rust );
+  } else {
+    // ROPE: three strands twisting round it.
+    float turn = atan( across.y, across.x );
+    float strand = 0.5 + 0.5 * sin( along * 140.0 + turn * 3.0 );
+    float fuzz = wkNoise( vWkPos * 90.0 );
+    diffuseColor.rgb *= mix( 0.7, 1.08, smoothstep( 0.15, 0.85, strand ) ) * mix( 0.9, 1.05, fuzz );
+    wkRough = 1.0;
+  }
+}
+`;
+
 let sharedFrame: MeshStandardMaterial | null = null;
 /**
  * The timber works' one material. The cave has no real lights, so the wood
  * carries a little warm self-light (the lanterns' glow, cartoon-style):
- * without it the frames read as black cut-outs against the ice.
+ * without it the frames read as black cut-outs against the ice. Every piece
+ * is surfaced by what it is (see WorksBuilder): grained timber, hammered
+ * and rusting iron, twisted rope.
  */
 function frameMaterial(): MeshStandardMaterial {
   if (sharedFrame) return sharedFrame;
   const m = new MeshStandardMaterial({ vertexColors: true, roughness: 0.85, flatShading: true });
   m.onBeforeCompile = (shader) => {
-    shader.fragmentShader = shader.fragmentShader.replace(
-      '#include <emissivemap_fragment>',
-      `#include <emissivemap_fragment>
-      totalEmissiveRadiance += diffuseColor.rgb * vec3(0.34, 0.24, 0.15);`,
-    );
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        attribute vec4 surface;
+        varying vec4 vWkSurf;
+        varying vec3 vWkPos;`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vWkSurf = surface;
+        vWkPos = position;`,
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        varying vec4 vWkSurf;
+        varying vec3 vWkPos;
+        ${SURFACE_NOISE}`,
+      )
+      .replace('#include <color_fragment>', `#include <color_fragment>\n${SURFACE_FRAGMENT}`)
+      .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\nroughnessFactor = wkRough;')
+      .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\nmetalnessFactor = wkMetal;')
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+      totalEmissiveRadiance += diffuseColor.rgb * vec3(0.34, 0.24, 0.15) * ( 1.0 - 0.6 * wkMetal );`,
+      );
   };
-  m.customProgramCacheKey = () => 'cave-frame';
+  m.customProgramCacheKey = () => 'cave-frame-surfaced';
   sharedFrame = m;
   return m;
 }
@@ -816,7 +964,7 @@ function addHanger(b: GeometryBuilder, sq: Sq, gaps: Set<string> | undefined, he
 
 /** A frame that follows its platform: rails, hangers, keels. */
 function buildMachineFrame(spec: PlatformSpec, gaps: Set<string> | undefined): GeometryBuilder {
-  const b = new GeometryBuilder();
+  const b = new WorksBuilder();
   const claim = spec.claim;
   // Joists under every tile.
   for (const sq of claim) {
@@ -914,7 +1062,7 @@ function buildMachineFrame(spec: PlatformSpec, gaps: Set<string> | undefined): G
 /** A station: rails, lanterns, and the timber that holds it up. */
 function buildStationFrame(spec: PlatformSpec, index: number, gaps: Set<string> | undefined): GeometryBuilder {
   const support = supportFor(index);
-  const b = new GeometryBuilder();
+  const b = new WorksBuilder();
   for (const sq of spec.claim) {
     const o = sqOffset(sq);
     box(b, 0.66, 0.1, 0.66, o.x, -0.13, o.z, WOOD_DARK);
@@ -978,11 +1126,11 @@ const TRACK_STEEL = new Color(0.32, 0.31, 0.3);
 
 /**
  * A mine track along a polyline (course space): a steel rail on a timber
- * stringer each side, sleepers square to the track at an even spacing, and
- * braced bents down to the floor. Vertical runs (the trolley's lift) are
- * left to their guide posts.
+ * stringer each side, sleepers square to the track at an even spacing (cut
+ * short along the segments flagged `narrow`), and braced bents down to the
+ * floor. Vertical runs (the trolley's lift) are left to their guide posts.
  */
-function addTrack(b: GeometryBuilder, pts: Vector3[], self: number): void {
+function addTrack(b: GeometryBuilder, pts: Vector3[], narrow: readonly boolean[] = []): void {
   const up = new Vector3(0, 1, 0);
   const t = new Vector3();
   const side = new Vector3();
@@ -1009,7 +1157,7 @@ function addTrack(b: GeometryBuilder, pts: Vector3[], self: number): void {
     while (d < len) {
       const c = p.clone().addScaledVector(t, d).addScaledVector(nrm, -0.07);
       basis.makeBasis(side, nrm, t).setPosition(c);
-      b.add(new BoxGeometry(GAUGE * 2 + 0.3, 0.05, 0.13), basis, k % 3 === 0 ? WOOD : WOOD_DARK);
+      b.add(new BoxGeometry(GAUGE * 2 + (narrow[k] ? 0.1 : 0.3), 0.05, 0.13), basis, k % 3 === 0 ? WOOD : WOOD_DARK);
       d += SLEEPER_GAP;
     }
     carry = d - len;
@@ -1084,7 +1232,7 @@ function lanternCorner(spec: PlatformSpec, index: number, gaps: Set<string> | un
 
 /** Fixed works: hoist head frames, rails, the wheel's tower, cables. */
 function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
-  const b = new GeometryBuilder();
+  const b = new WorksBuilder();
   const v = (p: V3, dx = 0, dy = 0, dz = 0) => new Vector3(p.x + dx, p.y + dy, p.z + dz);
 
   for (let i = 0; i < PLATFORMS.length; i++) {
@@ -1176,11 +1324,13 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
       });
       const onTrack = (k: number) => path[k].y - RAIL_DROP - railY[k] < MAX_DIP;
       // Split the clear stretches into runs, each laid as one track.
-      const runs: Vector3[][] = [];
+      const runs: { pts: Vector3[]; narrow: boolean[] }[] = [];
       let current: Vector3[] = [];
+      let narrow: boolean[] = [];
       const endRun = () => {
-        if (current.length > 1) runs.push(current);
+        if (current.length > 1) runs.push({ pts: current, narrow });
         current = [];
+        narrow = [];
       };
       const ra = new Vector3();
       const rb = new Vector3();
@@ -1200,27 +1350,30 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
         }
         const ya = railY[k];
         const yb = railY[k + 1];
-        // Rails, and the sleepers' full width just under them.
-        let clear = true;
-        for (const w of [GAUGE, GAUGE + 0.15]) {
+        // Rails, and the sleepers' full width just under them. Where only
+        // the sleepers' ends would brush something (a station corner the
+        // track runs past), the sleepers there are cut short rather than
+        // leaving a hole in the track.
+        const clearAt = (w: number, drop: number): boolean => {
           const sx = (-dz / len) * w;
           const sz = (dx / len) * w;
-          const drop = w > GAUGE ? 0.07 : 0;
           for (const s of [-1, 1]) {
             ra.set(p.x + s * sx, ya - drop, p.z + s * sz);
             rb.set(q.x + s * sx, yb - drop, q.z + s * sz);
-            if (!clearOfMachines(ra, rb, 0.05, i, true)) clear = false;
+            if (!clearOfMachines(ra, rb, 0.05, i, true)) return false;
           }
-        }
-        if (!clear) {
+          return true;
+        };
+        if (!clearAt(GAUGE, 0)) {
           endRun();
           continue;
         }
         if (current.length === 0) current.push(new Vector3(p.x, ya, p.z));
         current.push(new Vector3(q.x, yb, q.z));
+        narrow.push(!clearAt(GAUGE + 0.15, 0.07));
       }
       endRun();
-      for (const r of runs) addTrack(b, r, i);
+      for (const r of runs) addTrack(b, r.pts, r.narrow);
       if (spec.kind === 'corner') {
         // The lift half of the trolley's run rides up between guide posts.
         const lo = path[0].clone().setY(path[0].y - RAIL_DROP);
@@ -1304,7 +1457,7 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
   mesh.name = 'TimberWorks';
 
   // The rotating rim, spokes and pins.
-  const wb = new GeometryBuilder();
+  const wb = new WorksBuilder();
   const rim = new TorusGeometry(WHEEL_R, 0.09, 6, 48);
   wb.add(rim, new Matrix4().makeRotationY(Math.PI / 2), WOOD);
   wb.add(new TorusGeometry(WHEEL_R - 0.35, 0.05, 5, 48), new Matrix4().makeRotationY(Math.PI / 2), WOOD_DARK);
@@ -1378,7 +1531,7 @@ function supportFor(index: number): { post: number; wall: boolean } {
 // --------------------------------------------------------- the beacon ----
 
 function buildBrazier(): Group {
-  const b = new GeometryBuilder();
+  const b = new WorksBuilder();
   // Stone plinth, iron tripod and basket.
   b.add(new CylinderGeometry(0.34, 0.42, 0.5, 8), placed(0, 0.25, 0), new Color(0.32, 0.31, 0.33));
   for (let k = 0; k < 3; k++) {
@@ -1429,7 +1582,7 @@ export const TORCH_SCALE = 1.5;
 export const TORCH_HEAD = 0.32;
 
 function buildTorch(): Group {
-  const b = new GeometryBuilder();
+  const b = new WorksBuilder();
   b.add(new CylinderGeometry(0.022, 0.028, 0.5, 8), placed(0, 0, 0), WOOD);
   b.add(new CylinderGeometry(0.045, 0.035, 0.12, 8), placed(0, 0.28, 0), new Color(0.2, 0.15, 0.1));
   const group = new Group();
@@ -1567,7 +1720,7 @@ export function buildCave(): CaveVisuals {
     else part.rotation.set(0, spec.part === 'LeftWing' ? -Math.PI / 2 : Math.PI / 2, 0);
     holder.add(part);
     root.add(holder);
-    const rackB = new GeometryBuilder();
+    const rackB = new WorksBuilder();
     box(rackB, 0.08, 1.0, 0.08, at.x + rack.x, at.y + 0.5, at.z + rack.z, WOOD_DARK);
     box(rackB, Math.abs(Math.sin(rack.yaw)) > 0.5 ? 0.08 : 0.7, 0.06, Math.abs(Math.sin(rack.yaw)) > 0.5 ? 0.7 : 0.08, at.x + rack.x, at.y + 0.98, at.z + rack.z, WOOD);
     root.add(new Mesh(rackB.build(), frameMat));
@@ -1585,7 +1738,7 @@ export function buildCave(): CaveVisuals {
   brazierGroup.position.set(topAt.x + GRID.pitch * 2 + 0.1, topAt.y - 0.1, topAt.z + GRID.pitch * 0.5);
   root.add(brazierGroup);
   const brazier = brazierGroup.position.clone().add(new Vector3(0, 1.3, 0));
-  const plinth = new GeometryBuilder();
+  const plinth = new WorksBuilder();
   box(plinth, 0.9, 0.12, 1.4, brazierGroup.position.x, topAt.y - 0.16, brazierGroup.position.z, WOOD_DARK);
   // The torch hook on a post north of the centre square.
   const hook = new Vector3(topAt.x - 0.05, topAt.y + 1.1, topAt.z - HALF - 0.22);

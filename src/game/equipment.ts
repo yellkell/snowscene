@@ -62,6 +62,8 @@ export const equipment = {
   clipped: signal(false),
   /** Bumped on any change so UI can refresh. */
   version: signal(0),
+  /** Items that stay in your hands: you can't put them in the pack (the tutorial's poles). */
+  locked: new Set<ItemId>(),
 };
 
 function changed(): void {
@@ -88,8 +90,10 @@ export function removeFromPack(item: ItemId): boolean {
   return true;
 }
 
+/** A new kit: the pack holds `contents`, and nothing is locked in hand. */
 export function setPack(contents: Partial<Record<ItemId, number>>): void {
   equipment.pack.clear();
+  equipment.locked.clear();
   for (const [item, count] of Object.entries(contents)) {
     if (count && count > 0) equipment.pack.set(item as ItemId, count);
   }
@@ -146,6 +150,13 @@ export function take(item: ItemId, side: Handedness): boolean {
   }
   changed();
   return true;
+}
+
+/** Empty both hands without packing anything (set down, left behind). */
+export function clearHands(): void {
+  equipment.inHand.left = null;
+  equipment.inHand.right = null;
+  changed();
 }
 
 /** Use up a single item held in a hand (thermos sip, warmer, flare). */

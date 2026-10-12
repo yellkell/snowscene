@@ -1,11 +1,13 @@
 /**
- * What you carry in the tutorial: just the poles in your hands. The pack
- * starts empty (it fills with whatever you stow in it).
+ * What you carry in the tutorial: just the poles in your hands, and they
+ * stay there (they never go in the pack; at the cliff you lean them
+ * against the rock). The pack starts empty and fills with what you find.
  */
 
-import { equipPair, setPack } from './equipment.js';
+import { equipment, equipPair, setPack } from './equipment.js';
 
 export function startTutorialKit(): void {
   setPack({});
   equipPair('poles');
+  equipment.locked.add('poles');
 }

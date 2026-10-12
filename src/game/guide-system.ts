@@ -322,7 +322,7 @@ export class GuideSystem extends createSystem({}) {
       const t = survivors.time.peek();
       return {
         step: 'SNOW SURVIVORS',
-        title: 'You fell!',
+        title: survivors.won.peek() ? 'You survived!' : 'You fell!',
         body:
           `Survived ${Math.floor(t / 60)}:${(t % 60).toString().padStart(2, '0')} with ${survivors.kills.peek().toLocaleString()} kills, level ${survivors.level.peek()}. ` +
           `Best combo ${survivors.bestCombo.peek().toLocaleString()}` +
@@ -334,8 +334,8 @@ export class GuideSystem extends createSystem({}) {
       step: 'SNOW SURVIVORS',
       title: 'Survive the horde',
       body: immersive
-        ? 'Pole about: fist, plant, pull. Your weapons fire by themselves. Walk over crystals, orbs and chests to grow stronger. Go fast to ram straight through them.'
-        : 'W to move, drag to look. Your weapons fire by themselves. Walk over crystals, orbs and chests to grow stronger. Go fast to ram straight through them.',
+        ? 'Hold out for 8 minutes. Pole about: fist, plant, pull. Your weapons fire by themselves. Level up, then poke the upgrade you want. Go fast to ram straight through them.'
+        : 'Hold out for 8 minutes. W to move, drag to look. Your weapons fire by themselves. Level up, then press 1-4 for the upgrade you want. Go fast to ram straight through them.',
       hint: '',
     };
   }

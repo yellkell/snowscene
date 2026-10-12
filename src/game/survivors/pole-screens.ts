@@ -7,8 +7,9 @@
  * - LEFT pole: health. A red dial round the rim drains as you are hurt,
  *   your health in the middle, and your level with a blue experience arc
  *   inside the dial.
- * - RIGHT pole: the run. The clock, your kills, and your combo and speed
- *   bonus underneath.
+ * - RIGHT pole: the run. The time left (a ring round the rim runs down
+ *   with it, and both turn red for the last minute), your kills, and your
+ *   combo and speed bonus underneath.
  *
  * The screen turns in its bezel so the writing always reads upright to
  * your eyes, however the pole is rolled. On a desktop, where the poles
@@ -184,11 +185,15 @@ export class PoleScreens {
     const ctx = p.ctx;
     const c = PX / 2;
     this.face(ctx);
-    // A thin ring of the combo window, ticking down.
-    this.arc(ctx, 116, 8, s.combo >= 10 ? s.comboLeft : 0, s.combo >= 500 ? '#ff6b6b' : '#ffb347');
-    const mm = Math.floor(s.time / 60);
-    const ss = Math.floor(s.time % 60);
-    ctx.fillStyle = '#ffffff';
+    // The run's clock round the rim, and the combo window inside it.
+    const last = s.timeLeft <= 60;
+    const blink = last && s.timeLeft > 0 ? 0.65 + 0.35 * Math.sin(this.clock * 8) : 1;
+    this.arc(ctx, 118, 8, s.timeLeft / (s.time + s.timeLeft || 1), last ? `rgba(255,107,107,${blink})` : '#9fd6ff');
+    this.arc(ctx, 104, 6, s.combo >= 10 ? s.comboLeft : 0, s.combo >= 500 ? '#ff6b6b' : '#ffb347');
+    const left = Math.ceil(s.timeLeft);
+    const mm = Math.floor(left / 60);
+    const ss = left % 60;
+    ctx.fillStyle = last ? '#ff8a8a' : '#ffffff';
     ctx.font = '800 58px system-ui, sans-serif';
     ctx.fillText(`${mm}:${ss.toString().padStart(2, '0')}`, c, c - 46);
     ctx.fillStyle = '#ffd166';
