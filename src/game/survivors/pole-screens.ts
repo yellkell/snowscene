@@ -12,11 +12,13 @@
  *   combo and speed bonus underneath.
  *
  * The screen turns in its bezel so the writing always reads upright to
- * your eyes, however the pole is rolled. On a desktop, where the poles
+ * your eyes, however the pole is rolled. On a desktop they ride the
+ * handles too whenever the handles are in view; where the poles
  * swing below the view, the two pommels sit in the bottom corners instead.
  */
 
 import {
+  type Camera,
   CanvasTexture,
   CircleGeometry,
   CylinderGeometry,
@@ -76,6 +78,7 @@ export class PoleScreens {
   private redraw = 0;
   private clock = 0;
   private readonly top = new Vector3();
+  private readonly ndc = new Vector3();
   private readonly n = new Vector3();
   private readonly u = new Vector3();
   private readonly r = new Vector3();
@@ -94,12 +97,20 @@ export class PoleScreens {
    * Seat each pommel on its pole's top cap, turned so the writing reads
    * upright from `head` (with `up` the head's up direction).
    */
-  update(dt: number, head: Vector3, up: Vector3, yaw: number, presenting: boolean, s: HudState): void {
+  update(dt: number, head: Vector3, up: Vector3, yaw: number, presenting: boolean, s: HudState, camera?: Camera): void {
     this.clock += dt;
     for (const p of this.pommels) {
       const pole: Mesh | undefined = poleMeshes[p.side];
       const g = p.group;
-      if (presenting) {
+      // On the handle: always in a headset, and on a desktop while the
+      // handle's top is on screen.
+      let onPole = presenting;
+      if (!presenting && pole?.visible && camera) {
+        pole.updateWorldMatrix(true, false);
+        this.ndc.set(0, 0, TOP_Z).applyMatrix4(pole.matrixWorld).project(camera);
+        onPole = this.ndc.z < 1 && Math.abs(this.ndc.x) < 0.88 && this.ndc.y > -0.88 && this.ndc.y < 0.9;
+      }
+      if (onPole) {
         g.visible = !!pole?.visible;
         if (!g.visible || !pole) continue;
         pole.updateWorldMatrix(true, false);
@@ -127,7 +138,7 @@ export class PoleScreens {
       this.basis.makeBasis(this.r, this.u, this.n);
       g.position.copy(this.top);
       g.quaternion.setFromRotationMatrix(this.basis);
-      g.scale.setScalar(presenting ? 1 : 1.25);
+      g.scale.setScalar(onPole ? 1 : 1.25);
     }
     this.redraw -= dt;
     if (this.redraw > 0) return;

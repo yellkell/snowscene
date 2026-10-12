@@ -20,6 +20,7 @@
 
 import {
   BackSide,
+  type Camera,
   CanvasTexture,
   Color,
   DoubleSide,
@@ -69,6 +70,8 @@ export interface HudView {
   gaze: Vector3;
   up: Vector3;
   presenting: boolean;
+  /** The eye's camera (a desktop checks whether the pole handles are on screen). */
+  camera?: Camera;
 }
 
 // ---------------------------------------------------------- rings of light ---
@@ -274,7 +277,7 @@ export class SurvivorsHud {
     this.clock += dt;
     const head = view.head;
     this.updateSign(dt, view);
-    this.poleScreens.update(dt, head, view.up, view.yaw, view.presenting, state);
+    this.poleScreens.update(dt, head, view.up, view.yaw, view.presenting, state, view.camera);
     this.updateBossRing(head, state);
 
     // Red at the edge of sight: a bite flashes it; low health pulses it.

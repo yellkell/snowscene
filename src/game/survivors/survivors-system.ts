@@ -435,7 +435,7 @@ export class SurvivorsSystem extends createSystem({}) {
     const bossHp = this.bossHealth();
     this.hud.update(
       dt,
-      { head: this.head, yaw, gaze: this.gaze, up: this.headUp, presenting: this.world.renderer.xr.isPresenting },
+      { head: this.head, yaw, gaze: this.gaze, up: this.headUp, presenting: this.world.renderer.xr.isPresenting, camera: this.world.camera },
       {
         hp: this.hp,
         maxHp: this.stats.maxHp,
