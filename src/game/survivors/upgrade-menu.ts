@@ -1,6 +1,8 @@
 /**
- * Snow Survivors' upgrade choice: the clock stops, and three cards (four
- * from a treasure chest) fan out in an arc at chest height, within reach.
+ * Snow Survivors' upgrade choice: time stops (the world beyond arm's reach
+ * dims behind a veil, the horde freezes mid-stride, the music drops), and
+ * three cards (four from a treasure chest) fan out in an arc at chest
+ * height, within reach.
  * Poke the one you want with a fingertip, or a controller, or the pole
  * handle in your fist: push it through its face and it is yours. On a
  * desktop the keys 1-4 pick.
@@ -12,6 +14,7 @@
 
 import {
   AdditiveBlending,
+  BackSide,
   CanvasTexture,
   Color,
   DoubleSide,
@@ -19,9 +22,11 @@ import {
   Mesh,
   MeshBasicMaterial,
   PlaneGeometry,
+  SphereGeometry,
   SRGBColorSpace,
   Vector3,
 } from '@iwsdk/core';
+import { drawTitle } from './title-card.js';
 import { type Evolution, evolvesWith, type Stats, type Upgrade } from './upgrades.js';
 
 /** Card size (m), and how far round you (m from the head) the arc sits. */
@@ -38,6 +43,11 @@ const ARM_DEPTH = 0.018;
 const ARM_DELAY = 0.55;
 const CPX_W = 320;
 const CPX_H = 448;
+const HEAD_W = 1024;
+const HEAD_H = 256;
+/** The veil: how far out it hangs round your head, and how dark it gets. */
+const VEIL_R = 0.95;
+const VEIL_ALPHA = 0.58;
 
 const ICONS: Record<string, string> = {
   icicles: '❄',
@@ -103,7 +113,9 @@ export class UpgradeMenu {
   readonly root = new Group();
   private readonly cards: Card[] = [];
   private readonly header: Mesh;
-  private readonly headerCanvas = canvas(768, 150);
+  private readonly headerCanvas = canvas(HEAD_W, HEAD_H);
+  /** Dims the world beyond arm's reach while time is stopped. */
+  private readonly veil: Mesh;
   private count = 0;
   private age = 0;
   /** -1 while choosing; the card picked while the others fall away. */
@@ -123,12 +135,29 @@ export class UpgradeMenu {
     for (let i = 0; i < 4; i++) this.cards.push(this.buildCard(i));
     const { texture } = this.headerCanvas;
     this.header = new Mesh(
-      new PlaneGeometry(0.5, (0.5 * 150) / 768),
+      new PlaneGeometry(0.56, (0.56 * HEAD_H) / HEAD_W),
       new MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false, side: DoubleSide }),
     );
     this.header.renderOrder = 41;
     this.header.name = 'UpgradeMenuHeader';
     this.root.add(this.header);
+    // Drawn over the world but behind anything nearer than it (cards,
+    // hands, poles), so only what is out of reach goes dark.
+    this.veil = new Mesh(
+      new SphereGeometry(VEIL_R, 32, 16),
+      new MeshBasicMaterial({
+        color: new Color(0.02, 0.05, 0.13),
+        transparent: true,
+        opacity: 0,
+        side: BackSide,
+        depthWrite: false,
+        toneMapped: false,
+        fog: false,
+      }),
+    );
+    this.veil.renderOrder = 35;
+    this.veil.name = 'TimeStopVeil';
+    this.root.add(this.veil);
   }
 
   private buildCard(i: number): Card {
@@ -204,7 +233,9 @@ export class UpgradeMenu {
       (card.glow.material as MeshBasicMaterial).color.set(offers[i].color);
     }
     this.drawHeader(title, color);
-    this.header.position.set(head.x - Math.sin(yaw) * reach, y + CARD_H / 2 + 0.06, head.z - Math.cos(yaw) * reach);
+    this.header.position.set(head.x - Math.sin(yaw) * reach, y + CARD_H / 2 + 0.075, head.z - Math.cos(yaw) * reach);
+    this.veil.position.copy(head);
+    (this.veil.material as MeshBasicMaterial).opacity = 0;
     this.look.set(head.x, head.y, head.z);
     this.header.lookAt(this.look);
     this.header.scale.setScalar(0.001);
@@ -250,6 +281,7 @@ export class UpgradeMenu {
       if (key >= 0 && key < this.count && chosen === null && this.age > 0.25) chosen = this.pick(key);
       const h = Math.min(1, this.age / 0.25);
       this.header.scale.setScalar(Math.max(0.001, h));
+      (this.veil.material as MeshBasicMaterial).opacity = VEIL_ALPHA * Math.min(1, this.age / 0.3);
     } else {
       // The pick flares and lifts toward you; the rest drop away.
       this.outro += dt;
@@ -271,6 +303,8 @@ export class UpgradeMenu {
         }
       }
       this.header.scale.setScalar(Math.max(0.001, 1 - t));
+      // Time starts again as the veil lifts.
+      (this.veil.material as MeshBasicMaterial).opacity = VEIL_ALPHA * (1 - t) * (1 - t);
       if (t >= 1) this.close();
     }
     return chosen;
@@ -300,24 +334,8 @@ export class UpgradeMenu {
 
   private drawHeader(title: string, color: string): void {
     const { ctx, texture } = this.headerCanvas;
-    const W = 768;
-    const H = 150;
-    ctx.clearRect(0, 0, W, H);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'alphabetic';
-    ctx.lineJoin = 'round';
-    ctx.font = '900 76px system-ui, sans-serif';
-    ctx.lineWidth = 14;
-    ctx.strokeStyle = 'rgba(10, 22, 48, 0.92)';
-    ctx.strokeText(title, W / 2, 86);
-    ctx.fillStyle = color;
-    ctx.fillText(title, W / 2, 86);
-    const sub = this.desktop ? `Press 1–${this.count} to choose` : 'Poke one to choose';
-    ctx.font = '700 34px system-ui, sans-serif';
-    ctx.lineWidth = 9;
-    ctx.strokeText(sub, W / 2, 136);
-    ctx.fillStyle = '#e6f3ff';
-    ctx.fillText(sub, W / 2, 136);
+    const sub = this.desktop ? `Time stopped · press 1–${this.count}` : 'Time stopped · poke a card';
+    drawTitle(ctx, HEAD_W, HEAD_H, title, sub, color, 104);
     texture.needsUpdate = true;
   }
 

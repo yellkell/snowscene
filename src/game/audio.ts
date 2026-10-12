@@ -401,6 +401,25 @@ class SnowAudio {
     this.burst(600, 0.5, 1.4, 0.25, 'lowpass');
   }
 
+  /** Time stopping: everything drops away in a falling, muffled whoomp. */
+  timeStop(): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(420, t);
+    osc.frequency.exponentialRampToValueAtTime(55, t + 0.5);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.28, t + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+    osc.connect(gain).connect(this.master!);
+    osc.start(t);
+    osc.stop(t + 0.65);
+    this.burst(500, 0.6, 0.5, 0.18, 'lowpass');
+  }
+
   /** Upgrade cards fanning out: a rising shimmer of glass. */
   cards(): void {
     [784, 987.77, 1174.66, 1567.98].forEach((f, i) => this.tone(f, 0.4, 0.07, 'triangle', i * 0.055));

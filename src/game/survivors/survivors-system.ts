@@ -149,6 +149,8 @@ export class SurvivorsSystem extends createSystem({}) {
   private bosses = 0;
   private bossName = '';
   private bossMaxHp = 1;
+  /** The run's own clock for animation: it stops while you choose. */
+  private simClock = 0;
   private nextOrb = 8;
   private nextVacuum = 80;
   private nextHeart = 20;
@@ -217,15 +219,6 @@ export class SurvivorsSystem extends createSystem({}) {
     this.root.visible = false;
     this.world.createTransformEntity(this.root, { persistent: true });
     this.world.createTransformEntity(this.hud.root, { persistent: true });
-    // Frost letters crumble into ice along their width.
-    this.hud.onCrumble = (x, y, z, width, yaw) => {
-      const rx = Math.cos(yaw);
-      const rz = -Math.sin(yaw);
-      for (let k = 0; k < 7; k++) {
-        const o = (k / 6 - 0.5) * width;
-        this.shards.burst(x + rx * o, y, z + rz * o, 6, 0xcfeaff, 0.07, 1.6, 2.2);
-      }
-    };
     this.world.createTransformEntity(this.hud.hurt, { persistent: true });
     this.world.createTransformEntity(this.menu.root, { persistent: true });
     this.menu.onHover = () => audio.tick();
@@ -274,6 +267,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.hud.hide();
       this.menu.close();
       this.choices.length = 0;
+      audio.setMusicLevel(1, 0.5);
       this.horde.clear();
       this.resetTuning();
       const tutorial = sceneRefs.tutorialRoot?.object3D;
@@ -307,6 +301,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.lastSecond = -1;
     this.menu.close();
     this.choices.length = 0;
+    audio.setMusicLevel(1, 0.5);
     this.spawnAcc = 0;
     this.nextChest = 30;
     this.nextTitan = 75;
@@ -378,9 +373,14 @@ export class SurvivorsSystem extends createSystem({}) {
     if (mvx * mvx + mvz * mvz > 1e-6) this.moveDir.set(mvx, 0, mvz).normalize();
     this.lastHead.copy(this.head);
 
-    // An upgrade choice stops the clock: the horde freezes where it stands.
+    // An upgrade choice stops time: the horde, their bolts and boulders,
+    // the crystals and every effect freeze where they are (only the cards
+    // and your hands move) until you poke one.
     const choosing = !this.dead && this.updateChoice(dt);
     this.hud.held = this.menu.choosing;
+    const simDt = choosing ? 0 : dt;
+    this.simClock += simDt;
+    const clock = this.simClock;
     if (!this.dead && !choosing) {
       this.time += dt;
       this.levelBlast = false;
@@ -396,7 +396,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.hp = Math.min(this.stats.maxHp, this.hp + this.stats.regen * dt);
       this.ram(dt, px, pz);
       this.hurl(dt, px, pz);
-      this.fireWeapons(dt, time, px, pz);
+      this.fireWeapons(dt, clock, px, pz);
       this.moveBolts(dt);
       this.collect(dt, px, pz);
       this.recycle(px, pz);
@@ -407,15 +407,16 @@ export class SurvivorsSystem extends createSystem({}) {
       this.blades.mesh.count = 0;
     }
 
-    this.swarm.update(this.horde, time, this.scene.fog as Fog | null);
-    this.shards.tick(dt);
+    this.swarm.update(this.horde, clock, this.scene.fog as Fog | null);
+    this.shards.tick(simDt);
     this.bolts.draw();
-    this.novas.tick(dt);
-    this.zaps.tick(dt);
-    this.gems.draw(time);
-    this.hurls.draw(time);
-    this.orbs.tick(dt, time);
-    this.chests.tick(dt, time);
+    this.novas.tick(simDt);
+    this.zaps.tick(simDt);
+    this.gems.draw(clock);
+    this.hurls.draw(clock);
+    this.orbs.tick(simDt, clock);
+    this.chests.tick(simDt, clock);
+    void time;
     this.killSounds = Math.max(0, this.killSounds - dt * 14);
     this.biteSound = Math.max(0, this.biteSound - dt);
 
@@ -804,6 +805,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.menu.close();
     this.choices.length = 0;
     this.hud.held = false;
+    audio.setMusicLevel(1, 0.5);
     // The tallies first: the guide panel reads them as soon as `dead` flips.
     survivors.time.value = Math.floor(this.time);
     survivors.kills.value = this.kills;
@@ -870,6 +872,8 @@ export class SurvivorsSystem extends createSystem({}) {
       this.menu.open(next.title, next.color, offers, this.stats, this.head, getHeadYaw(this.world), presenting);
       poleTuning.gain = 0;
       this.hud.clearSign();
+      audio.setMusicLevel(0.3, 0.3);
+      audio.timeStop();
       audio.cards();
       for (const hand of HANDS) this.pulse(hand.handedness, 0.4, 60);
     }
@@ -885,6 +889,7 @@ export class SurvivorsSystem extends createSystem({}) {
     if (picked) {
       this.grant(picked, true);
       this.applyTuning();
+      if (this.choices.length === 0) audio.setMusicLevel(1, 0.8);
       audio.pick();
       const at = this.menu.pickedPosition(this.pickAt);
       this.shards.burst(at.x, at.y, at.z, 16, parseInt(picked.color.slice(1), 16), 0.011, 0.9, 0.8);
@@ -921,6 +926,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.menu.close();
     this.choices.length = 0;
     this.hud.held = false;
+    audio.setMusicLevel(1, 0.5);
     survivors.time.value = RUN_SECONDS;
     survivors.kills.value = this.kills;
     survivors.level.value = this.lvl;

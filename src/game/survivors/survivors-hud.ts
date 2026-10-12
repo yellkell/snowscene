@@ -6,12 +6,13 @@
  *   feet (red inside, blue outside), filling clockwise from where you face.
  *   Glance down at your poles and they are there.
  * - Low on health, the edge of your view pulses red; a bite flashes it.
- * - Announcements (upgrades, combos, stampedes, bosses) are FROST LETTERS:
- *   they burst up into the air a few metres ahead, high over the horde's
- *   heads where nothing hides them, drift round to stay where you look,
- *   then crumble into ice that rains down. A headline can carry a smaller
- *   line under it. Big news (a boss, an evolution, the clock) cuts in;
- *   smaller news waits its turn.
+ * - Announcements (upgrades, combos, stampedes, bosses) are TITLE CARDS
+ *   (title-card.ts): spaced capitals with a glow in the message's colour on
+ *   a dark ribbon, a few metres ahead and high over the horde's heads where
+ *   nothing hides them. They settle in, drift round to stay where you look,
+ *   then lift away and fade. A headline can carry a smaller line under it.
+ *   Big news (a boss, an evolution, the clock) cuts in; smaller news waits
+ *   its turn.
  * - A boss has a red ring of light on the snow round it that drains as it
  *   takes damage (the same language as your own rings).
  * - The rest is built into the poles: a round screen in a steel pommel on
@@ -34,9 +35,9 @@ import {
   SRGBColorSpace,
   Vector3,
 } from '@iwsdk/core';
-import { sceneRefs } from '../scene-system.js';
 import { PoleScreens } from './pole-screens.js';
 import { duneHeight } from './survivors-level.js';
+import { drawTitle } from './title-card.js';
 
 export interface HudState {
   hp: number;
@@ -136,14 +137,15 @@ function canvasTexture(cw: number, ch: number): { ctx: CanvasRenderingContext2D;
 // -------------------------------------------------------- frost letters ---
 
 const SIGN_CW = 1024;
-const SIGN_CH = 340;
-const SIGN_W = 5.6;
+const SIGN_CH = 320;
+const SIGN_W = 4.8;
 const SIGN_H = (SIGN_W * SIGN_CH) / SIGN_CW;
 /** How far ahead the letters stand, and how far above your eyes their foot is. */
 const SIGN_DIST = 8;
-const SIGN_LIFT = 0.55;
-const RISE = 0.4;
-const CRUMBLE = 0.45;
+const SIGN_LIFT = 0.6;
+/** Seconds to settle in, and to lift away. */
+const RISE = 0.32;
+const CRUMBLE = 0.4;
 /** Lines waiting for the stage, at most. */
 const QUEUE = 4;
 
@@ -160,8 +162,6 @@ export class SurvivorsHud {
   readonly root = new Group();
   /** The red shell round your head (bites, low health). */
   readonly hurt: Mesh;
-  /** Called as frost letters crumble (x, y, z, width, facing yaw) so the system can burst ice. */
-  onCrumble: ((x: number, y: number, z: number, width: number, yaw: number) => void) | null = null;
 
   private readonly hpRing = lightRing(0.42, 0.5, 0xff4d6d);
   private readonly xpRing = lightRing(0.56, 0.62, 0x4dc3ff);
@@ -174,7 +174,6 @@ export class SurvivorsHud {
   private signLife = 0;
   private signPriority = 0;
   private placeSign = false;
-  private crumbled = false;
   private signYaw = 0;
   /** Bearing of the letters from you (yaw), eased round after your gaze. */
   private signBearing = 0;
@@ -247,89 +246,15 @@ export class SurvivorsHud {
   }
 
   private show(line: Line): void {
-    const { text, color, sub } = line;
-    const ctx = this.signTex.ctx;
-    ctx.clearRect(0, 0, SIGN_CW, SIGN_CH);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'alphabetic';
-    // Long headlines break in two at the space nearest the middle.
-    const lines = [text];
-    if (text.length > 22) {
-      let best = -1;
-      for (let i = 0; i < text.length; i++) {
-        if (text[i] === ' ' && (best < 0 || Math.abs(i - text.length / 2) < Math.abs(best - text.length / 2))) best = i;
-      }
-      if (best > 0) lines.splice(0, 1, text.slice(0, best), text.slice(best + 1));
-    }
-    const subH = sub ? 70 : 0;
-    let size = lines.length > 1 ? 104 : 132;
-    const widest = () => Math.max(...lines.map((l) => ctx.measureText(l).width));
-    ctx.font = `900 ${size}px system-ui, sans-serif`;
-    while ((widest() > SIGN_CW - 60 || size * 1.06 * lines.length > SIGN_CH - 40 - subH) && size > 40) {
-      size -= 4;
-      ctx.font = `900 ${size}px system-ui, sans-serif`;
-    }
-    ctx.lineJoin = 'round';
-    const lineH = size * 1.06;
-    const bottom = SIGN_CH - 26 - subH;
-    lines.forEach((l, n) => {
-      const base = bottom - (lines.length - 1 - n) * lineH;
-      // A soft dark halo so it reads against bright sky, a dark rim, the
-      // message's colour as a glow line inside it, then ice: white at the
-      // top shading to pale blue.
-      ctx.save();
-      ctx.shadowColor = 'rgba(4, 12, 34, 0.85)';
-      ctx.shadowBlur = 28;
-      ctx.lineWidth = Math.max(10, size * 0.2);
-      ctx.strokeStyle = 'rgba(12, 26, 58, 0.92)';
-      ctx.strokeText(l, SIGN_CW / 2, base);
-      ctx.restore();
-      ctx.lineWidth = Math.max(4, size * 0.075);
-      ctx.strokeStyle = color;
-      ctx.strokeText(l, SIGN_CW / 2, base);
-      const ice = ctx.createLinearGradient(0, base - size * 0.8, 0, base);
-      ice.addColorStop(0, '#ffffff');
-      ice.addColorStop(0.55, '#e9f7ff');
-      ice.addColorStop(1, '#a6d6f5');
-      ctx.fillStyle = ice;
-      ctx.fillText(l, SIGN_CW / 2, base);
-      // Frost glints on the letters.
-      ctx.fillStyle = 'rgba(255,255,255,0.95)';
-      const w = ctx.measureText(l).width;
-      for (let k = 0; k < 14; k++) {
-        const gx = SIGN_CW / 2 - w / 2 + Math.random() * w;
-        const gy = base - Math.random() * size * 0.7;
-        ctx.fillRect(gx - 1, gy - 4, 2, 8);
-        ctx.fillRect(gx - 4, gy - 1, 8, 2);
-      }
-    });
-    if (sub) {
-      let s2 = 50;
-      ctx.font = `800 ${s2}px system-ui, sans-serif`;
-      while (ctx.measureText(sub).width > SIGN_CW - 80 && s2 > 26) {
-        s2 -= 2;
-        ctx.font = `800 ${s2}px system-ui, sans-serif`;
-      }
-      const base = SIGN_CH - 30;
-      ctx.save();
-      ctx.shadowColor = 'rgba(4, 12, 34, 0.9)';
-      ctx.shadowBlur = 18;
-      ctx.lineWidth = 10;
-      ctx.strokeStyle = 'rgba(12, 26, 58, 0.92)';
-      ctx.strokeText(sub, SIGN_CW / 2, base);
-      ctx.restore();
-      ctx.fillStyle = color;
-      ctx.fillText(sub, SIGN_CW / 2, base);
-    }
+    drawTitle(this.signTex.ctx, SIGN_CW, SIGN_CH, line.text, line.sub, line.color);
     this.signTex.texture.needsUpdate = true;
     this.signLife = Math.max(line.seconds, RISE + CRUMBLE + 0.8);
     this.signAge = 0;
     this.signPriority = line.priority;
-    this.crumbled = false;
     this.placeSign = true;
   }
 
-  /** Crumble whatever stands now (an upgrade choice wants the stage). */
+  /** Send whatever stands now away (an upgrade choice wants the stage). */
   clearSign(): void {
     if (this.signAge < this.signLife) this.signAge = Math.max(this.signAge, this.signLife - CRUMBLE);
   }
@@ -417,29 +342,22 @@ export class SurvivorsHud {
     const left = this.signLife - this.signAge;
     let lift = 0;
     if (this.signAge < RISE) {
-      // Shooting up into place, overshooting a little, as it grows.
+      // Settling in: down a touch from a little larger, fading up.
       const t = this.signAge / RISE;
-      const back = 1 + 2.2 * Math.pow(t - 1, 3) + 1.2 * Math.pow(t - 1, 2);
-      lift = -0.9 * (1 - back);
-      mesh.scale.set(0.6 + 0.4 * back, Math.max(0.01, back), 1);
-      material.opacity = Math.min(1, t * 3);
-      if (this.signAge - dt <= 0) {
-        this.tmp.set(x, head.y + SIGN_LIFT, z);
-        sceneRefs.puffs?.emit(this.tmp, 10, 1.2);
-      }
+      const e = 1 - Math.pow(1 - t, 3);
+      const k = 1.12 - 0.12 * e;
+      mesh.scale.set(k, k, 1);
+      lift = 0.12 * (1 - e);
+      material.opacity = e;
     } else if (left < CRUMBLE) {
-      if (!this.crumbled) {
-        this.crumbled = true;
-        this.onCrumble?.(x, head.y + SIGN_LIFT + SIGN_H * 0.45, z, SIGN_W * 0.8, this.signYaw);
-      }
+      // Lifting away and fading, stretching a little wider as it goes.
       const t = 1 - left / CRUMBLE;
-      mesh.scale.set(1 + 0.08 * t, Math.max(0.01, 1 - t * t), 1);
-      lift = -0.25 * t;
-      material.opacity = 1 - t;
+      const e = t * t;
+      mesh.scale.set(1 + 0.06 * e, 1 - 0.05 * e, 1);
+      lift = 0.3 * e;
+      material.opacity = 1 - e;
     } else {
-      // A slow breath while it stands.
-      const b = 1 + 0.012 * Math.sin(this.signAge * 3.2);
-      mesh.scale.set(b, b, 1);
+      mesh.scale.set(1, 1, 1);
       material.opacity = 1;
     }
     mesh.position.set(x, head.y + SIGN_LIFT + lift, z);
