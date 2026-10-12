@@ -28,6 +28,9 @@ import { PoleMarks } from './pole-marks.js';
 import { game, Phase } from './state.js';
 import { buildPole, POLE_TIP_DISTANCE } from './world-builders.js';
 
+/** The two pole meshes, for things built onto them (Snow Survivors' handle screens). */
+export const poleMeshes: Partial<Record<'left' | 'right', Mesh>> = {};
+
 /** Body speed per unit of planted-hand speed. */
 const POLE_GAIN = 1.5;
 const MAX_SPEED = 3.4;
@@ -111,6 +114,8 @@ export class PoleSystem extends createSystem({}) {
       };
     };
     this.poles = { left: makePole(), right: makePole() };
+    poleMeshes.left = this.poles.left.mesh;
+    poleMeshes.right = this.poles.right.mesh;
 
     this.cleanupFuncs.push(
       // A fresh mountain (or a restart) starts with untrodden snow.

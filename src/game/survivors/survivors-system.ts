@@ -163,6 +163,7 @@ export class SurvivorsSystem extends createSystem({}) {
   private readonly moveDir = new Vector3(0, 0, -1);
   private readonly puffAt = new Vector3();
   private readonly gaze = new Vector3();
+  private readonly headUp = new Vector3();
   private readonly bossAt = new Vector3();
 
   init(): void {
@@ -233,7 +234,7 @@ export class SurvivorsSystem extends createSystem({}) {
       audio.setMusic('night');
       toast('Snow Survivors! Pole about. Your weapons fire by themselves; walk over what they drop.', 6);
       this.pendingHint = this.world.renderer.xr.isPresenting
-        ? { text: 'Look at your left wrist', color: '#c9e8ff' }
+        ? { text: 'Your stats are on your pole handles', color: '#c9e8ff' }
         : { text: 'Health and XP round your feet', color: '#c9e8ff' };
       this.busy = false;
     });
@@ -384,10 +385,11 @@ export class SurvivorsSystem extends createSystem({}) {
     this.biteSound = Math.max(0, this.biteSound - dt);
 
     this.player.head.getWorldDirection(this.gaze).negate();
+    this.headUp.set(0, 1, 0).transformDirection(this.player.head.matrixWorld);
     const bossHp = this.bossHealth();
     this.hud.update(
       dt,
-      { head: this.head, yaw, gaze: this.gaze, presenting: this.world.renderer.xr.isPresenting },
+      { head: this.head, yaw, gaze: this.gaze, up: this.headUp, presenting: this.world.renderer.xr.isPresenting },
       {
         hp: this.hp,
         maxHp: this.stats.maxHp,

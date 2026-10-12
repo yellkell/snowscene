@@ -11,37 +11,28 @@
  *   then crumble into ice.
  * - A boss has a red ring of light on the snow round it that drains as it
  *   takes damage (the same language as your own rings).
- * - The rest (clock, kills, level, combo, speed bonus) is on the SURVIVOR'S
- *   BRACER strapped to your left wrist: a padded cuff with brass rims and a
- *   little steel-cased screen on the inside of the wrist. It is always
- *   there; turn the inside of the wrist toward your face (hand open) and
- *   look at it, and the screen lights up. On a desktop the bracer hangs low
- *   in the corner of the view.
+ * - The rest is built into the poles: a round screen in a steel pommel on
+ *   top of each handle (health on the left, the run on the right; see
+ *   pole-screens.ts). Glance down at your hands to read them.
  */
 
 import {
   BackSide,
-  BoxGeometry,
   CanvasTexture,
   Color,
-  CylinderGeometry,
   DoubleSide,
   Group,
-  Matrix4,
   Mesh,
   MeshBasicMaterial,
-  MeshStandardMaterial,
   PlaneGeometry,
-  Quaternion,
   RingGeometry,
   ShaderMaterial,
   SphereGeometry,
   SRGBColorSpace,
-  TorusGeometry,
   Vector3,
 } from '@iwsdk/core';
-import { hands } from '../hand-input.js';
 import { sceneRefs } from '../scene-system.js';
+import { PoleScreens } from './pole-screens.js';
 import { duneHeight } from './survivors-level.js';
 
 export interface HudState {
@@ -70,8 +61,9 @@ export interface HudState {
 export interface HudView {
   head: Vector3;
   yaw: number;
-  /** Unit vector the eyes look along. */
+  /** Unit vectors the eyes look along, and the head's up. */
   gaze: Vector3;
+  up: Vector3;
   presenting: boolean;
 }
 
@@ -136,83 +128,6 @@ function canvasTexture(cw: number, ch: number): { ctx: CanvasRenderingContext2D;
   return { ctx: canvas.getContext('2d')!, texture };
 }
 
-// --------------------------------------------------------------- bracer ---
-
-/** The wrist, in the left grip's frame: behind the hand, along +Z. */
-const WRIST_Z = 0.08;
-const CUFF_R = 0.036;
-/** The screen, on the inside of the wrist (+X is out of the left palm). */
-const SCREEN_W = 0.04;
-const SCREEN_H = 0.054;
-const SCREEN_CW = 320;
-const SCREEN_CH = 432;
-const OPEN_FACING = 0.55;
-const STAY_FACING = 0.3;
-const OPEN_GAZE_COS = Math.cos((30 * Math.PI) / 180);
-const STAY_GAZE_COS = Math.cos((45 * Math.PI) / 180);
-const PACK_UP = 0.6;
-
-/**
- * The Survivor's Bracer, in the left grip's local frame (-Z toward the
- * fingers, +X out of the palm): a padded cuff round the wrist with a brass
- * rim at each end, a steel case on the inside of the wrist with the screen
- * set into it, and a status light at the finger end.
- */
-function buildBracer(screenMap: CanvasTexture): { group: Group; screen: Mesh; led: Mesh } {
-  const group = new Group();
-  group.name = 'SurvivorsBracer';
-  const cloth = new MeshStandardMaterial({ color: 0x2a3550, roughness: 0.95, metalness: 0 });
-  const brass = new MeshStandardMaterial({ color: 0xc9a04a, roughness: 0.35, metalness: 0.75 });
-  const steel = new MeshStandardMaterial({ color: 0x8d99aa, roughness: 0.4, metalness: 0.6 });
-
-  const cuff = new Mesh(new CylinderGeometry(CUFF_R, CUFF_R * 1.08, 0.075, 18, 1, true).rotateX(Math.PI / 2), cloth);
-  (cuff.material as MeshStandardMaterial).side = DoubleSide;
-  cuff.position.z = WRIST_Z;
-  group.add(cuff);
-  for (const dz of [-0.036, 0.036]) {
-    const rim = new Mesh(new TorusGeometry(CUFF_R * (dz < 0 ? 1.02 : 1.1), 0.0035, 6, 24), brass);
-    rim.position.z = WRIST_Z + dz;
-    group.add(rim);
-  }
-  // A couple of stitched straps across the cuff, on the back of the wrist.
-  for (const dz of [-0.016, 0.016]) {
-    const strap = new Mesh(new BoxGeometry(0.004, 0.022, 0.009), brass);
-    strap.position.set(-CUFF_R - 0.002, 0, WRIST_Z + dz);
-    group.add(strap);
-  }
-
-  // The case: a steel block on the inside of the wrist, a brass bezel, the screen.
-  const caseMesh = new Mesh(new BoxGeometry(0.012, SCREEN_W + 0.012, SCREEN_H + 0.014), steel);
-  caseMesh.position.set(CUFF_R + 0.004, 0, WRIST_Z);
-  group.add(caseMesh);
-  const bezelT = 0.003;
-  const bx = CUFF_R + 0.0105;
-  for (const [y, z, h, d] of [
-    [(SCREEN_W + bezelT) / 2, 0, bezelT, SCREEN_H + bezelT * 2],
-    [-(SCREEN_W + bezelT) / 2, 0, bezelT, SCREEN_H + bezelT * 2],
-    [0, (SCREEN_H + bezelT) / 2, SCREEN_W, bezelT],
-    [0, -(SCREEN_H + bezelT) / 2, SCREEN_W, bezelT],
-  ] as const) {
-    const edge = new Mesh(new BoxGeometry(0.003, h, d), brass);
-    edge.position.set(bx, y, WRIST_Z + z);
-    group.add(edge);
-  }
-  // The screen faces +X; its "up" is toward the fingers (-Z) and its right
-  // is -Y, so it reads upright when you turn the inside of the wrist to you.
-  const screen = new Mesh(
-    new PlaneGeometry(SCREEN_W, SCREEN_H).applyMatrix4(
-      new Matrix4().makeBasis(new Vector3(0, -1, 0), new Vector3(0, 0, -1), new Vector3(1, 0, 0)),
-    ),
-    new MeshBasicMaterial({ map: screenMap, toneMapped: false }),
-  );
-  screen.position.set(bx + 0.0005, 0, WRIST_Z);
-  group.add(screen);
-  const led = new Mesh(new SphereGeometry(0.0028, 8, 6), new MeshBasicMaterial({ color: 0x66ff99, toneMapped: false }));
-  led.position.set(CUFF_R + 0.0095, 0, WRIST_Z - SCREEN_H / 2 - 0.0085);
-  group.add(led);
-  return { group, screen, led };
-}
-
 // -------------------------------------------------------- frost letters ---
 
 const SIGN_CW = 1024;
@@ -224,7 +139,7 @@ const RISE = 0.35;
 const CRUMBLE = 0.4;
 
 export class SurvivorsHud {
-  /** Everything world-placed (rings, letters, bracer). */
+  /** Everything world-placed (rings, letters, the pole screens). */
   readonly root = new Group();
   /** The red shell round your head (bites, low health). */
   readonly hurt: Mesh;
@@ -244,27 +159,12 @@ export class SurvivorsHud {
   private crumbled = false;
   private signYaw = 0;
 
-  private readonly screenTex = canvasTexture(SCREEN_CW, SCREEN_CH);
-  private readonly bracer: Group;
-  private readonly screen: Mesh;
-  private readonly led: Mesh;
-  private lit = false;
-  private glow = 0;
-  private poseFor = 0;
-  private lostFor = 0;
-  private screenRedraw = 0;
+  private readonly poleScreens = new PoleScreens();
 
   private hurtLevel = 0;
   private xpFlash = 0;
   private lastLevel = 1;
   private clock = 0;
-  private readonly toHand = new Vector3();
-  private readonly toHead = new Vector3();
-  private readonly bx = new Vector3();
-  private readonly by = new Vector3();
-  private readonly bz = new Vector3();
-  private readonly basis = new Matrix4();
-  private readonly q = new Quaternion();
   private readonly tmp = new Vector3();
 
   constructor() {
@@ -286,12 +186,7 @@ export class SurvivorsHud {
     this.sign.visible = false;
     this.root.add(this.sign);
 
-    const bracer = buildBracer(this.screenTex.texture);
-    this.bracer = bracer.group;
-    this.screen = bracer.screen;
-    this.led = bracer.led;
-    this.bracer.visible = false;
-    this.root.add(this.bracer);
+    this.root.add(this.poleScreens.root);
 
     this.hurt = new Mesh(
       new SphereGeometry(0.25, 16, 12),
@@ -369,8 +264,7 @@ export class SurvivorsHud {
     this.hurtLevel = 0;
     this.signAge = this.signLife = 0;
     this.sign.visible = false;
-    this.lit = false;
-    this.glow = 0;
+    this.poleScreens.hide();
     this.lastLevel = 1;
   }
 
@@ -380,7 +274,7 @@ export class SurvivorsHud {
     const head = view.head;
     this.updateRings(dt, head, view.yaw, state);
     this.updateSign(dt, view);
-    this.updateBracer(dt, view, state);
+    this.poleScreens.update(dt, head, view.up, view.yaw, view.presenting, state);
     this.updateBossRing(head, state);
 
     // Red at the edge of sight: a bite flashes it; low health pulses it.
@@ -457,115 +351,6 @@ export class SurvivorsHud {
       mesh.scale.set(1, 1, 1);
       material.opacity = 1;
     }
-  }
-
-  /** The bracer on the left wrist (or hanging in the desktop view's corner). */
-  private updateBracer(dt: number, view: HudView, s: HudState): void {
-    const g = this.bracer;
-    const head = view.head;
-    const h = hands.left;
-    let look = false;
-    if (view.presenting) {
-      g.visible = h.tracked;
-      if (!g.visible) return;
-      g.position.copy(h.position);
-      g.quaternion.copy(h.quaternion);
-      // Lit while you turn the inside of the wrist to your face and look at it.
-      this.toHand.subVectors(h.position, head).normalize();
-      this.toHead.copy(this.toHand).negate();
-      const facing = h.palmNormal.dot(this.toHead);
-      const gaze = view.gaze.dot(this.toHand);
-      const ok = !h.grip && h.palmNormal.y < PACK_UP;
-      const holding = this.lit ? ok && facing > STAY_FACING && gaze > STAY_GAZE_COS : ok && facing > OPEN_FACING && gaze > OPEN_GAZE_COS;
-      if (holding) {
-        this.poseFor += dt;
-        this.lostFor = 0;
-      } else {
-        this.lostFor += dt;
-        this.poseFor = 0;
-      }
-      look = this.lit ? this.lostFor < 0.35 : this.poseFor >= 0.1;
-    } else {
-      // Desktop: low in the left corner, screen turned to the eyes.
-      g.visible = true;
-      const fx = -Math.sin(view.yaw);
-      const fz = -Math.cos(view.yaw);
-      g.position.set(head.x + fx * 0.3 + fz * 0.14, head.y - 0.14, head.z + fz * 0.3 - fx * 0.14);
-      // Grip +X (the screen) toward the eyes, grip -Z (toward the fingers) up.
-      this.bx.subVectors(head, g.position).normalize();
-      this.bz.set(0, -1, 0).addScaledVector(this.bx, this.bx.y).normalize();
-      this.by.crossVectors(this.bz, this.bx);
-      this.basis.makeBasis(this.bx, this.by, this.bz);
-      g.quaternion.setFromRotationMatrix(this.basis);
-      // Shift so the screen (not the grip) sits at that spot, and enlarge it.
-      this.tmp.set(0, 0, WRIST_Z).applyQuaternion(g.quaternion);
-      g.position.sub(this.tmp);
-      look = true;
-    }
-    this.lit = look;
-    this.glow += ((look ? 1 : 0.22) - this.glow) * Math.min(1, dt * 10);
-    (this.screen.material as MeshBasicMaterial).color.setScalar(this.glow);
-    // Status light: green when healthy, amber, then a red blink.
-    const f = s.hp / s.maxHp;
-    const led = (this.led.material as MeshBasicMaterial).color;
-    if (f > 0.6) led.setRGB(0.3, 1.4, 0.6);
-    else if (f > 0.3) led.setRGB(1.5, 0.9, 0.2);
-    else led.setRGB(Math.sin(this.clock * 10) > 0 ? 1.8 : 0.3, 0.1, 0.1);
-    this.screenRedraw -= dt;
-    if (this.screenRedraw > 0) return;
-    this.screenRedraw = look ? 0.2 : 0.6;
-    this.drawScreen(s);
-  }
-
-  private drawScreen(s: HudState): void {
-    const ctx = this.screenTex.ctx;
-    const W = SCREEN_CW;
-    const H = SCREEN_CH;
-    const bg = ctx.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, '#16233a');
-    bg.addColorStop(1, '#0a111f');
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, W, H);
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'center';
-    // Clock.
-    const mm = Math.floor(s.time / 60);
-    const ss = Math.floor(s.time % 60);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '800 76px system-ui, sans-serif';
-    ctx.fillText(`${mm}:${ss.toString().padStart(2, '0')}`, W / 2, 58);
-    // Kills.
-    ctx.fillStyle = '#ffd166';
-    ctx.font = '800 46px system-ui, sans-serif';
-    ctx.fillText(s.kills.toLocaleString(), W / 2, 124);
-    ctx.font = '700 18px system-ui, sans-serif';
-    ctx.fillText('KILLS', W / 2, 156);
-    // Health and level bars.
-    const bar = (y: number, frac: number, color: string, label: string) => {
-      ctx.fillStyle = 'rgba(255,255,255,0.12)';
-      ctx.beginPath();
-      ctx.roundRect(22, y, W - 44, 40, 20);
-      ctx.fill();
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.roundRect(22, y, Math.max(40, (W - 44) * Math.max(0, Math.min(1, frac))), 40, 20);
-      ctx.fill();
-      ctx.fillStyle = '#fff';
-      ctx.font = '800 24px system-ui, sans-serif';
-      ctx.fillText(label, W / 2, y + 21);
-    };
-    bar(184, s.hp / s.maxHp, s.hp / s.maxHp < 0.3 ? '#ff3b4e' : '#ff6b81', `${Math.ceil(s.hp)} / ${Math.round(s.maxHp)}`);
-    bar(236, s.xp / s.xpNext, '#4dc3ff', `LEVEL ${s.level}`);
-    // Combo and speed.
-    ctx.font = '800 34px system-ui, sans-serif';
-    ctx.fillStyle = s.combo >= 10 ? (s.combo >= 500 ? '#ff6b6b' : '#ffb347') : 'rgba(200,215,235,0.45)';
-    ctx.fillText(s.combo >= 10 ? `${s.combo.toLocaleString()} COMBO` : 'NO COMBO', W / 2, 318);
-    ctx.fillStyle = s.speedMul >= 1.05 ? '#7fe9ff' : 'rgba(200,215,235,0.45)';
-    ctx.fillText(`SPEED ×${s.speedMul.toFixed(1)}`, W / 2, 372);
-    // Scanline sheen, so it reads as a little screen.
-    ctx.fillStyle = 'rgba(255,255,255,0.035)';
-    for (let y = 0; y < H; y += 6) ctx.fillRect(0, y, W, 2);
-    this.screenTex.texture.needsUpdate = true;
   }
 
   /** A boss's health: a red ring of light on the snow round it, draining clockwise. */
