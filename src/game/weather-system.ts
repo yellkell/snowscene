@@ -29,7 +29,7 @@ import { currentLevel, type FogRange } from './level.js';
 import { getHeadWorld } from './rig.js';
 import { sceneRefs } from './scene-system.js';
 import { cloudSeaUniforms, skyUniforms } from './sky.js';
-import { game } from './state.js';
+import { game, Phase } from './state.js';
 import { mulberry32, RANGES_INNER_RADIUS, smoothstep, TUTORIAL_CENTER_X, TUTORIAL_CENTER_Z, valueNoise } from './terrain.js';
 import { FOG_COLOR } from './world-builders.js';
 
@@ -267,11 +267,17 @@ export class WeatherSystem extends createSystem({}) {
       far += (48 - far) * k;
     }
     // Scenery wholly inside the fog costs triangles for nothing: skip it.
+    // From the summit build to the landing the forest stays on its cheap
+    // stand-ins, so nothing pops between detail levels as you fly over it.
+    const phase = game.phase.peek();
+    const lowTrees =
+      level.id === 'tutorial' &&
+      (phase === Phase.Building || phase === Phase.Launch || phase === Phase.Gliding || phase === Phase.Landed);
     for (const item of fogCullables) {
       const d = item.center.distanceTo(this.head) - item.radius;
       item.object.visible = d < Math.min(far + 10, item.maxDistance ?? Infinity);
       if (item.lod && item.object.visible) {
-        const distant = d > item.lod.distance;
+        const distant = lowTrees || d > item.lod.distance;
         item.lod.far.visible = distant;
         for (const o of item.lod.near) o.visible = !distant;
       }

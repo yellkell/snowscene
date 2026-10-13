@@ -1,12 +1,13 @@
 /**
- * Fog on the glide: soft banks of mist along the way from the launch to the
- * landing, some below you, some right on your line so you fly through them.
- * Inside a bank the scene fog thickens (see `mistHooks`, read by the
- * weather system) and the bank's own billboard thins away, so going in and
- * out reads as passing through mist rather than a flat sprite. Otherwise the
- * glide's air is clear: the weather's fog is pushed well out while you fly.
+ * The glide's air: clear. From the launch the weather's fog is pushed well
+ * out (`mistHooks.haze`, read by the weather system), so the flight stays
+ * as clear as the summit.
  *
- * One draw: an instanced, camera-facing quad per bank.
+ * It can also lay soft banks of mist along the way from the launch to the
+ * landing, some right on your line so you fly through them: inside a bank
+ * the scene fog thickens and the bank's own billboard thins away (one draw,
+ * an instanced camera-facing quad per bank). They are off (BANKS_ON): the
+ * glide is meant to stay as clear as the summit.
  */
 
 import {
@@ -27,6 +28,8 @@ import { getHeadWorld } from './rig.js';
 import { game, Phase } from './state.js';
 import { mulberry32 } from './terrain.js';
 
+/** Lay banks of mist along the glide (off: the glide stays clear). */
+const BANKS_ON = false;
 const BANKS = 10;
 /** Bank width as a share of the glide's length, and its limits (m). */
 const SIZE_MIN = 0.1;
@@ -215,6 +218,7 @@ export class GlideMistSystem extends createSystem({}) {
     this.opacity += ((active ? OPACITY : 0) - this.opacity) * (1 - Math.exp(-dt / 1.5));
     this.mesh.visible = this.opacity > 0.01;
     mistHooks.haze = this.opacity / OPACITY;
+    if (!BANKS_ON) this.mesh.visible = false;
     if (!this.mesh.visible) {
       mistHooks.inside = 0;
       return;
