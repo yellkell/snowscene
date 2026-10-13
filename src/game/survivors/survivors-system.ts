@@ -84,6 +84,12 @@ import {
   type WeaponId,
 } from './upgrades.js';
 
+/** An enemy's body is this much of its radius up off the snow (its middle). */
+const BODY = 0.6;
+/** Bolts that fly every way skim at the height of a typical body in the crowd... */
+const CROWD_BODY = 0.3;
+/** ...and none flies higher than this over the snow once down (it would skim over the small ones). */
+const MAX_CRUISE = 0.45;
 /** Seconds the result of a run stands before its two cards come up. */
 const END_WAIT = 2.6;
 /** A bloater's burst: how far it reaches, and how close it hurts you. */
@@ -742,7 +748,7 @@ export class SurvivorsSystem extends createSystem({}) {
       if (h.kind[i] !== GLITTER || h.dead[i]) continue;
       h.timer[i] -= dt;
       const r = h.radius(i);
-      if (trail) this.impacts.spawn(h.x[i] + (Math.random() - 0.5) * r, r * (0.8 + Math.random()), h.z[i] + (Math.random() - 0.5) * r, 0xffd166, 0.35);
+      if (trail) this.impacts.spawn(h.x[i] + (Math.random() - 0.5) * r, duneHeight(h.x[i], h.z[i]) + r * (0.8 + Math.random()), h.z[i] + (Math.random() - 0.5) * r, 0xffd166, 0.35);
       if (h.timer[i] > 0) continue;
       h.dead[i] = 1;
       this.shards.burst(h.x[i], 0.3, h.z[i], 30, 0xe8e2d0, 0.1, 2, 2.5);
@@ -1023,11 +1029,12 @@ export class SurvivorsSystem extends createSystem({}) {
     // view. They fly in the colour of the weapon that made the kill, so you
     // can see what is doing the killing where.
     const shatter = this.killTint(k.accent, h.hitBy[i]);
-    this.shards.burst(x, r * 0.6, z, kind === TITAN ? 22 : kind === GHOUL ? 2 : 4, shatter, r * 0.16, 1.5 + r, 1.5 + r * 0.8);
+    const by = this.bodyY(i);
+    this.shards.burst(x, by, z, kind === TITAN ? 22 : kind === GHOUL ? 2 : 4, shatter, r * 0.16, 1.5 + r, 1.5 + r * 0.8);
     // A pop of light where it went (a few a frame).
     if (this.killFlares < KILL_FLARES && this.spendFlare()) {
       this.killFlares++;
-      this.impacts.spawn(x, r * 0.7, z, shatter, 0.5 + r * 0.6);
+      this.impacts.spawn(x, by, z, shatter, 0.5 + r * 0.6);
     }
     if (kind === GLITTER) {
       this.glitterDown(x, z, r);
@@ -1048,7 +1055,7 @@ export class SurvivorsSystem extends createSystem({}) {
         h.kvz[j] = Math.sin(a) * 4.5;
         h.kT[j] = 0.3;
       }
-      this.shards.burst(x, r * 0.8, z, 16, k.accent, 0.08, 3, 3);
+      this.shards.burst(x, by, z, 16, k.accent, 0.08, 3, 3);
     }
     this.gems.drop(x, z, k.xp * frenzy);
     if (kind === TITAN) {
@@ -1134,8 +1141,9 @@ export class SurvivorsSystem extends createSystem({}) {
       this.chain++;
       this.chainT = 0;
       this.novas.burst(x, z, BURST_RADIUS, 0xff8a3d);
-      this.impacts.spawn(x, 0.9, z, 0xffb054, 2.6);
-      this.shards.burst(x, 0.9, z, 26, 0xff8a3d, 0.12, 5, 5);
+      const by = duneHeight(x, z) + 0.6;
+      this.impacts.spawn(x, by, z, 0xffb054, 2.6);
+      this.shards.burst(x, by, z, 26, 0xff8a3d, 0.12, 5, 5);
       if (this.chain <= 8 || this.chain % 3 === 0) audio.boom(Math.min(1.2, 0.7 + this.chain * 0.05));
       const n = this.horde.gather(x, z, BURST_RADIUS, this.near);
       for (let j = 0; j < n; j++) {
@@ -1252,6 +1260,20 @@ export class SurvivorsSystem extends createSystem({}) {
     for (const hand of HANDS) this.pulse(hand.handedness, 0.9, 90);
     if (picked.id === END_AGAIN.id) this.start();
     else this.exit();
+  }
+
+  /** Height of enemy i's body (its middle, `k` of its radius up) over the snow under it. */
+  private bodyY(i: number, k = BODY): number {
+    const h = this.horde;
+    return duneHeight(h.x[i], h.z[i]) + h.radius(i) * k;
+  }
+
+  /** The point on enemy i's body that something coming from along (dx, dz) strikes (into `out`). */
+  private onBody(i: number, dx: number, dz: number, out: Vector3): Vector3 {
+    const h = this.horde;
+    const d = Math.hypot(dx, dz) || 1;
+    const r = h.radius(i) * 0.7;
+    return out.set(h.x[i] - (dx / d) * r, this.bodyY(i), h.z[i] - (dz / d) * r);
   }
 
   /** Take one small hit flash from the allowance, if there is one left. */
@@ -1407,7 +1429,7 @@ export class SurvivorsSystem extends createSystem({}) {
       if (burst < 220 && Math.hypot(h.x[i] - px, h.z[i] - pz) < 30) {
         burst++;
         const r = h.radius(i);
-        this.shards.burst(h.x[i], r * 0.6, h.z[i], 3, KINDS[h.kind[i]].accent, r * 0.16, 2.5, 3);
+        this.shards.burst(h.x[i], this.bodyY(i), h.z[i], 3, KINDS[h.kind[i]].accent, r * 0.16, 2.5, 3);
       }
     }
     h.sweep();
@@ -1690,7 +1712,10 @@ export class SurvivorsSystem extends createSystem({}) {
         const dz = this.horde.z[t] - pz;
         const d = Math.hypot(dx, dz) || 1;
         const pierce = hail ? 99 : L >= 7 ? 4 : L >= 4 ? 2 : 0;
-        this.bolts.fire(px, y, pz, dx / d, dz / d, hail ? 30 : 24, (7 + 3.5 * L) * s.might, (hail ? 0.5 : 0.35) * s.area, pierce, 1.3, hail ? 0xbff4ff : 0x8fe3ff, hail ? BOLT_HAIL : BOLT_ICICLE);
+        // Down from your chest onto its body (low on a big one, so a
+        // piercing icicle goes on through the small ones behind it), and
+        // down among them within a few steps whatever it is aimed at.
+        this.bolts.fire(px, y, pz, dx / d, dz / d, hail ? 30 : 24, (7 + 3.5 * L) * s.might, (hail ? 0.5 : 0.35) * s.area, pierce, 1.3, hail ? 0xbff4ff : 0x8fe3ff, hail ? BOLT_HAIL : BOLT_ICICLE, Math.min(MAX_CRUISE, this.horde.radius(t) * BODY), Math.min(d, 3));
       }
     }
 
@@ -1704,7 +1729,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.compassTurn += 2.39996;
       for (let k = 0; k < dirs; k++) {
         const a = this.compassTurn + (k / dirs) * Math.PI * 2;
-        this.bolts.fire(px, y, pz, Math.sin(a), Math.cos(a), star ? 20 : 17, (6 + 3 * L) * s.might, 0.3 * s.area, star ? 3 : 1, 1.15, star ? 0xa8ffd0 : 0x7dffb2, star ? BOLT_STAR : BOLT_SHARD);
+        this.bolts.fire(px, y, pz, Math.sin(a), Math.cos(a), star ? 20 : 17, (6 + 3 * L) * s.might, 0.3 * s.area, star ? 3 : 1, 1.15, star ? 0xa8ffd0 : 0x7dffb2, star ? BOLT_STAR : BOLT_SHARD, CROWD_BODY, 1.5);
       }
     }
 
@@ -1774,8 +1799,9 @@ export class SurvivorsSystem extends createSystem({}) {
         if (thunder) {
           const tx = this.horde.x[t];
           const tz = this.horde.z[t];
-          this.zaps.zap(tx + (Math.random() - 0.5) * 2, 11, tz + (Math.random() - 0.5) * 2, tx, this.horde.radius(t) * 0.8, tz);
-          this.impacts.spawn(tx, 0.4, tz, 0xfffbb0, 2.6);
+          const ty = this.bodyY(t);
+          this.zaps.zap(tx + (Math.random() - 0.5) * 2, ty + 11, tz + (Math.random() - 0.5) * 2, tx, ty, tz);
+          this.impacts.spawn(tx, ty, tz, 0xfffbb0, 2.6);
           this.novas.burst(tx, tz, 1.8, 0xfffbb0);
         }
       }
@@ -1783,7 +1809,7 @@ export class SurvivorsSystem extends createSystem({}) {
         this.hitSet.add(t);
         const tx = this.horde.x[t];
         const tz = this.horde.z[t];
-        const ty = this.horde.radius(t) * 0.8;
+        const ty = this.bodyY(t);
         this.zaps.zap(lx, ly, lz, tx, ty, tz);
         this.hit(t, dmg, tx - lx, tz - lz, 1.5);
         // A flash on the first few it strikes: the bolt itself marks the rest.
@@ -1792,9 +1818,9 @@ export class SurvivorsSystem extends createSystem({}) {
           const f = this.horde.nearest(tx, tz, 5, this.hitSet);
           if (f >= 0) {
             this.hitSet.add(f);
-            this.zaps.zap(tx, ty, tz, this.horde.x[f], this.horde.radius(f) * 0.8, this.horde.z[f]);
+            this.zaps.zap(tx, ty, tz, this.horde.x[f], this.bodyY(f), this.horde.z[f]);
             this.hit(f, dmg, this.horde.x[f] - tx, this.horde.z[f] - tz, 1.5);
-            if (c < LIGHTNING_FLARES && this.spendFlare()) this.impacts.spawn(this.horde.x[f], this.horde.radius(f) * 0.8, this.horde.z[f], 0xfffbb0, 0.7);
+            if (c < LIGHTNING_FLARES && this.spendFlare()) this.impacts.spawn(this.horde.x[f], this.bodyY(f), this.horde.z[f], 0xfffbb0, 0.7);
           }
         }
         lx = tx;
@@ -2195,7 +2221,7 @@ export class SurvivorsSystem extends createSystem({}) {
         // A spark where the blade bites (a few a frame at most).
         if (this.bladeSparks < 6 && this.spendFlare()) {
           this.bladeSparks++;
-          this.impacts.spawn(this.horde.x[i], this.horde.radius(i) * 0.7, this.horde.z[i], 0xffe28a, 0.45);
+          this.impacts.spawn(this.horde.x[i], this.bodyY(i), this.horde.z[i], 0xffe28a, 0.45);
         }
         this.hit(i, dmg, this.horde.x[i] - px, this.horde.z[i] - pz, 4);
       }
@@ -2212,6 +2238,7 @@ export class SurvivorsSystem extends createSystem({}) {
       }
       b.x[i] += b.vx[i] * dt;
       b.z[i] += b.vz[i] * dt;
+      b.fly(i, Math.hypot(b.vx[i], b.vz[i]) * dt, duneHeight(b.x[i], b.z[i]));
       if (b.cool[i] > 0) {
         b.cool[i] -= dt;
         continue;
@@ -2221,14 +2248,17 @@ export class SurvivorsSystem extends createSystem({}) {
       const e = this.near[0];
       this.src = b.kind[i] >= BOLT_SHARD ? SRC.compass : SRC.icicles;
       this.hit(e, b.dmg[i], b.vx[i], b.vz[i], 2.5);
+      // The flash and the shatter on the enemy itself: on its body, on the
+      // side the bolt came in from.
+      const hit = this.onBody(e, b.vx[i], b.vz[i], this.pickAt);
       if (this.boltFlares < BOLT_FLARES && this.spendFlare()) {
         this.boltFlares++;
-        this.impacts.spawn(b.x[i], b.y[i], b.z[i], b.color[i], 0.35 + b.radius[i]);
+        this.impacts.spawn(hit.x, hit.y, hit.z, b.color[i], 0.35 + 0.5 * Math.min(1, b.radius[i]));
       }
       // The ice shatters off what it hits (a handful a frame at most).
       if (this.shatters < SHATTERS) {
         this.shatters++;
-        this.shards.burst(b.x[i], b.y[i], b.z[i], 4, b.color[i], 0.035 + 0.05 * b.radius[i], 2.4, 1.6);
+        this.shards.burst(hit.x, hit.y, hit.z, 4, b.color[i], 0.035 + 0.05 * Math.min(1, b.radius[i]), 2.4, 1.6);
       }
       if (b.pierce[i] > 0) {
         b.pierce[i]--;

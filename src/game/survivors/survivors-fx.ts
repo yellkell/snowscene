@@ -309,6 +309,17 @@ export class Bolts {
   readonly cool = new Float32Array(BOLT_CAP);
   readonly color = new Uint32Array(BOLT_CAP);
   readonly kind = new Uint8Array(BOLT_CAP);
+  /**
+   * The flight down from your chest to the bodies of the crowd: the height
+   * it left at, the height it flies at above the snow once down (its
+   * target's body), how far it takes to get down there, how far it has
+   * flown, and how steeply it is diving now (for its pitch).
+   */
+  readonly y0 = new Float32Array(BOLT_CAP);
+  readonly cruise = new Float32Array(BOLT_CAP);
+  readonly drop = new Float32Array(BOLT_CAP);
+  readonly flown = new Float32Array(BOLT_CAP);
+  readonly slope = new Float32Array(BOLT_CAP);
   /** A streak of light behind each one. */
   readonly trail: InstancedMesh;
   /** A soft glow round each one, always facing you: they shine like magic ice. */
@@ -351,10 +362,20 @@ export class Bolts {
     parent.add(this.halo);
   }
 
-  fire(x: number, y: number, z: number, dirX: number, dirZ: number, speed: number, dmg: number, radius: number, pierce: number, life: number, color: number, kind = BOLT_ICICLE): void {
+  /**
+   * Loose a bolt from (x, y, z) along (dirX, dirZ); it dives to fly at
+   * `cruise` m above the snow (the body height of what it is aimed at)
+   * within `drop` m.
+   */
+  fire(x: number, y: number, z: number, dirX: number, dirZ: number, speed: number, dmg: number, radius: number, pierce: number, life: number, color: number, kind = BOLT_ICICLE, cruise = 0.35, drop = 2): void {
     if (this.n >= BOLT_CAP) return;
     const i = this.n++;
     this.kind[i] = kind;
+    this.y0[i] = y;
+    this.cruise[i] = cruise;
+    this.drop[i] = Math.max(0.5, drop);
+    this.flown[i] = 0;
+    this.slope[i] = 0;
     this.x[i] = x;
     this.y[i] = y;
     this.z[i] = z;
@@ -384,6 +405,22 @@ export class Bolts {
     this.cool[i] = this.cool[j];
     this.color[i] = this.color[j];
     this.kind[i] = this.kind[j];
+    this.y0[i] = this.y0[j];
+    this.cruise[i] = this.cruise[j];
+    this.drop[i] = this.drop[j];
+    this.flown[i] = this.flown[j];
+    this.slope[i] = this.slope[j];
+  }
+
+  /** Bolt i has flown `step` m more: bring it down toward the bodies, over the snow under it. */
+  fly(i: number, step: number, ground: number): void {
+    this.flown[i] += step;
+    const k = Math.min(1, this.flown[i] / this.drop[i]);
+    const e = 1 - (1 - k) * (1 - k);
+    const to = ground + this.cruise[i];
+    const y = this.y0[i] + (to - this.y0[i]) * e;
+    this.slope[i] = step > 1e-6 ? (y - this.y[i]) / step : 0;
+    this.y[i] = y;
   }
 
   /**
@@ -414,7 +451,8 @@ export class Bolts {
         this.stars.setColorAt(ns, tmpC.set(this.color[i]).lerp(evolved ? GOLD : WHITE, evolved ? 0.35 : 0.1).multiplyScalar(1.5));
         ns++;
       } else {
-        tmpQ.setFromAxisAngle(UP, heading);
+        // Point first, nosing down as it dives onto them.
+        tmpQ.setFromEuler(tmpE.set(-Math.atan(this.slope[i]), heading, 0, 'YXZ'));
         tmpQ.multiply(spinQ.setFromAxisAngle(Z_AXIS, this.life[i] * 14));
         this.mesh.setMatrixAt(ni, tmpM.compose(tmpP, tmpQ, tmpS));
         this.mesh.setColorAt(ni, tmpC.set(this.color[i]).multiplyScalar(1.5));
@@ -423,7 +461,8 @@ export class Bolts {
       // The streak, as long as a few frames of its flight, fading as it dies.
       const fade = Math.min(1, this.life[i] * 4);
       const near = nearFade(tmpP.distanceTo(eye));
-      tmpQ.setFromAxisAngle(UP, heading);
+      // The streak trails back up the way it came down.
+      tmpQ.setFromEuler(tmpE.set(-Math.atan(this.slope[i]), heading, 0, 'YXZ'));
       const speed = Math.hypot(this.vx[i], this.vz[i]);
       tmpS.set(s, s, Math.min(evolved ? 2.2 : 1.6, speed * 0.05) * s);
       this.trail.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
