@@ -56,7 +56,7 @@ import { tutorialLevel } from '../tutorial-level.js';
 import { BLOATER, BRUTE, CAP, GHOUL, GLITTER, Horde, KINDS, LUNGER, SPLITTER, TITAN } from './horde.js';
 import { billboard, Blades, BOLT_HAIL, BOLT_ICICLE, BOLT_SHARD, BOLT_STAR, Bolts, Chests, fx, Gems, Hurls, Impacts, MIN_GAIN, Novas, Orbs, Zaps } from './survivors-fx.js';
 import { SOURCE_COLORS, SRC, SRC_KEEP } from './weapon-colors.js';
-import { Breath, Comets, Embers, Flames, Rockets } from './fire-fx.js';
+import { Breath, Comets, Embers, Flames, Rockets, Scorches } from './fire-fx.js';
 import { SurvivorsHud } from './survivors-hud.js';
 import { ARENA_X, ARENA_Z, duneHeight, survivorsLevel, survivorsView } from './survivors-level.js';
 import { survivors, survivorsControl } from './survivors-state.js';
@@ -113,10 +113,21 @@ const GLOW_BUDGET = 150;
 const STREAK_CHORD = 20;
 /** Patches of burning snow the ember trail can keep alight at once. */
 const TRAIL_CAP = 90;
+/** Comet craters charred into the snow at once, and how long one lasts (s). */
+const CRATER_CAP = 16;
+const CRATER_LIFE = 6;
+/**
+ * The trail's tongues of flame grow with the patch only so far (a late
+ * Wildfire patch is metres across: its flames were taller than a house);
+ * a wider patch gets more tongues across it instead.
+ */
+const FLAME_TALL = 1.5;
 /** Fire Breath comes from this far out in front of you, and this far below your eyes. */
 const BREATH_OUT = 0.75;
 const BREATH_DOWN = 0.55;
 const FIREWORK_COLORS = [0xff4fd8, 0x4fd2ff, 0xffd84f, 0x7dff6a, 0xff6a4f, 0xb36bff];
+/** A firework's after-crackle. */
+const GLITTER_GOLD = 0xffd36a;
 
 /** Enemies come up out of the snow this far from you... */
 const SPAWN_NEAR = 24;
@@ -164,6 +175,7 @@ export class SurvivorsSystem extends createSystem({}) {
   private impacts!: Impacts;
   private embers!: Embers;
   private flames!: Flames;
+  private scorches!: Scorches;
   private breath!: Breath;
   private rockets!: Rockets;
   private comets!: Comets;
@@ -177,6 +189,12 @@ export class SurvivorsSystem extends createSystem({}) {
   private readonly patchZ = new Float32Array(TRAIL_CAP);
   private readonly patchR = new Float32Array(TRAIL_CAP);
   private readonly patchLife = new Float32Array(TRAIL_CAP);
+  /** Comet craters charred into the snow: where, how wide, seconds left. */
+  private readonly craterX = new Float32Array(CRATER_CAP);
+  private readonly craterZ = new Float32Array(CRATER_CAP);
+  private readonly craterR = new Float32Array(CRATER_CAP);
+  private readonly craterLife = new Float32Array(CRATER_CAP);
+  private craterNext = 0;
   private readonly patchFull = new Float32Array(TRAIL_CAP);
   private patchNext = 0;
   private patchTick = 0;
@@ -326,6 +344,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.hurls = new Hurls(this.root);
     this.impacts = new Impacts(this.root);
     this.embers = new Embers(this.root);
+    this.scorches = new Scorches(this.root);
     this.flames = new Flames(this.root);
     this.breath = new Breath(this.root);
     this.rockets = new Rockets(this.root);
@@ -457,6 +476,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.rockets.clear();
     this.comets.clear();
     this.patchLife.fill(0);
+    this.craterLife.fill(0);
     this.pops.length = 0;
     this.breathT = 0;
     this.breathAlpha = 0;
@@ -1258,7 +1278,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.impacts.live * 1.6 +
       this.blades.mesh.count * 3 +
       this.zaps.live * 2.5 +
-      this.flames.live * 0.6 +
+      this.flames.live * 0.2 +
       this.embers.live * 0.04 +
       this.rockets.n * 2;
     const want = load > GLOW_BUDGET ? Math.max(MIN_GAIN, Math.sqrt(GLOW_BUDGET / load)) : 1;
@@ -1721,7 +1741,7 @@ export class SurvivorsSystem extends createSystem({}) {
       const zero = !!evo.nova;
       this.cd.nova = (3.6 - 0.22 * L) * s.haste * (zero ? 0.75 : 1);
       const radius = (4.2 + 0.65 * L) * s.area * (zero ? 1.4 : 1);
-      this.novas.burst(px, pz, radius, zero ? 0xd8ccff : 0xb9a4ff);
+      this.novas.burst(px, pz, radius, zero ? 0xd8ccff : 0xb9a4ff, true);
       this.src = SRC.nova;
       const n = this.horde.gather(px, pz, radius, this.near);
       const dmg = (14 + 8 * L) * s.might * (zero ? 1.5 : 1);
@@ -1997,7 +2017,10 @@ export class SurvivorsSystem extends createSystem({}) {
   /** Draw the trail's flames and the breath's cone. */
   private drawFire(dt: number, time: number, yaw: number): void {
     const f = this.flames;
+    const sc = this.scorches;
+    const wild = !!this.stats.evolved.trail;
     f.begin();
+    sc.begin();
     for (let i = 0; i < TRAIL_CAP; i++) {
       const life = this.patchLife[i];
       if (life <= 0) continue;
@@ -2005,27 +2028,48 @@ export class SurvivorsSystem extends createSystem({}) {
       const t = 1 - life / this.patchFull[i];
       const strength = Math.min(1, t * 8) * Math.min(1, life / 0.8);
       const r = this.patchR[i];
-      const gy = duneHeight(this.patchX[i], this.patchZ[i]);
-      for (let k = 0; k < 4; k++) {
-        const a = i * 2.3 + k * 1.57;
-        const d = k === 0 ? 0 : r * 0.55;
-        f.add(this.patchX[i] + Math.cos(a) * d, gy, this.patchZ[i] + Math.sin(a) * d, r * (k === 0 ? 1.3 : 0.85), i * 1.7 + k, strength, time, this.head);
+      const x = this.patchX[i];
+      const z = this.patchZ[i];
+      const gy = duneHeight(x, z);
+      // The ground it burns on goes black (and stays a little while after).
+      sc.add(x, z, r * 1.1, 0.8 * Math.min(1, t * 6) * Math.min(1, life / 1.2 + 0.25), i * 2.1);
+      // One tall tongue in the middle, and a ring of lower ones across the
+      // patch: more of them the wider it is.
+      const ring = 3 + Math.min(3, Math.floor(r * 0.8));
+      f.add(x, gy, z, Math.min(r * 1.3, FLAME_TALL), i * 1.7, strength, time, this.head, wild);
+      for (let k = 0; k < ring; k++) {
+        const a = i * 2.3 + (k / ring) * Math.PI * 2;
+        const d = r * (0.45 + 0.25 * ((k * 7 + i) % 3) / 2);
+        f.add(x + Math.cos(a) * d, gy, z + Math.sin(a) * d, Math.min(r * 0.85, FLAME_TALL * 0.7), i * 1.7 + k + 1, strength, time, this.head, wild);
       }
       if (dt > 0 && Math.random() < 0.25 * strength) {
-        this.embers.emit(this.patchX[i] + (Math.random() - 0.5) * r, gy + 0.3, this.patchZ[i] + (Math.random() - 0.5) * r, 0, 1 + Math.random(), 0, 0.6 + Math.random() * 0.4, 0.12);
+        this.embers.emit(x + (Math.random() - 0.5) * r, gy + 0.3, z + (Math.random() - 0.5) * r, 0, 1 + Math.random(), 0, 0.6 + Math.random() * 0.4, 0.12);
+      }
+    }
+    // Comet craters: black and smoking, fading back to snow.
+    for (let i = 0; i < CRATER_CAP; i++) {
+      if (this.craterLife[i] <= 0) continue;
+      this.craterLife[i] -= dt;
+      const left = this.craterLife[i] / CRATER_LIFE;
+      sc.add(this.craterX[i], this.craterZ[i], this.craterR[i], Math.min(1, left * 2.5), i * 1.3);
+      if (dt > 0 && Math.random() < left * 0.6) {
+        const cr = this.craterR[i] * 0.5;
+        const cx = this.craterX[i] + (Math.random() - 0.5) * cr;
+        const cz = this.craterZ[i] + (Math.random() - 0.5) * cr;
+        this.embers.emit(cx, duneHeight(cx, cz) + 0.1, cz, 0, 0.8 + Math.random(), 0, 0.7 + Math.random() * 0.5, 0.14);
       }
     }
     f.end();
+    sc.end();
     const s = this.stats;
+    const dragon = !!s.evolved.breath;
     this.breathAlpha += ((this.breathT > 0 ? 1 : 0) - this.breathAlpha) * Math.min(1, dt * 12);
-    const length = (4.5 + 0.3 * s.weapons.breath) * s.area * (s.evolved.breath ? 1.5 : 1);
-    const width = Math.tan(s.evolved.breath ? 0.55 : 0.42) * length;
+    const length = (4.5 + 0.3 * s.weapons.breath) * s.area * (dragon ? 1.5 : 1);
+    const width = Math.tan(dragon ? 0.55 : 0.42) * length;
     const fx = -Math.sin(yaw);
     const fz = -Math.cos(yaw);
-    this.breath.draw(this.head.x + fx * BREATH_OUT, this.head.y - BREATH_DOWN, this.head.z + fz * BREATH_OUT, yaw, length, width, this.breathAlpha, time);
+    this.breath.draw(this.head.x + fx * BREATH_OUT, this.head.y - BREATH_DOWN, this.head.z + fz * BREATH_OUT, yaw, length, width, this.breathAlpha, time, dragon);
   }
-
-  /** Rockets fly; each that bursts throws sparks of its colour and sets what is under it alight. */
   private moveRockets(dt: number): void {
     const r = this.rockets;
     r.move(dt, this.embers);
@@ -2071,6 +2115,13 @@ export class SurvivorsSystem extends createSystem({}) {
       const v = (4 + Math.random() * 2) * size;
       this.embers.emit(x, by, z, Math.cos(a) * c * v, u * v + 1.5, Math.sin(a) * c * v, 0.7 + Math.random() * 0.5, 0.16 * size + 0.05, color, -1.2);
     }
+    // Then the crackle: slow gold glitter drifting down after the burst.
+    const glitter = Math.round(18 * size);
+    for (let k = 0; k < glitter; k++) {
+      const a = Math.random() * Math.PI * 2;
+      const v = (1 + Math.random() * 2.2) * size;
+      this.embers.emit(x, by + 0.3, z, Math.cos(a) * v, 1 + Math.random() * 1.5, Math.sin(a) * v, 1.2 + Math.random() * 0.6, 0.07, GLITTER_GOLD, -0.35);
+    }
     this.impacts.spawn(x, by, z, color, 1.8 * size);
     this.novas.burst(x, z, radius, color);
     const burn = (3 + 1.5 * this.stats.weapons.fireworks) * this.stats.might;
@@ -2099,7 +2150,14 @@ export class SurvivorsSystem extends createSystem({}) {
       const gy = duneHeight(x, z);
       this.novas.burst(x, z, r * 1.6, 0xff6a2e);
       this.novas.burst(x, z, r, 0xffd27a);
-      this.impacts.spawn(x, gy + 0.8, z, 0xffb054, 4);
+      this.impacts.spawn(x, gy + 0.8, z, 0xffb054, 2.8);
+      // A crater charred into the snow, smoking as it fades.
+      const ci = this.craterNext;
+      this.craterNext = (this.craterNext + 1) % CRATER_CAP;
+      this.craterX[ci] = x;
+      this.craterZ[ci] = z;
+      this.craterR[ci] = r * 1.2;
+      this.craterLife[ci] = CRATER_LIFE;
       this.shards.burst(x, gy + 0.4, z, 40, 0x3a2a24, 0.14, 6, 7);
       for (let k = 0; k < 50; k++) {
         const a = Math.random() * Math.PI * 2;

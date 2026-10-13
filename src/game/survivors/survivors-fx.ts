@@ -806,7 +806,7 @@ function spikeGeometry(): BufferGeometry {
 }
 
 export class Novas {
-  private readonly rings: { ring: Mesh; wall: Mesh; flash: Mesh; t: number; r: number; x: number; y: number; z: number; color: number }[] = [];
+  private readonly rings: { ring: Mesh; wall: Mesh; flash: Mesh; t: number; r: number; x: number; y: number; z: number; color: number; spikes: boolean }[] = [];
   /** Spikes of ice bursting up out of the snow along every ring's front. */
   private readonly spikes: InstancedMesh;
 
@@ -826,7 +826,7 @@ export class Novas {
         parent.add(m);
       }
       ring.name = 'Nova';
-      this.rings.push({ ring, wall, flash, t: 1, r: 1, x: 0, y: 0, z: 0, color: 0xffffff });
+      this.rings.push({ ring, wall, flash, t: 1, r: 1, x: 0, y: 0, z: 0, color: 0xffffff, spikes: false });
     }
     this.spikes = new InstancedMesh(
       spikeGeometry(),
@@ -841,7 +841,8 @@ export class Novas {
     parent.add(this.spikes);
   }
 
-  burst(x: number, z: number, radius: number, color: number): void {
+  /** A blast ring from (x, z) out to `radius`; `spikes` throws up the crown of ice (Frost Nova's own). */
+  burst(x: number, z: number, radius: number, color: number, spikes = false): void {
     const n = this.rings.find((r) => r.t >= 1) ?? this.rings[0];
     n.t = 0;
     n.r = radius;
@@ -850,6 +851,7 @@ export class Novas {
     n.y = y;
     n.z = z;
     n.color = color;
+    n.spikes = spikes;
     for (const m of [n.ring, n.wall, n.flash]) {
       m.position.set(x, y, z);
       (m.material as MeshBasicMaterial).color.set(color).multiplyScalar(1.15);
@@ -863,7 +865,7 @@ export class Novas {
     for (const n of this.rings) {
       if (n.t >= 1) continue;
       n.t = Math.min(1, n.t + dt / 0.5);
-      spikes = this.placeSpikes(n, spikes);
+      if (n.spikes) spikes = this.placeSpikes(n, spikes);
       const t = n.t;
       const e = 1 - Math.pow(1 - t, 3);
       const r = Math.max(0.01, n.r * e);
