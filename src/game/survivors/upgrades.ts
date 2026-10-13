@@ -12,7 +12,7 @@
  * into the Avalanche Rider, ploughing through the horde at speed.
  */
 
-export type WeaponId = 'icicles' | 'blades' | 'compass' | 'nova' | 'lightning' | 'mortar' | 'aura' | 'discs' | 'spikes';
+export type WeaponId = 'icicles' | 'blades' | 'compass' | 'nova' | 'lightning' | 'fireworks' | 'breath' | 'trail' | 'comet';
 
 export const WEAPONS: Record<WeaponId, { name: string; color: string; blurb: string }> = {
   icicles: { name: 'Icicle Volley', color: '#8fe3ff', blurb: 'Shards at the nearest' },
@@ -20,10 +20,10 @@ export const WEAPONS: Record<WeaponId, { name: string; color: string; blurb: str
   compass: { name: 'Compass Shards', color: '#7dffb2', blurb: 'Fires every way at once' },
   nova: { name: 'Frost Nova', color: '#b9a4ff', blurb: 'A blast ring all round' },
   lightning: { name: 'Chain Lightning', color: '#fff27a', blurb: 'Leaps through the crowd' },
-  mortar: { name: 'Avalanche Mortar', color: '#e6f0ff', blurb: 'Lobs snowballs into the thick of them' },
-  aura: { name: 'Frost Aura', color: '#9fe0ff', blurb: 'A blizzard round you that bites and slows' },
-  discs: { name: 'Glacier Discs', color: '#7fd4ff', blurb: 'Ice discs thrown out and back' },
-  spikes: { name: 'Ice Spikes', color: '#b8f0ff', blurb: 'Crystals burst up beneath them' },
+  fireworks: { name: 'Fireworks', color: '#ff7ad9', blurb: 'Rockets that dive on them and burst' },
+  breath: { name: 'Fire Breath', color: '#ff8a3d', blurb: 'A jet of flame wherever you look' },
+  trail: { name: 'Ember Trail', color: '#ffb347', blurb: 'You leave the snow burning behind you' },
+  comet: { name: 'Comet', color: '#ff5a2e', blurb: 'A burning rock on the toughest of them' },
 };
 
 /** Weapons you can carry at once. */
@@ -53,10 +53,10 @@ export const EVOLUTIONS: Evolution[] = [
   { id: 'nova', name: 'Absolute Zero', color: '#d8ccff', blurb: 'freezes the horde solid', passive: 'armor', passiveLevel: 1, passiveName: 'Armour' },
   { id: 'lightning', name: 'Thunderhead', color: '#fffbb0', blurb: 'every strike forks', passive: 'might', passiveLevel: 1, passiveName: 'Might' },
   { id: 'rider', name: 'Avalanche Rider', color: '#7fe9ff', blurb: 'plough through them at speed', passive: 'glide', passiveLevel: 2, passiveName: 'Glide Wax' },
-  { id: 'mortar', name: 'Avalanche', color: '#ffffff', blurb: 'three shells a volley, each a landslide', passive: 'vitality', passiveLevel: 1, passiveName: 'Vitality' },
-  { id: 'aura', name: 'Whiteout', color: '#e0f6ff', blurb: 'a wider blizzard that freezes them', passive: 'regen', passiveLevel: 1, passiveName: 'Regen' },
-  { id: 'discs', name: 'Moon Discs', color: '#bfe8ff', blurb: 'twice as many, flying twice as far', passive: 'magnet', passiveLevel: 1, passiveName: 'Magnet' },
-  { id: 'spikes', name: 'Ice Cathedral', color: '#e8fbff', blurb: 'rings of spikes burst under them', passive: 'pole', passiveLevel: 1, passiveName: 'Pole Power' },
+  { id: 'fireworks', name: 'Grand Finale', color: '#ffa8ec', blurb: 'every burst throws four more', passive: 'vitality', passiveLevel: 1, passiveName: 'Vitality' },
+  { id: 'breath', name: "Dragon's Breath", color: '#ffb36b', blurb: 'a longer, wider, endless roar', passive: 'regen', passiveLevel: 1, passiveName: 'Regen' },
+  { id: 'trail', name: 'Wildfire', color: '#ffd27a', blurb: 'a trail twice as wide that will not go out', passive: 'pole', passiveLevel: 1, passiveName: 'Pole Power' },
+  { id: 'comet', name: 'Meteor Shower', color: '#ff8a5c', blurb: 'three more rocks on the rest of them', passive: 'magnet', passiveLevel: 1, passiveName: 'Magnet' },
 ];
 
 /** Pole Power the Avalanche Rider needs (it stands in for a weapon level). */
@@ -87,7 +87,7 @@ export interface Stats {
 
 export function freshStats(): Stats {
   return {
-    weapons: { icicles: 1, blades: 0, compass: 0, nova: 0, lightning: 0, mortar: 0, aura: 0, discs: 0, spikes: 0 },
+    weapons: { icicles: 1, blades: 0, compass: 0, nova: 0, lightning: 0, fireworks: 0, breath: 0, trail: 0, comet: 0 },
     might: 1,
     haste: 1,
     area: 1,

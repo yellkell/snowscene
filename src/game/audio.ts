@@ -449,16 +449,72 @@ class SnowAudio {
     this.burst(2400, 2, 0.4, 0.06, 'bandpass');
   }
 
-  /** A disc thrown: a short, bright swish. */
-  swish(): void {
-    this.burst(2600, 2.5, 0.16, 0.12, 'bandpass');
-    this.tone(1400, 0.08, 0.025, 'triangle');
+  /** Fireworks going up: a rising whistle. */
+  whistle(): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(900, t);
+    osc.frequency.exponentialRampToValueAtTime(2600 + Math.random() * 600, t + 0.5);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.05, t + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.55);
+    osc.connect(gain).connect(this.master!);
+    osc.start(t);
+    osc.stop(t + 0.6);
+    this.burst(3000, 1.5, 0.5, 0.04, 'bandpass');
   }
 
-  /** Ice spikes bursting up: a glassy crack. */
-  spike(): void {
-    this.burst(4200, 3, 0.07, 0.16, 'bandpass');
-    this.tone(1900 + Math.random() * 600, 0.12, 0.04, 'triangle');
+  /** A firework bursting: a sharp bang and a crackle of sparks after it. */
+  bang(size = 1): void {
+    this.burst(180, 1, 0.3, 0.4 * size, 'lowpass');
+    this.burst(2400, 1, 0.08, 0.2 * size, 'highpass');
+    for (let i = 0; i < 6; i++) {
+      if (!this.ctx) break;
+      const d = 0.12 + Math.random() * 0.5;
+      const t = this.ctx.currentTime + d;
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noise;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'highpass';
+      filter.frequency.value = 3500;
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.06 * size, t + 0.005);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+      src.connect(filter).connect(gain).connect(this.master!);
+      src.start(t, Math.random(), 0.06);
+    }
+  }
+
+  /** Fire Breath: a roar of flame. */
+  flame(strength = 1): void {
+    this.burst(500, 0.5, 0.8 * strength, 0.35 * strength, 'lowpass');
+    this.burst(1600, 0.7, 0.6 * strength, 0.12 * strength, 'bandpass');
+    this.crackle(0.6);
+  }
+
+  /** A comet coming in: a falling roar. */
+  comet(): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.Q.value = 1.2;
+    filter.frequency.setValueAtTime(2400, t);
+    filter.frequency.exponentialRampToValueAtTime(300, t + 0.85);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.3, t + 0.6);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+    src.connect(filter).connect(gain).connect(this.master!);
+    src.start(t, Math.random(), 1);
   }
 
   /** A glitterback turning up: a run of glassy twinkles. */

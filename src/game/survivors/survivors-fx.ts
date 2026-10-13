@@ -174,11 +174,14 @@ export class Impacts {
       tmpM.lookAt(eye, tmpP, UP);
       tmpQ.setFromRotationMatrix(tmpM);
       tmpQ.multiply(spinQ.setFromAxisAngle(Z_AXIS, this.spin[i]));
-      // Pops big, then shrinks as it fades.
-      const s = this.size[i] * (t < 0.2 ? 0.6 + 2.4 * t : 1.08 - 0.5 * (t - 0.2));
+      // Pops big, then shrinks as it fades; never filling your view, and
+      // dimmed when it goes off right beside you.
+      const d = tmpP.distanceTo(eye);
+      const s = Math.min(this.size[i], d * 0.45) * (t < 0.2 ? 0.6 + 2.4 * t : 1.08 - 0.5 * (t - 0.2));
+      const near = Math.min(1, Math.max(0.15, (d - 0.8) / 2.5));
       tmpS.set(s, s, s);
       this.mesh.setMatrixAt(n, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.mesh.setColorAt(n, tmpC.set(this.color[i]).lerp(WHITE, 0.5 * (1 - t)).multiplyScalar(2.2 * (1 - t) * (1 - t)));
+      this.mesh.setColorAt(n, tmpC.set(this.color[i]).lerp(WHITE, 0.5 * (1 - t)).multiplyScalar(1.8 * near * (1 - t) * (1 - t)));
       n++;
     }
     this.mesh.count = n;
@@ -597,8 +600,8 @@ export class Novas {
       n.ring.scale.setScalar(r);
       (n.ring.material as MeshBasicMaterial).opacity = 1 - t;
       // The wall stands tallest early and sinks as it spreads.
-      n.wall.scale.set(r, Math.max(0.01, (0.35 + 0.1 * n.r) * (1 - t) * (1 - t)), r);
-      (n.wall.material as MeshBasicMaterial).opacity = 0.8 * (1 - t);
+      n.wall.scale.set(r, Math.max(0.01, Math.min(0.7, 0.3 + 0.06 * n.r) * (1 - t) * (1 - t)), r);
+      (n.wall.material as MeshBasicMaterial).opacity = 0.45 * (1 - t);
       n.flash.scale.setScalar(Math.max(0.01, 0.4 * n.r * (0.6 + 0.6 * e)));
       (n.flash.material as MeshBasicMaterial).opacity = Math.max(0, 1 - t * 2.5);
       if (t >= 1) {

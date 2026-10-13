@@ -15,10 +15,13 @@
  *
  * Weapons: Icicle Volley (at the nearest), Orbit Blades (swords spinning
  * round you), Compass Shards (every way at once), Frost Nova (a blast ring
- * that freezes and throws them back), Chain Lightning, Avalanche Mortar
- * (snowballs lobbed into the thick of them), Frost Aura (a blizzard round
- * you), Glacier Discs (thrown out and back) and Ice Spikes (bursting up
- * under them); you carry up to six. Each evolves (see
+ * that freezes and throws them back), Chain Lightning, and the fire:
+ * Fireworks (rockets that dive on them and burst), Fire Breath (a jet of
+ * flame wherever you look), Ember Trail (the snow burns behind you) and
+ * Comet (a burning rock on the toughest of them); you carry up to six.
+ * Fire sets them BURNING: they glow and shed embers, burn down over a few
+ * seconds, and a burning one that dies sets its neighbours alight, so fire
+ * spreads through a crowd. Each weapon evolves (see
  * upgrades.ts) once it is levelled up alongside its partner passive: the
  * next treasure chest turns it into something else entirely.
  *
@@ -52,7 +55,7 @@ import { startTutorialKit } from '../tutorial-kit.js';
 import { tutorialLevel } from '../tutorial-level.js';
 import { BLOATER, BRUTE, CAP, GHOUL, GLITTER, Horde, KINDS, LUNGER, SPLITTER, TITAN } from './horde.js';
 import { Blades, Bolts, Chests, Gems, Hurls, Impacts, Novas, Orbs, Zaps } from './survivors-fx.js';
-import { Aura, Discs, Shells, Spikes } from './weapons-fx.js';
+import { Breath, Comets, Embers, Flames, Rockets } from './fire-fx.js';
 import { SurvivorsHud } from './survivors-hud.js';
 import { ARENA_X, ARENA_Z, duneHeight, survivorsLevel, survivorsView } from './survivors-level.js';
 import { survivors, survivorsControl } from './survivors-state.js';
@@ -84,6 +87,12 @@ const BURST_HURTS = 2.1;
 const KILL_FLARES = 6;
 /** A crystal streak pays out a chord every this many. */
 const STREAK_CHORD = 20;
+/** Patches of burning snow the ember trail can keep alight at once. */
+const TRAIL_CAP = 90;
+/** Fire Breath comes from this far out in front of you, and this far below your eyes. */
+const BREATH_OUT = 0.75;
+const BREATH_DOWN = 0.55;
+const FIREWORK_COLORS = [0xff4fd8, 0x4fd2ff, 0xffd84f, 0x7dff6a, 0xff6a4f, 0xb36bff];
 
 /** Enemies come up out of the snow this far from you... */
 const SPAWN_NEAR = 24;
@@ -129,14 +138,31 @@ export class SurvivorsSystem extends createSystem({}) {
   private chests!: Chests;
   private hurls!: Hurls;
   private impacts!: Impacts;
-  private shells!: Shells;
-  private aura!: Aura;
-  private discs!: Discs;
-  private spikes!: Spikes;
-  /** Seconds to the aura's next bite, and how many it has made (every third freezes, evolved). */
-  private auraT = 0;
-  private auraTicks = 0;
+  private embers!: Embers;
+  private flames!: Flames;
+  private breath!: Breath;
+  private rockets!: Rockets;
+  private comets!: Comets;
   private hitFlares = 0;
+  /** Fire Breath: seconds of roar left, and to its next bite. */
+  private breathT = 0;
+  private breathTick = 0;
+  private breathAlpha = 0;
+  /** The ember trail's patches of burning snow (x, z, radius, life left, full life). */
+  private readonly patchX = new Float32Array(TRAIL_CAP);
+  private readonly patchZ = new Float32Array(TRAIL_CAP);
+  private readonly patchR = new Float32Array(TRAIL_CAP);
+  private readonly patchLife = new Float32Array(TRAIL_CAP);
+  private readonly patchFull = new Float32Array(TRAIL_CAP);
+  private patchNext = 0;
+  private patchTick = 0;
+  /** Metres poled since the trail last caught. */
+  private trailRun = 0;
+  /** Seconds to the next burn tick. */
+  private burnTick = 0;
+  /** Grand Finale's little bursts, a beat after the big one. */
+  private readonly pops: { x: number; y: number; z: number; t: number; color: number; dmg: number; r: number }[] = [];
+  private fireSounds = 0;
   private hud = new SurvivorsHud();
   private menu = new UpgradeMenu();
   /** Upgrade choices waiting their turn (a burst of levels queues several). */
@@ -162,10 +188,10 @@ export class SurvivorsSystem extends createSystem({}) {
     compass: 0,
     nova: 0,
     lightning: 0,
-    mortar: 0,
-    aura: 0,
-    discs: 0,
-    spikes: 0,
+    fireworks: 0,
+    breath: 0,
+    trail: 0,
+    comet: 0,
   };
   private bladeAngle = 0;
   private compassTurn = 0;
@@ -262,10 +288,11 @@ export class SurvivorsSystem extends createSystem({}) {
     this.chests = new Chests(this.root);
     this.hurls = new Hurls(this.root);
     this.impacts = new Impacts(this.root);
-    this.shells = new Shells(this.root);
-    this.aura = new Aura(this.root);
-    this.discs = new Discs(this.root);
-    this.spikes = new Spikes(this.root);
+    this.embers = new Embers(this.root);
+    this.flames = new Flames(this.root);
+    this.breath = new Breath(this.root);
+    this.rockets = new Rockets(this.root);
+    this.comets = new Comets(this.root);
     this.root.visible = false;
     this.world.createTransformEntity(this.root, { persistent: true });
     this.world.createTransformEntity(this.hud.root, { persistent: true });
@@ -386,11 +413,14 @@ export class SurvivorsSystem extends createSystem({}) {
     this.gems.n = 0;
     this.hurls.n = 0;
     this.impacts.clear();
-    this.shells.clear();
-    this.discs.clear();
-    this.spikes.clear();
-    this.auraT = 0;
-    this.auraTicks = 0;
+    this.embers.clear();
+    this.rockets.clear();
+    this.comets.clear();
+    this.patchLife.fill(0);
+    this.pops.length = 0;
+    this.breathT = 0;
+    this.breathAlpha = 0;
+    this.trailRun = 0;
     this.orbs.clear();
     this.chests.clear();
     survivors.dead.value = false;
@@ -466,8 +496,10 @@ export class SurvivorsSystem extends createSystem({}) {
       this.hurl(dt, px, pz);
       this.fireWeapons(dt, clock, px, pz);
       this.moveBolts(dt);
-      this.moveShells(dt);
-      this.moveDiscs(dt, px, pz);
+      this.moveRockets(dt);
+      this.moveComets(dt);
+      this.updateTrail(dt, px, pz);
+      this.updateBurning(dt);
       this.collect(dt, px, pz);
       this.recycle(px, pz);
       this.burstBloaters(dt, px, pz);
@@ -482,7 +514,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.clock();
     } else if (this.dead) {
       this.blades.hide();
-      this.discs.clear();
+      this.breathT = 0;
     }
 
     this.swarm.update(this.horde, clock, this.scene.fog as Fog | null);
@@ -491,11 +523,11 @@ export class SurvivorsSystem extends createSystem({}) {
     this.novas.tick(simDt);
     this.zaps.tick(simDt);
     this.impacts.tick(simDt, this.head);
-    this.shells.draw(clock);
-    this.discs.draw(clock);
-    this.spikes.tick(simDt, this.erupt);
-    const auraR = this.dead || this.stats.weapons.aura <= 0 ? 0 : this.auraRadius();
-    this.aura.draw(simDt, clock, this.head.x, this.head.z, auraR, !!this.stats.evolved.aura);
+    this.embers.setViewHeight(this.world.renderer.xr.isPresenting ? 1800 : this.world.renderer.domElement.height);
+    this.embers.tick(simDt, clock);
+    this.rockets.draw();
+    this.comets.draw(clock);
+    this.drawFire(simDt, clock, yaw);
     this.gems.tick(simDt);
     this.gems.draw(clock);
     this.hurls.draw(clock);
@@ -503,7 +535,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.chests.tick(simDt, clock);
     void time;
     this.killSounds = Math.max(0, this.killSounds - dt * 14);
-    this.spikeSounds = 0;
+    this.fireSounds = 0;
     this.biteSound = Math.max(0, this.biteSound - dt);
 
     this.player.head.getWorldDirection(this.gaze).negate();
@@ -929,6 +961,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.glitterDown(x, z, r);
       return;
     }
+    this.spreadFire(i, x, z);
     if (kind === BLOATER) {
       // It bursts a beat later; one caught in another's burst carries the chain on.
       this.bursts.push({ x, z, t: 0.09 + Math.random() * 0.06, dmg: (45 + 20 * (this.time / 60)) * this.stats.might });
@@ -1035,6 +1068,7 @@ export class SurvivorsSystem extends createSystem({}) {
       for (let j = 0; j < n; j++) {
         const i = this.near[j];
         this.hit(i, dmg, this.horde.x[i] - x, this.horde.z[i] - z, 10);
+        this.ignite(i, 2.5, 8 * this.stats.might);
       }
       if (Math.hypot(px - x, pz - z) < BURST_HURTS) {
         this.hurt(12 * this.stats.armor, 0.3);
@@ -1615,96 +1649,68 @@ export class SurvivorsSystem extends createSystem({}) {
 
     this.hitFlares = 0;
 
-    // Avalanche Mortar: snowballs lobbed onto the thickest of the crowd.
-    // Avalanche: three more a volley, wider and heavier.
-    if (w.mortar > 0 && this.cd.mortar <= 0) {
-      const L = w.mortar;
-      const ava = !!evo.mortar;
-      this.cd.mortar = (2.9 - 0.14 * L) * s.haste * (ava ? 0.8 : 1);
-      const shots = 1 + Math.floor(L / 4) + Math.floor(s.amount / 2) + (ava ? 2 : 0);
-      const radius = (2.2 + 0.12 * L) * s.area * (ava ? 1.35 : 1);
-      const dmg = (30 + 12 * L) * s.might * (ava ? 1.4 : 1);
-      for (let k = 0; k < shots; k++) {
+    // Fireworks: rockets climb on a sparkling trail, then dive onto the
+    // thick of them and burst, setting them alight. Grand Finale: every
+    // burst throws four more.
+    if (w.fireworks > 0 && this.cd.fireworks <= 0) {
+      const L = w.fireworks;
+      this.cd.fireworks = (2.6 - 0.12 * L) * s.haste;
+      const count = 1 + Math.floor(L / 3) + s.amount;
+      for (let k = 0; k < count; k++) {
         const t = this.crowdTarget(px, pz);
         if (t < 0) break;
-        const tx = this.horde.x[t] + (Math.random() - 0.5) * (k > 0 ? 2.5 : 0.5);
-        const tz = this.horde.z[t] + (Math.random() - 0.5) * (k > 0 ? 2.5 : 0.5);
-        const d = Math.hypot(tx - px, tz - pz);
-        this.shells.lob(px, y + 0.3, pz, tx, tz, 0.75 + d * 0.025 + k * 0.08, radius, dmg, (ava ? 1.4 : 1) * Math.sqrt(s.area));
+        const color = FIREWORK_COLORS[Math.floor(Math.random() * FIREWORK_COLORS.length)];
+        this.rockets.launch(px, y + 0.2, pz, this.horde.x[t], this.horde.z[t], color, (22 + 10 * L) * s.might, (2 + 0.1 * L) * s.area);
       }
-      if (shots > 0) audio.thud();
+      audio.whistle();
     }
 
-    // Glacier Discs: thrown out round you and spun back.
-    // Moon Discs: twice as many, flying twice as far.
-    if (w.discs > 0 && this.cd.discs <= 0) {
-      const L = w.discs;
-      const moon = !!evo.discs;
-      this.cd.discs = (2.4 - 0.1 * L) * s.haste;
-      const count = (1 + Math.floor((L + 1) / 3) + s.amount) * (moon ? 2 : 1);
-      const range = (6 + 0.45 * L) * s.area * (moon ? 2 : 1);
-      const near = this.horde.nearest(px, pz, range + 4);
-      const a0 = near >= 0 ? Math.atan2(this.horde.x[near] - px, this.horde.z[near] - pz) : Math.random() * Math.PI * 2;
-      for (let k = 0; k < count; k++) {
-        const a = a0 + (k / count) * Math.PI * 2;
-        this.discs.throw(px, y + 0.1, pz, Math.sin(a), Math.cos(a), range, moon ? 1.7 : 1.3, (9 + 4 * L) * s.might, (0.2 + 0.015 * L) * s.area);
-      }
-      audio.swish();
+    // Fire Breath: a roar of flame along wherever you look. Dragon's
+    // Breath: longer, wider, and again sooner.
+    if (w.breath > 0 && this.cd.breath <= 0 && this.breathT <= 0) {
+      const dragon = !!evo.breath;
+      this.cd.breath = (2.6 - 0.1 * w.breath) * s.haste * (dragon ? 0.65 : 1);
+      this.breathT = dragon ? 1.2 : 0.75;
+      this.breathTick = 0;
+      audio.flame(dragon ? 1.3 : 1);
     }
+    if (this.breathT > 0) this.roar(dt, px, pz);
 
-    // Ice Spikes: crystals burst up under a few of them after a frosty warning.
-    // Ice Cathedral: a ring of spikes round each one as well.
-    if (w.spikes > 0 && this.cd.spikes <= 0) {
-      const L = w.spikes;
-      const cathedral = !!evo.spikes;
-      this.cd.spikes = (1.9 - 0.06 * L) * s.haste;
-      const count = 2 + Math.floor(L / 2) + s.amount;
-      const radius = (0.85 + 0.05 * L) * s.area;
-      this.hitSet.clear();
-      for (let k = 0; k < count; k++) {
-        const t = this.horde.nearest(px + (Math.random() - 0.5) * 16, pz + (Math.random() - 0.5) * 16, 9, this.hitSet);
-        if (t < 0) continue;
-        this.hitSet.add(t);
-        const tx = this.horde.x[t];
-        const tz = this.horde.z[t];
-        this.spikes.place(tx, tz, radius, 0.3);
-        if (cathedral) {
-          for (let c = 0; c < 5; c++) {
-            const a = (c / 5) * Math.PI * 2;
-            this.spikes.place(tx + Math.cos(a) * radius * 1.9, tz + Math.sin(a) * radius * 1.9, radius * 0.8, 0.38 + c * 0.03);
-          }
+    // Comet: a burning rock out of the sky onto the toughest of them.
+    // Meteor Shower: three more onto the crowd.
+    if (w.comet > 0 && this.cd.comet <= 0) {
+      const L = w.comet;
+      const shower = !!evo.comet;
+      this.cd.comet = (4.4 - 0.2 * L) * s.haste;
+      const dmg = (90 + 40 * L) * s.might;
+      const radius = (2.4 + 0.1 * L) * s.area;
+      const big = this.toughest(px, pz, 26);
+      if (big >= 0) this.comets.drop(this.horde.x[big], this.horde.z[big], 0.85, dmg, radius, 1.1 * Math.sqrt(s.area));
+      if (shower) {
+        for (let k = 0; k < 3; k++) {
+          const t = this.crowdTarget(px, pz);
+          if (t >= 0) this.comets.drop(this.horde.x[t], this.horde.z[t], 0.9 + k * 0.15, dmg * 0.6, radius * 0.8, 0.8);
         }
       }
-    }
-
-    // Frost Aura: a blizzard round you, biting everything in it and
-    // slowing it. Whiteout: wider, and every third bite freezes them solid.
-    if (w.aura > 0) {
-      this.auraT -= dt;
-      if (this.auraT <= 0) {
-        const L = w.aura;
-        const white = !!evo.aura;
-        this.auraT = 0.5 * s.haste;
-        this.auraTicks++;
-        const radius = this.auraRadius();
-        const dmg = (5 + 2.5 * L) * s.might * (white ? 1.5 : 1);
-        const freeze = white && this.auraTicks % 3 === 0 ? 0.9 : 0;
-        const n = this.horde.gather(px, pz, radius, this.near);
-        for (let j = 0; j < n; j++) {
-          const i = this.near[j];
-          this.hit(i, dmg, this.horde.x[i] - px, this.horde.z[i] - pz, 0.8, 1.2, freeze);
-        }
-        this.aura.flare();
-        if (freeze > 0 && n > 0) audio.crack();
-      }
+      if (big >= 0) audio.comet();
     }
     void time;
   }
 
-  /** The Frost Aura's reach (m). */
-  private auraRadius(): number {
-    const s = this.stats;
-    return (2.0 + 0.18 * s.weapons.aura) * s.area * (s.evolved.aura ? 1.6 : 1);
+  /** The one with the most health left within `max` m (a boss, a titan...), or -1. */
+  private toughest(px: number, pz: number, max: number): number {
+    const h = this.horde;
+    let best = -1;
+    let most = 0;
+    for (let i = 0; i < h.n; i++) {
+      if (h.dead[i] || h.rise[i] < 1 || h.kind[i] === GLITTER) continue;
+      if ((h.x[i] - px) ** 2 + (h.z[i] - pz) ** 2 > max * max) continue;
+      if (h.hp[i] > most) {
+        most = h.hp[i];
+        best = i;
+      }
+    }
+    return best;
   }
 
   /**
@@ -1717,7 +1723,7 @@ export class SurvivorsSystem extends createSystem({}) {
     let most = -1;
     for (let k = 0; k < 10 && h.n > 0; k++) {
       const i = Math.floor(Math.random() * h.n);
-      if (h.dead[i] || h.rise[i] < 1) continue;
+      if (h.dead[i] || h.rise[i] < 1 || h.kind[i] === GLITTER) continue;
       const d = Math.hypot(h.x[i] - px, h.z[i] - pz);
       if (d < 5 || d > 24) continue;
       const crowd = h.gather(h.x[i], h.z[i], 2.5, this.near);
@@ -1729,75 +1735,245 @@ export class SurvivorsSystem extends createSystem({}) {
     return best >= 0 ? best : h.nearest(px, pz, 24);
   }
 
-  /** Mortar shells landing: a burst of snow that throws them all back. */
-  private moveShells(dt: number): void {
-    const sh = this.shells;
-    sh.move(dt);
-    for (let i = sh.n - 1; i >= 0; i--) {
-      if (sh.age[i] < sh.flight[i]) continue;
-      const x = sh.tx[i];
-      const z = sh.tz[i];
-      const r = sh.radius[i];
-      const gy = duneHeight(x, z);
-      this.novas.burst(x, z, r, 0xe6f0ff);
-      this.shards.burst(x, gy + 0.3, z, 24, 0xf2f6ff, 0.1, 4, 5);
-      this.impacts.spawn(x, gy + 0.5, z, 0xdfeaff, 1.6 + r * 0.4);
-      sceneRefs.puffs?.emit(this.pickAt.set(x, gy + 0.1, z), 12, 2.2);
-      const n = this.horde.gather(x, z, r, this.near);
-      for (let j = 0; j < n; j++) {
-        const e = this.near[j];
-        this.hit(e, sh.dmg[i], this.horde.x[e] - x, this.horde.z[e] - z, 9, 0.8);
+  // ------------------------------------------------------------ fire ---
+
+  /** Set enemy i burning for `seconds` at `dps` (the hotter fire wins). */
+  private ignite(i: number, seconds: number, dps: number): void {
+    const h = this.horde;
+    if (h.dead[i] || h.kind[i] === GLITTER) return;
+    h.burn[i] = Math.max(h.burn[i], seconds);
+    h.burnDps[i] = Math.max(h.burnDps[i], dps);
+  }
+
+  /** Burning ones burn down (a bite of damage four times a second) and shed embers. */
+  private updateBurning(dt: number): void {
+    const h = this.horde;
+    this.burnTick -= dt;
+    const tick = this.burnTick <= 0;
+    if (tick) this.burnTick = 0.25;
+    let sparks = 0;
+    for (let i = 0; i < h.n; i++) {
+      if (h.dead[i] || h.burn[i] <= 0) continue;
+      h.burn[i] -= dt;
+      if (h.burn[i] <= 0) h.burnDps[i] = 0;
+      const r = h.radius(i);
+      if (sparks < 70 && Math.random() < 0.45) {
+        sparks++;
+        const gy = duneHeight(h.x[i], h.z[i]);
+        this.embers.emit(h.x[i] + (Math.random() - 0.5) * r * 1.4, gy + r * (0.4 + Math.random()), h.z[i] + (Math.random() - 0.5) * r * 1.4, (Math.random() - 0.5) * 0.4, 0.8 + Math.random(), (Math.random() - 0.5) * 0.4, 0.5 + Math.random() * 0.4, 0.12 + r * 0.08);
       }
-      audio.impact(0.7);
-      sh.remove(i);
+      if (tick && h.burn[i] > -0.25) this.hit(i, h.burnDps[i] * 0.25, 0, 0, 0);
     }
   }
 
-  /** Discs cut whatever they pass through, once a pass, and come home. */
-  private moveDiscs(dt: number, px: number, pz: number): void {
-    const d = this.discs;
-    d.move(dt, px, this.head.y - 0.45, pz);
-    for (let i = d.n - 1; i >= 0; i--) {
-      if (d.age[i] >= d.trip[i]) {
-        d.remove(i);
-        continue;
+  /** A burning one dies: the fire leaps to whatever is round it, a little cooler. */
+  private spreadFire(i: number, x: number, z: number): void {
+    const h = this.horde;
+    const dps = h.burnDps[i] * 0.75;
+    if (h.burn[i] <= 0 || dps < 1) return;
+    const n = h.gather(x, z, 1.7 + h.radius(i), this.near);
+    for (let j = 0; j < n; j++) this.ignite(this.near[j], 2.5, dps);
+    for (let k = 0; k < 8; k++) {
+      const a = Math.random() * Math.PI * 2;
+      this.embers.emit(x, 0.6 + duneHeight(x, z), z, Math.cos(a) * 3, 1.5 + Math.random() * 2, Math.sin(a) * 3, 0.5 + Math.random() * 0.3, 0.2);
+    }
+  }
+
+  /** Fire Breath, roaring: bite everything in the cone ten times a second and set it alight. */
+  private roar(dt: number, px: number, pz: number): void {
+    const s = this.stats;
+    const L = s.weapons.breath;
+    const dragon = !!s.evolved.breath;
+    this.breathT -= dt;
+    const yaw = getHeadYaw(this.world);
+    const fx = -Math.sin(yaw);
+    const fz = -Math.cos(yaw);
+    const length = (4.5 + 0.3 * L) * s.area * (dragon ? 1.5 : 1);
+    const spread = dragon ? 0.55 : 0.42;
+    // The jet's sparks, from out in front of your chest.
+    const ox = px + fx * BREATH_OUT;
+    const oz = pz + fz * BREATH_OUT;
+    const oy = this.head.y - BREATH_DOWN;
+    for (let k = 0; k < 10; k++) {
+      const a = yaw + (Math.random() - 0.5) * spread * 1.6;
+      const v = 7 + Math.random() * 6 * (length / 5);
+      this.embers.emit(ox, oy, oz, -Math.sin(a) * v, (Math.random() - 0.4) * 2, -Math.cos(a) * v, 0.35 + Math.random() * 0.3 * (length / 5), 0.14 + Math.random() * 0.2);
+    }
+    this.breathTick -= dt;
+    if (this.breathTick > 0) return;
+    this.breathTick = 0.1;
+    const dmg = (8 + 3.5 * L) * s.might * (dragon ? 1.3 : 1);
+    const burn = (4 + 2 * L) * s.might;
+    const cos = Math.cos(spread);
+    const n = this.horde.gather(px, pz, length, this.near);
+    for (let j = 0; j < n; j++) {
+      const i = this.near[j];
+      const dx = this.horde.x[i] - px;
+      const dz = this.horde.z[i] - pz;
+      const d = Math.hypot(dx, dz) || 1;
+      if ((dx * fx + dz * fz) / d < cos) continue;
+      this.hit(i, dmg, dx, dz, 1.2);
+      this.ignite(i, 3, burn);
+    }
+  }
+
+  /** The ember trail: as you pole, the snow you leave catches fire, and whatever walks through it burns. */
+  private updateTrail(dt: number, px: number, pz: number): void {
+    const s = this.stats;
+    const L = s.weapons.trail;
+    if (L > 0) {
+      const wild = !!s.evolved.trail;
+      this.trailRun += this.speed * dt;
+      if (this.trailRun >= 0.6) {
+        this.trailRun = 0;
+        const i = this.patchNext;
+        this.patchNext = (this.patchNext + 1) % TRAIL_CAP;
+        // Just behind you, where your skis have been.
+        const back = this.speed > 0.1 ? 0.6 : 0;
+        this.patchX[i] = px - (game.velocity.x / Math.max(0.1, this.speed)) * back;
+        this.patchZ[i] = pz - (game.velocity.z / Math.max(0.1, this.speed)) * back;
+        this.patchR[i] = (0.8 + 0.05 * L) * s.area * (wild ? 1.8 : 1);
+        this.patchLife[i] = this.patchFull[i] = (2.4 + 0.25 * L) * (wild ? 2 : 1);
       }
-      const n = this.horde.gather(d.x[i], d.z[i], d.size[i] * 1.4 + 0.15, this.near);
-      for (let j = 0; j < n; j++) {
-        const e = this.near[j];
-        if (this.horde.discCd[e] > 0) continue;
-        this.horde.discCd[e] = 0.3;
-        this.hit(e, d.dmg[i], this.horde.x[e] - d.x[i], this.horde.z[e] - d.z[i], 3.5);
-        if (this.hitFlares < 6) {
-          this.hitFlares++;
-          this.impacts.spawn(this.horde.x[e], this.horde.radius(e) * 0.7, this.horde.z[e], 0x9fdcff, 0.45);
+    }
+    this.patchTick -= dt;
+    const bite = this.patchTick <= 0;
+    if (bite) this.patchTick = 0.2;
+    const burn = (6 + 3 * L) * s.might * (s.evolved.trail ? 1.5 : 1);
+    for (let i = 0; i < TRAIL_CAP; i++) {
+      if (this.patchLife[i] <= 0) continue;
+      this.patchLife[i] -= dt;
+      if (!bite) continue;
+      const n = this.horde.gather(this.patchX[i], this.patchZ[i], this.patchR[i], this.near);
+      for (let j = 0; j < n; j++) this.ignite(this.near[j], 1.6, burn);
+    }
+  }
+
+  /** Draw the trail's flames and the breath's cone. */
+  private drawFire(dt: number, time: number, yaw: number): void {
+    const f = this.flames;
+    f.begin();
+    for (let i = 0; i < TRAIL_CAP; i++) {
+      const life = this.patchLife[i];
+      if (life <= 0) continue;
+      // Catches fast, burns, dies down.
+      const t = 1 - life / this.patchFull[i];
+      const strength = Math.min(1, t * 8) * Math.min(1, life / 0.8);
+      const r = this.patchR[i];
+      const gy = duneHeight(this.patchX[i], this.patchZ[i]);
+      for (let k = 0; k < 4; k++) {
+        const a = i * 2.3 + k * 1.57;
+        const d = k === 0 ? 0 : r * 0.55;
+        f.add(this.patchX[i] + Math.cos(a) * d, gy, this.patchZ[i] + Math.sin(a) * d, r * (k === 0 ? 1.3 : 0.85), i * 1.7 + k, strength, time, this.head);
+      }
+      if (dt > 0 && Math.random() < 0.25 * strength) {
+        this.embers.emit(this.patchX[i] + (Math.random() - 0.5) * r, gy + 0.3, this.patchZ[i] + (Math.random() - 0.5) * r, 0, 1 + Math.random(), 0, 0.6 + Math.random() * 0.4, 0.12);
+      }
+    }
+    f.end();
+    const s = this.stats;
+    this.breathAlpha += ((this.breathT > 0 ? 1 : 0) - this.breathAlpha) * Math.min(1, dt * 12);
+    const length = (4.5 + 0.3 * s.weapons.breath) * s.area * (s.evolved.breath ? 1.5 : 1);
+    const width = Math.tan(s.evolved.breath ? 0.55 : 0.42) * length;
+    const fx = -Math.sin(yaw);
+    const fz = -Math.cos(yaw);
+    this.breath.draw(this.head.x + fx * BREATH_OUT, this.head.y - BREATH_DOWN, this.head.z + fz * BREATH_OUT, yaw, length, width, this.breathAlpha, time);
+  }
+
+  /** Rockets fly; each that bursts throws sparks of its colour and sets what is under it alight. */
+  private moveRockets(dt: number): void {
+    const r = this.rockets;
+    r.move(dt, this.embers);
+    for (let i = r.n - 1; i >= 0; i--) {
+      if (!r.burst[i]) continue;
+      this.fireworkBurst(r.x[i], r.y[i], r.z[i], r.color[i], r.dmg[i], r.radius[i], 1);
+      if (this.stats.evolved.fireworks) {
+        for (let k = 0; k < 4; k++) {
+          const a = (k / 4) * Math.PI * 2 + Math.random();
+          const d = r.radius[i] * 1.4;
+          this.pops.push({
+            x: r.x[i] + Math.cos(a) * d,
+            y: r.y[i] + 0.5,
+            z: r.z[i] + Math.sin(a) * d,
+            t: 0.18 + k * 0.08,
+            color: FIREWORK_COLORS[(k + 1) % FIREWORK_COLORS.length],
+            dmg: r.dmg[i] * 0.5,
+            r: r.radius[i] * 0.7,
+          });
         }
       }
+      r.remove(i);
+    }
+    for (let k = this.pops.length - 1; k >= 0; k--) {
+      const p = this.pops[k];
+      p.t -= dt;
+      if (p.t > 0) continue;
+      this.pops.splice(k, 1);
+      this.fireworkBurst(p.x, p.y, p.z, p.color, p.dmg, p.r, 0.6);
     }
   }
 
-  /** Ice Spikes bursting up: everything over them is speared, thrown and chilled. */
-  private readonly erupt = (x: number, z: number, radius: number): void => {
-    const s = this.stats;
-    const L = s.weapons.spikes;
-    const dmg = (16 + 7 * L) * s.might * (s.evolved.spikes ? 1.2 : 1);
+  private fireworkBurst(x: number, y: number, z: number, color: number, dmg: number, radius: number, size: number): void {
+    const gy = duneHeight(x, z);
+    const by = Math.max(y, gy + 0.8);
+    // A sphere of sparks in its colour, falling as they fade.
+    const sparks = Math.round(56 * size);
+    for (let k = 0; k < sparks; k++) {
+      const u = Math.random() * 2 - 1;
+      const a = Math.random() * Math.PI * 2;
+      const c = Math.sqrt(1 - u * u);
+      const v = (4 + Math.random() * 2) * size;
+      this.embers.emit(x, by, z, Math.cos(a) * c * v, u * v + 1.5, Math.sin(a) * c * v, 0.7 + Math.random() * 0.5, 0.16 * size + 0.05, color, -1.2);
+    }
+    this.impacts.spawn(x, by, z, color, 1.8 * size);
+    this.novas.burst(x, z, radius, color);
+    const burn = (3 + 1.5 * this.stats.weapons.fireworks) * this.stats.might;
     const n = this.horde.gather(x, z, radius, this.near);
     for (let j = 0; j < n; j++) {
-      const e = this.near[j];
-      this.hit(e, dmg, this.horde.x[e] - x + 0.01, this.horde.z[e] - z, 2.5, 1.5);
+      const i = this.near[j];
+      this.hit(i, dmg, this.horde.x[i] - x, this.horde.z[i] - z, 5);
+      this.ignite(i, 2, burn);
     }
-    const gy = duneHeight(x, z);
-    this.shards.burst(x, gy + 0.3, z, 8, 0xcff4ff, 0.06, 2, 4);
-    if (this.hitFlares < 6) {
-      this.hitFlares++;
-      this.impacts.spawn(x, gy + radius, z, 0xcff4ff, 0.8);
+    if (this.fireSounds < 3) {
+      this.fireSounds++;
+      audio.bang(size);
     }
-    if (this.spikeSounds < 3) {
-      this.spikeSounds++;
-      audio.spike();
+  }
+
+  /** Comets strike: a blast, a ring of fire and everything near it burning. */
+  private moveComets(dt: number): void {
+    const c = this.comets;
+    c.move(dt, this.embers);
+    for (let i = c.n - 1; i >= 0; i--) {
+      if (c.age[i] < c.fall[i]) continue;
+      const x = c.tx[i];
+      const z = c.tz[i];
+      const r = c.radius[i];
+      const gy = duneHeight(x, z);
+      this.novas.burst(x, z, r * 1.6, 0xff6a2e);
+      this.novas.burst(x, z, r, 0xffd27a);
+      this.impacts.spawn(x, gy + 0.8, z, 0xffb054, 4);
+      this.shards.burst(x, gy + 0.4, z, 40, 0x3a2a24, 0.14, 6, 7);
+      for (let k = 0; k < 50; k++) {
+        const a = Math.random() * Math.PI * 2;
+        const v = 2 + Math.random() * 6;
+        this.embers.emit(x, gy + 0.4, z, Math.cos(a) * v, 2 + Math.random() * 5, Math.sin(a) * v, 0.6 + Math.random() * 0.6, 0.3);
+      }
+      sceneRefs.puffs?.emit(this.pickAt.set(x, gy + 0.1, z), 16, 2.6);
+      const burn = (6 + 3 * this.stats.weapons.comet) * this.stats.might;
+      const n = this.horde.gather(x, z, r * 1.6, this.near);
+      for (let j = 0; j < n; j++) {
+        const e = this.near[j];
+        const dx = this.horde.x[e] - x;
+        const dz = this.horde.z[e] - z;
+        if (dx * dx + dz * dz < r * r) this.hit(e, c.dmg[i], dx, dz, 10);
+        this.ignite(e, 3, burn);
+      }
+      audio.boom(1.2);
+      if (Math.hypot(this.head.x - x, this.head.z - z) < 14) for (const hand of HANDS) this.pulse(hand.handedness, 0.6, 120);
+      c.remove(i);
     }
-  };
-  private spikeSounds = 0;
+  }
 
   /** One ring of blades: each sword hits what it passes through, once a pass. */
   private bladeRing(count: number, px: number, pz: number, radius: number, angle: number, dmg: number): void {

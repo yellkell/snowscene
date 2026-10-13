@@ -54,6 +54,24 @@ function heart(ctx: Ctx, cx: number, cy: number, r: number): void {
   ctx.closePath();
 }
 
+/** A flame: a tongue licking up to a point, with a hot inner tongue. */
+function flame(ctx: Ctx, cx: number, cy: number, r: number): void {
+  ink(ctx, r, () => {
+    ctx.moveTo(cx, cy - r * 0.95);
+    ctx.bezierCurveTo(cx + r * 0.25, cy - r * 0.5, cx + r * 0.75, cy - r * 0.15, cx + r * 0.6, cy + r * 0.4);
+    ctx.bezierCurveTo(cx + r * 0.5, cy + r * 0.85, cx - r * 0.5, cy + r * 0.85, cx - r * 0.6, cy + r * 0.4);
+    ctx.bezierCurveTo(cx - r * 0.7, cy + r * 0.05, cx - r * 0.35, cy - r * 0.2, cx - r * 0.2, cy - r * 0.55);
+    ctx.bezierCurveTo(cx - r * 0.1, cy - r * 0.3, cx - r * 0.05, cy - r * 0.5, cx, cy - r * 0.95);
+    ctx.closePath();
+  });
+  ctx.fillStyle = 'rgba(8, 16, 36, 0.3)';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r * 0.15);
+  ctx.bezierCurveTo(cx + r * 0.3, cy + r * 0.15, cx + r * 0.3, cy + r * 0.6, cx, cy + r * 0.62);
+  ctx.bezierCurveTo(cx - r * 0.3, cy + r * 0.6, cx - r * 0.25, cy + r * 0.2, cx, cy - r * 0.15);
+  ctx.fill();
+}
+
 export function drawIcon(ctx: Ctx, id: string, cx: number, cy: number, r: number): void {
   ctx.save();
   switch (id) {
@@ -231,57 +249,56 @@ export function drawIcon(ctx: Ctx, id: string, cx: number, cy: number, r: number
         });
       }
       break;
-    case 'mortar':
-      // A snowball at the top of its arc, the arc dotted behind it.
-      for (let k = 0; k < 4; k++) {
-        const t = k / 4;
-        ink(ctx, r, () => ctx.arc(cx - r * 0.85 + t * r * 0.7, cy + r * 0.75 - Math.sin(t * Math.PI * 0.5) * r * 0.9, r * (0.06 + 0.03 * k), 0, Math.PI * 2), false);
-      }
-      ink(ctx, r, () => ctx.arc(cx + r * 0.25, cy - r * 0.2, r * 0.55, 0, Math.PI * 2));
-      ctx.fillStyle = 'rgba(8, 16, 36, 0.25)';
-      ctx.beginPath();
-      ctx.arc(cx + r * 0.38, cy - r * 0.05, r * 0.36, 0, Math.PI * 2);
-      ctx.fill();
-      break;
-    case 'aura':
-      // A whirl of blizzard.
-      line(ctx, r * 0.12, () => {
-        for (let k = 0; k <= 40; k++) {
-          const t = k / 40;
-          const a = t * Math.PI * 3.2;
-          const rr = r * (0.12 + 0.8 * t);
-          if (k === 0) ctx.moveTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
-          else ctx.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
-        }
-      });
-      break;
-    case 'discs':
-      // A toothed disc with a hole, and a swoosh round it.
-      ink(ctx, r, () => star(ctx, cx, cy, 6, r * 0.8, r * 0.58, 0));
-      ctx.fillStyle = 'rgba(8, 16, 36, 0.8)';
-      ctx.beginPath();
-      ctx.arc(cx, cy, r * 0.2, 0, Math.PI * 2);
-      ctx.fill();
-      line(ctx, r * 0.07, () => ctx.arc(cx, cy, r * 0.98, -2.6, -1.2));
-      break;
-    case 'spikes':
-      // Crystals bursting up out of the ground.
-      line(ctx, r * 0.1, () => {
-        ctx.moveTo(cx - r * 0.95, cy + r * 0.7);
-        ctx.lineTo(cx + r * 0.95, cy + r * 0.7);
-      });
-      for (const [dx, h, w] of [
-        [0, 1.6, 0.26],
-        [-0.48, 1.05, 0.2],
-        [0.48, 1.15, 0.2],
-      ]) {
-        ink(ctx, r, () => {
-          ctx.moveTo(cx + r * (dx - w), cy + r * 0.66);
-          ctx.lineTo(cx + r * dx, cy + r * (0.66 - h));
-          ctx.lineTo(cx + r * (dx + w), cy + r * 0.66);
-          ctx.closePath();
+    case 'fireworks':
+      // A burst of rays round a bright heart, and a rocket's trail under it.
+      for (let k = 0; k < 10; k++) {
+        const a = (k / 10) * Math.PI * 2;
+        line(ctx, r * 0.08, () => {
+          ctx.moveTo(cx + Math.cos(a) * r * 0.32, cy - r * 0.2 + Math.sin(a) * r * 0.32);
+          ctx.lineTo(cx + Math.cos(a) * r * 0.72, cy - r * 0.2 + Math.sin(a) * r * 0.72);
         });
       }
+      ink(ctx, r, () => star(ctx, cx, cy - r * 0.2, 5, r * 0.26, r * 0.12));
+      line(ctx, r * 0.06, () => {
+        ctx.moveTo(cx, cy + r * 0.3);
+        ctx.quadraticCurveTo(cx - r * 0.15, cy + r * 0.65, cx - r * 0.05, cy + r * 0.98);
+      });
+      break;
+    case 'breath':
+      // A jet of flame fanning out to the right.
+      ink(ctx, r, () => {
+        ctx.moveTo(cx - r * 0.95, cy);
+        ctx.quadraticCurveTo(cx - r * 0.2, cy - r * 0.2, cx + r * 0.3, cy - r * 0.75);
+        ctx.quadraticCurveTo(cx + r * 0.35, cy - r * 0.35, cx + r * 0.95, cy - r * 0.45);
+        ctx.quadraticCurveTo(cx + r * 0.6, cy - r * 0.05, cx + r * 0.95, cy + r * 0.35);
+        ctx.quadraticCurveTo(cx + r * 0.4, cy + r * 0.3, cx + r * 0.3, cy + r * 0.75);
+        ctx.quadraticCurveTo(cx - r * 0.2, cy + r * 0.2, cx - r * 0.95, cy);
+        ctx.closePath();
+      });
+      break;
+    case 'trail':
+      // A row of flames, shrinking away behind.
+      flame(ctx, cx + r * 0.42, cy + r * 0.05, r * 0.6);
+      flame(ctx, cx - r * 0.12, cy + r * 0.22, r * 0.45);
+      flame(ctx, cx - r * 0.58, cy + r * 0.38, r * 0.32);
+      break;
+    case 'comet':
+      // A rock with a long tail streaming up behind it.
+      for (const [o, w] of [
+        [0, 0.16],
+        [0.22, 0.09],
+        [-0.22, 0.09],
+      ]) {
+        line(ctx, r * w, () => {
+          ctx.moveTo(cx + r * 0.2 + o * r * 0.5, cy + r * 0.2 + o * r * 0.5);
+          ctx.lineTo(cx - r * 0.85 + o * r * 0.5, cy - r * 0.85 + o * r * 0.5);
+        });
+      }
+      ink(ctx, r, () => ctx.arc(cx + r * 0.35, cy + r * 0.35, r * 0.42, 0, Math.PI * 2));
+      ctx.fillStyle = 'rgba(8, 16, 36, 0.3)';
+      ctx.beginPath();
+      ctx.arc(cx + r * 0.45, cy + r * 0.45, r * 0.22, 0, Math.PI * 2);
+      ctx.fill();
       break;
     default:
       // Evolutions and anything else: a great star.

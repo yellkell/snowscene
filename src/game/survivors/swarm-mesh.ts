@@ -731,7 +731,14 @@ void main() {
   // Chilled, it frosts over; frozen solid, it is a block of blue ice
   // with a glint on the facets facing the light.
   vec3 ice = vec3(0.62, 0.84, 1.0) * (0.75 + 0.35 * ramp) + vec3(0.6) * pow(key, 6.0);
-  col = mix(col, ice, vBurn * 0.85);
+  col = mix(col, ice, max(vBurn, 0.0) * 0.85);
+  // Burning: charred dark, ember licking up it in bands that flicker.
+  float fire = max(-vBurn, 0.0);
+  if (fire > 0.0) {
+    float lick = 0.5 + 0.5 * sin(vW.y * 9.0 - uTime * 14.0 + vW.x * 3.0 + vW.z * 2.0);
+    vec3 ember = mix(vec3(1.0, 0.25, 0.04), vec3(1.0, 0.75, 0.25), lick);
+    col = mix(col * 0.55, ember * (1.2 + 0.6 * lick), fire * (0.35 + 0.4 * lick));
+  }
   // A hit flashes it pale (only partly, so a boss under constant fire
   // keeps its colours).
   col = mix(col, vec3(1.0, 0.95, 0.9), vFlash * 0.45);
@@ -1046,7 +1053,8 @@ export class SwarmMesh {
       pose[o + 3] = KINDS[k].radius * h.scale[i];
       anim[o] = h.stride[i];
       anim[o + 1] = h.flash[i] > 0 ? Math.min(1, h.flash[i] / 0.1) : 0;
-      anim[o + 2] = h.ice[i] > 0 ? 1 : h.chill[i] > 0 ? 0.3 : 0;
+      // Frost as positive, fire as negative (burning, it glows ember).
+      anim[o + 2] = h.ice[i] > 0 ? 1 : h.burn[i] > 0 ? -Math.min(1, 0.5 + h.burn[i] * 0.25) : h.chill[i] > 0 ? 0.3 : 0;
       anim[o + 3] = h.rise[i];
       const q = n * 3;
       act[q] = duneHeight(h.x[i], h.z[i]) + (h.rise[i] - 1) * KINDS[k].radius * 1.4;
