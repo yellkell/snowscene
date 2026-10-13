@@ -31,9 +31,11 @@ import {
   Sprite,
   SpriteMaterial,
   SRGBColorSpace,
+  Euler,
   Vector3,
 } from '@iwsdk/core';
 import { GeometryBuilder, placed } from '../mesh-utils.js';
+import { drawLettering, fitLettering } from './lettering.js';
 import { duneHeight } from './survivors-level.js';
 
 const tmpM = new Matrix4();
@@ -45,6 +47,20 @@ const Z_AXIS = new Vector3(0, 0, 1);
 const WHITE = new Color(1, 1, 1);
 const spinQ = new Quaternion();
 const tmpC = new Color();
+const tmpE = new Euler(0, 0, 0, 'YXZ');
+
+/**
+ * The way the viewer faces this frame (the system sets it before drawing):
+ * glows drawn as flat cards turned to it always face you.
+ */
+export const billboard = new Quaternion();
+
+/** Shared soft glow for halos and glints (one texture for all of them). */
+let flare: CanvasTexture | null = null;
+function sharedFlare(): CanvasTexture {
+  if (!flare) flare = flareTexture();
+  return flare;
+}
 
 /**
  * Crossed quads along -Z from z = 0 (bright, `head`) to z = -1 (dark,
@@ -217,6 +233,8 @@ export class Bolts {
   readonly color = new Uint32Array(BOLT_CAP);
   /** A streak of light behind each one. */
   readonly trail: InstancedMesh;
+  /** A soft glow round each one, always facing you: they shine like magic ice. */
+  readonly halo: InstancedMesh;
 
   constructor(parent: Group) {
     // A long faceted crystal of ice: a white core inside a coloured shell.
@@ -238,6 +256,14 @@ export class Bolts {
     this.trail.renderOrder = 5;
     this.trail.name = 'BoltTrails';
     parent.add(this.trail);
+    this.halo = new InstancedMesh(new PlaneGeometry(1, 1), additive({ map: sharedFlare() }), BOLT_CAP);
+    this.halo.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.halo.setColorAt(0, tmpC.set(0xffffff));
+    this.halo.count = 0;
+    this.halo.frustumCulled = false;
+    this.halo.renderOrder = 6;
+    this.halo.name = 'BoltHalos';
+    parent.add(this.halo);
   }
 
   fire(x: number, y: number, z: number, dirX: number, dirZ: number, speed: number, dmg: number, radius: number, pierce: number, life: number, color: number): void {
@@ -289,14 +315,23 @@ export class Bolts {
       const speed = Math.hypot(this.vx[i], this.vz[i]);
       tmpS.set(s, s, Math.min(1.6, speed * 0.05) * s);
       this.trail.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.trail.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(1.3 * Math.min(1, this.life[i] * 4)));
+      const fade = Math.min(1, this.life[i] * 4);
+      this.trail.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(1.3 * fade));
+      // The glow: a little twinkle so a volley glitters as it flies.
+      const g = s * (0.55 + 0.08 * Math.sin(this.life[i] * 40 + i));
+      tmpS.set(g, g, g);
+      this.halo.setMatrixAt(i, tmpM.compose(tmpP, billboard, tmpS));
+      this.halo.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(0.75 * fade));
     }
     this.mesh.count = this.n;
     this.trail.count = this.n;
+    this.halo.count = this.n;
     this.mesh.instanceMatrix.needsUpdate = true;
     this.trail.instanceMatrix.needsUpdate = true;
+    this.halo.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
     if (this.trail.instanceColor) this.trail.instanceColor.needsUpdate = true;
+    if (this.halo.instanceColor) this.halo.instanceColor.needsUpdate = true;
   }
 }
 
@@ -462,6 +497,9 @@ function sweepGeometry(span: number): BufferGeometry {
 export class Blades {
   readonly mesh: InstancedMesh;
   readonly sweep: InstancedMesh;
+  /** A star of light riding each sword's tip. */
+  readonly glint: InstancedMesh;
+  private turn = 0;
 
   constructor(parent: Group) {
     const b = new GeometryBuilder();
@@ -483,12 +521,21 @@ export class Blades {
     this.sweep.renderOrder = 5;
     this.sweep.name = 'BladeSweeps';
     parent.add(this.sweep);
+    this.glint = new InstancedMesh(new PlaneGeometry(1, 1), additive({ map: sharedFlare() }), BLADE_CAP);
+    this.glint.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.glint.setColorAt(0, tmpC.set(0xffffff));
+    this.glint.count = 0;
+    this.glint.frustumCulled = false;
+    this.glint.renderOrder = 6;
+    this.glint.name = 'BladeGlints';
+    parent.add(this.glint);
   }
 
   /** No swords out. */
   hide(): void {
     this.mesh.count = 0;
     this.sweep.count = 0;
+    this.glint.count = 0;
   }
 
   /**
@@ -511,8 +558,9 @@ export class Blades {
     count = Math.min(count, BLADE_CAP - start);
     // Where the tips reach: the sword runs from 0.35 r out by its length.
     const tip = radius * 0.35 + size * radius * 0.75 * 1.06;
-    tmpC.set(color).multiplyScalar(0.8);
+    this.turn += 0.016;
     for (let k = 0; k < count; k++) {
+      tmpC.set(color).multiplyScalar(0.8);
       const a = angle + (k / count) * Math.PI * 2;
       const dx = Math.sin(a);
       const dz = Math.cos(a);
@@ -525,12 +573,22 @@ export class Blades {
       tmpS.set(tip * spin, 1, tip);
       this.sweep.setMatrixAt(start + k, tmpM.compose(tmpP, tmpQ, tmpS));
       this.sweep.setColorAt(start + k, tmpC);
+      // The glint at the tip, turning and pulsing as it goes round.
+      tmpP.set(x + dx * tip * 0.97, y, z + dz * tip * 0.97);
+      const g = 0.42 * size * (0.8 + 0.35 * Math.sin(this.turn * 9 + k * 2.1));
+      tmpS.set(g, g, g);
+      tmpQ.copy(billboard).multiply(spinQ.setFromAxisAngle(Z_AXIS, this.turn * 3 + k));
+      this.glint.setMatrixAt(start + k, tmpM.compose(tmpP, tmpQ, tmpS));
+      this.glint.setColorAt(start + k, tmpC.set(color).lerp(WHITE, 0.4).multiplyScalar(1.1));
     }
     this.mesh.count = start + count;
     this.sweep.count = start + count;
+    this.glint.count = start + count;
     this.mesh.instanceMatrix.needsUpdate = true;
     this.sweep.instanceMatrix.needsUpdate = true;
+    this.glint.instanceMatrix.needsUpdate = true;
     if (this.sweep.instanceColor) this.sweep.instanceColor.needsUpdate = true;
+    if (this.glint.instanceColor) this.glint.instanceColor.needsUpdate = true;
     return start + count;
   }
 }
@@ -555,8 +613,33 @@ function wallGeometry(): BufferGeometry {
  * standing up from it and sinking as it goes, and a flash on the ground
  * where it started.
  */
+/** Ice spikes each nova throws up along its front. */
+const NOVA_SPIKES = 30;
+const NOVA_POOL = 14;
+
+/** A cheap repeatable 0..1 for spike k (its own height, lean and gap). */
+function spikeRnd(k: number): number {
+  const v = Math.sin(k * 12.9898) * 43758.5453;
+  return v - Math.floor(v);
+}
+
+/** An ice spike: a faceted cone, its base at the origin, pale at the foot and white-hot at the point. */
+function spikeGeometry(): BufferGeometry {
+  const g = new ConeGeometry(0.11, 1, 5, 1).translate(0, 0.5, 0).toNonIndexed();
+  const pos = g.getAttribute('position');
+  const col = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const c = 0.55 + 0.9 * pos.getY(i);
+    col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = c;
+  }
+  g.setAttribute('color', new BufferAttribute(col, 3));
+  return g;
+}
+
 export class Novas {
-  private readonly rings: { ring: Mesh; wall: Mesh; flash: Mesh; t: number; r: number }[] = [];
+  private readonly rings: { ring: Mesh; wall: Mesh; flash: Mesh; t: number; r: number; x: number; y: number; z: number; color: number }[] = [];
+  /** Spikes of ice bursting up out of the snow along every ring's front. */
+  private readonly spikes: InstancedMesh;
 
   constructor(parent: Group) {
     const wallGeo = wallGeometry();
@@ -573,8 +656,19 @@ export class Novas {
         parent.add(m);
       }
       ring.name = 'Nova';
-      this.rings.push({ ring, wall, flash, t: 1, r: 1 });
+      this.rings.push({ ring, wall, flash, t: 1, r: 1, x: 0, y: 0, z: 0, color: 0xffffff });
     }
+    this.spikes = new InstancedMesh(
+      spikeGeometry(),
+      new MeshBasicMaterial({ vertexColors: true, toneMapped: false, transparent: true, opacity: 0.92 }),
+      NOVA_SPIKES * NOVA_POOL,
+    );
+    this.spikes.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.spikes.setColorAt(0, tmpC.set(0xffffff));
+    this.spikes.count = 0;
+    this.spikes.frustumCulled = false;
+    this.spikes.name = 'NovaSpikes';
+    parent.add(this.spikes);
   }
 
   burst(x: number, z: number, radius: number, color: number): void {
@@ -582,6 +676,10 @@ export class Novas {
     n.t = 0;
     n.r = radius;
     const y = 0.06 + duneHeight(x, z);
+    n.x = x;
+    n.y = y;
+    n.z = z;
+    n.color = color;
     for (const m of [n.ring, n.wall, n.flash]) {
       m.position.set(x, y, z);
       (m.material as MeshBasicMaterial).color.set(color).multiplyScalar(1.6);
@@ -591,9 +689,11 @@ export class Novas {
   }
 
   tick(dt: number): void {
+    let spikes = 0;
     for (const n of this.rings) {
       if (n.t >= 1) continue;
       n.t = Math.min(1, n.t + dt / 0.5);
+      spikes = this.placeSpikes(n, spikes);
       const t = n.t;
       const e = 1 - Math.pow(1 - t, 3);
       const r = Math.max(0.01, n.r * e);
@@ -610,6 +710,40 @@ export class Novas {
         n.flash.visible = false;
       }
     }
+    this.spikes.count = spikes;
+    if (spikes > 0) {
+      this.spikes.instanceMatrix.needsUpdate = true;
+      if (this.spikes.instanceColor) this.spikes.instanceColor.needsUpdate = true;
+    }
+  }
+
+  /**
+   * A crown of ice spikes riding a ring's front: they burst up as it sets
+   * off, leaning outward, and sink back into the snow as it spreads.
+   */
+  private placeSpikes(n: { t: number; r: number; x: number; y: number; z: number; color: number }, at: number): number {
+    const t = n.t;
+    const e = 1 - Math.pow(1 - t, 3);
+    const grow = Math.min(1, t / 0.12);
+    const sink = Math.pow(1 - t, 1.6);
+    const tall = Math.min(1.4, 0.45 + 0.07 * n.r);
+    tmpC.set(n.color).lerp(WHITE, 0.45).multiplyScalar(1.25);
+    for (let k = 0; k < NOVA_SPIKES; k++) {
+      const r1 = spikeRnd(k);
+      const r2 = spikeRnd(k + 37);
+      const a = (k / NOVA_SPIKES) * Math.PI * 2 + (r1 - 0.5) * 0.18;
+      const rr = Math.max(0.05, n.r * e * (0.9 + 0.1 * r2));
+      const h = tall * (0.55 + 0.45 * r2) * grow * sink;
+      if (h < 0.01) continue;
+      tmpP.set(n.x + Math.sin(a) * rr, n.y - 0.05, n.z + Math.cos(a) * rr);
+      tmpQ.setFromEuler(tmpE.set(0.3 + 0.35 * r1, a, (r2 - 0.5) * 0.4, 'YXZ'));
+      const w = 0.7 + 0.6 * r1;
+      tmpS.set(w, h, w);
+      this.spikes.setMatrixAt(at, tmpM.compose(tmpP, tmpQ, tmpS));
+      this.spikes.setColorAt(at, tmpC);
+      at++;
+    }
+    return at;
   }
 }
 
@@ -694,7 +828,7 @@ export class Zaps {
         sx /= sl;
         sz /= sl;
         for (let layer = 0; layer < 2; layer++) {
-          const half = layer === 0 ? 0.13 : 0.03;
+          const half = layer === 0 ? 0.19 : 0.04;
           const r = layer === 0 ? this.glow.r * 0.9 * fade : 2.4 * fade;
           const g = layer === 0 ? this.glow.g * 0.9 * fade : 2.4 * fade;
           const b = layer === 0 ? this.glow.b * 0.9 * fade : 2.2 * fade;
@@ -847,33 +981,20 @@ export class Gems {
 
 // --------------------------------------------------------- upgrade orbs ---
 
-/** A floating label: the upgrade's name on a dark pill, always facing you. */
+/** A floating label: the upgrade's name in the run's lettering (no pill behind it), always facing you. */
 function labelSprite(text: string, color: string): Sprite {
   const canvas = document.createElement('canvas');
   canvas.width = 512;
-  canvas.height = 128;
+  canvas.height = 160;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = 'rgba(10,14,28,0.82)';
-  ctx.beginPath();
-  ctx.roundRect(6, 14, 500, 100, 50);
-  ctx.fill();
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 6;
-  ctx.stroke();
-  ctx.fillStyle = color;
   ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  let size = 60;
-  ctx.font = `800 ${size}px system-ui, sans-serif`;
-  while (ctx.measureText(text).width > 450 && size > 24) {
-    size -= 4;
-    ctx.font = `800 ${size}px system-ui, sans-serif`;
-  }
-  ctx.fillText(text, 256, 66);
+  const name = text.toUpperCase();
+  const size = fitLettering(ctx, name, 430, 76, 28);
+  drawLettering(ctx, name, 256, 80 + size * 0.36, size, color.length === 7 ? color : '#ffd166');
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
   const sprite = new Sprite(new SpriteMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false }));
-  sprite.scale.set(1.2, 0.3, 1);
+  sprite.scale.set(1.2, 0.375, 1);
   return sprite;
 }
 

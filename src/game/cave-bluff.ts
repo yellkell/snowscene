@@ -105,7 +105,7 @@ function buildFace(): Mesh {
 
 /** The beacon deck on the shelf: planks, rails, and the beacon on its tripod. */
 function buildDeck(): Mesh {
-  const b = new GeometryBuilder();
+  const b = new GeometryBuilder({ separate: true });
   const y = BLUFF_TOP_Y;
   const planks = Math.round((DECK_BACK_S - DECK_FRONT_S) / 0.62);
   for (let k = 0; k < planks; k++) {
@@ -147,7 +147,7 @@ function buildDeck(): Mesh {
 function buildPortal(x: number, y: number, z: number): Group {
   const group = new Group();
   group.name = 'CavePortal';
-  const b = new GeometryBuilder();
+  const b = new GeometryBuilder({ separate: true });
   for (const s of [-1, 1]) box(b, 0.3, 3.1, 0.3, placed(x + s * 1.25, y + 1.55, z + 0.15), WOOD_DARK);
   box(b, 3.2, 0.36, 0.4, placed(x, y + 3.2, z + 0.15), WOOD_DARK);
   box(b, 3.4, 0.14, 0.6, placed(x, y + 3.44, z + 0.15), WOOD);

@@ -548,7 +548,8 @@ export function buildCabin(x: number, z: number, rotY: number): Group {
   group.position.set(x, y - 0.1, z);
   group.rotation.y = rotY;
   const rand = mulberry32(Math.round(x * 31 + z * 17));
-  const b = new GeometryBuilder();
+  // Overlapping footing stones and trim share faces: keep them apart.
+  const b = new GeometryBuilder({ separate: true });
   const glow = new GeometryBuilder();
   const logTone = (k: number) => new Color(0.42, 0.27, 0.15).multiplyScalar(0.82 + 0.3 * k);
   const logEnd = new Color(0.62, 0.46, 0.3);
@@ -746,7 +747,7 @@ export function buildWorkbench(position: Vector3): Group {
   const group = new Group();
   group.name = 'Workbench';
   group.position.copy(position);
-  const builder = new GeometryBuilder();
+  const builder = new GeometryBuilder({ separate: true });
   const wood = new Color(0.55, 0.37, 0.21);
   const woodDark = new Color(0.38, 0.25, 0.14);
   const snow = new Color(0.95, 0.97, 1);

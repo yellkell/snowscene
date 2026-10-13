@@ -54,7 +54,7 @@ import { WALL_Z } from '../terrain.js';
 import { startTutorialKit } from '../tutorial-kit.js';
 import { tutorialLevel } from '../tutorial-level.js';
 import { BLOATER, BRUTE, CAP, GHOUL, GLITTER, Horde, KINDS, LUNGER, SPLITTER, TITAN } from './horde.js';
-import { Blades, Bolts, Chests, Gems, Hurls, Impacts, Novas, Orbs, Zaps } from './survivors-fx.js';
+import { billboard, Blades, Bolts, Chests, Gems, Hurls, Impacts, Novas, Orbs, Zaps } from './survivors-fx.js';
 import { Breath, Comets, Embers, Flames, Rockets } from './fire-fx.js';
 import { SurvivorsHud } from './survivors-hud.js';
 import { ARENA_X, ARENA_Z, duneHeight, survivorsLevel, survivorsView } from './survivors-level.js';
@@ -62,8 +62,11 @@ import { survivors, survivorsControl } from './survivors-state.js';
 import { buildSurvivorsWorld } from './survivors-world.js';
 import { Shards, SwarmMesh } from './swarm-mesh.js';
 import { UpgradeMenu } from './upgrade-menu.js';
+import { loadDisplayFont } from './lettering.js';
 import {
   CHOICE,
+  END_AGAIN,
+  END_LEAVE,
   EVOLUTIONS,
   type Evolution,
   type EvolutionId,
@@ -80,11 +83,15 @@ import {
   type WeaponId,
 } from './upgrades.js';
 
+/** Seconds the result of a run stands before its two cards come up. */
+const END_WAIT = 2.6;
 /** A bloater's burst: how far it reaches, and how close it hurts you. */
 const BURST_RADIUS = 3.4;
 const BURST_HURTS = 2.1;
 /** Kill flares shown per frame, at most. */
 const KILL_FLARES = 6;
+/** Icicles shattering into shards per frame, at most. */
+const SHATTERS = 8;
 /** A crystal streak pays out a chord every this many. */
 const STREAK_CHORD = 20;
 /** Patches of burning snow the ember trail can keep alight at once. */
@@ -218,6 +225,7 @@ export class SurvivorsSystem extends createSystem({}) {
   private nextGlitter = 50;
   private glitterTrail = 0;
   private killFlares = 0;
+  private shatters = 0;
   private gemHaptic = 0;
   private growlT = 0;
   private nextOrb = 8;
@@ -259,8 +267,13 @@ export class SurvivorsSystem extends createSystem({}) {
   private readonly headUp = new Vector3();
   private readonly bossAt = new Vector3();
   private readonly pickAt = new Vector3();
+  /** Seconds until the end-of-run cards come up (0: up, or not yet over), and their line. */
+  private endWait = 0;
+  private endLine = '';
 
   init(): void {
+    // The run's lettering face: loaded now so it is ready long before a run.
+    void loadDisplayFont();
     survivorsControl.start = () => this.start();
     survivorsControl.exit = () => this.exit();
     if (new URLSearchParams(window.location.search).has('survivors')) {
@@ -326,6 +339,7 @@ export class SurvivorsSystem extends createSystem({}) {
       setPhase(Phase.Poling);
       audio.setMusic('night');
       toast('Snow Survivors! Hold out for 8 minutes. Your weapons fire by themselves; walk over what they drop.', 6);
+      this.hud.announce('SURVIVE 8 MINUTES', '#ffd166', 4, 2, 'Your weapons fire by themselves');
       this.pendingHint = this.world.renderer.xr.isPresenting
         ? { text: 'Your stats are on your pole handles', color: '#c9e8ff' }
         : { text: 'Your stats are in the bottom corners', color: '#c9e8ff' };
@@ -374,6 +388,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.time = 0;
     this.kills = 0;
     this.dead = false;
+    this.endWait = 0;
     this.warning = 0;
     this.lastSecond = -1;
     this.menu.close();
@@ -457,6 +472,9 @@ export class SurvivorsSystem extends createSystem({}) {
     const dt = Math.min(delta, 0.05);
     getHeadWorld(this.world, this.head);
     const yaw = getHeadYaw(this.world);
+    // Glows are flat cards turned to the eye.
+    (this.world.renderer.xr.isPresenting ? this.player.head : this.world.camera).getWorldQuaternion(billboard);
+    this.shatters = 0;
     survivorsView.yaw = yaw;
     const px = this.head.x;
     const pz = this.head.z;
@@ -515,6 +533,7 @@ export class SurvivorsSystem extends createSystem({}) {
     } else if (this.dead) {
       this.blades.hide();
       this.breathT = 0;
+      this.updateEnd(dt);
     }
 
     this.swarm.update(this.horde, clock, this.scene.fog as Fog | null);
@@ -1147,7 +1166,38 @@ export class SurvivorsSystem extends createSystem({}) {
     audio.fanfare();
     const mm = Math.floor(this.time / 60);
     const ss = Math.floor(this.time % 60).toString().padStart(2, '0');
-    this.hud.announce('YOU FELL', '#ff6b6b', 30, 9, `at ${mm}:${ss} with ${this.kills.toLocaleString()} kills`);
+    this.endLine = `at ${mm}:${ss} with ${this.kills.toLocaleString()} kills`;
+    this.hud.announce('YOU FELL', '#ff6b6b', END_WAIT + 0.4, 9, this.endLine);
+    this.endWait = END_WAIT;
+  }
+
+  /**
+   * After the run: the result stands a moment, then two cards come up,
+   * just like an upgrade choice: poke one for another go or to head home
+   * (1 or 2 on a desktop).
+   */
+  private updateEnd(dt: number): void {
+    if (this.endWait > 0) {
+      this.endWait -= dt;
+      if (this.endWait > 0) return;
+      const won = survivors.won.peek();
+      const presenting = this.world.renderer.xr.isPresenting;
+      this.hud.clearSign();
+      this.menu.open(won ? 'YOU SURVIVED!' : 'YOU FELL', won ? '#ffe066' : '#ff6b6b', [END_AGAIN, END_LEAVE], this.stats, this.head, getHeadYaw(this.world), presenting, this.endLine);
+      audio.cards();
+    }
+    if (!this.menu.active) return;
+    this.tips.length = 0;
+    for (const hand of HANDS) if (hand.tracked) this.tips.push(hand.indexTip);
+    let key = -1;
+    const kb = this.input.keyboard;
+    for (let k = 0; k < 2; k++) if (kb.getKeyDown(DIGITS[k])) key = k;
+    const picked = this.menu.update(dt, this.tips, key);
+    if (!picked) return;
+    audio.pick();
+    for (const hand of HANDS) this.pulse(hand.handedness, 0.9, 90);
+    if (picked.id === END_AGAIN.id) this.start();
+    else this.exit();
   }
 
   private heal(amount: number): void {
@@ -1278,7 +1328,9 @@ export class SurvivorsSystem extends createSystem({}) {
     h.sweep();
     for (let k = 1; k <= 4; k++) this.novas.burst(px, pz, 6 * k, k % 2 ? 0xffe066 : 0x7fdcff);
     this.shards.burst(px, this.head.y + 1.5, pz, 120, 0xffe066, 0.08, 6, 7);
-    this.hud.announce('YOU SURVIVED!', '#ffe066', 30, 9, `${this.kills.toLocaleString()} kills · level ${this.lvl} · best combo ${this.bestCombo.toLocaleString()}`);
+    this.endLine = `${this.kills.toLocaleString()} kills · level ${this.lvl} · best combo ${this.bestCombo.toLocaleString()}`;
+    this.hud.announce('YOU SURVIVED!', '#ffe066', END_WAIT + 0.4, 9, this.endLine);
+    this.endWait = END_WAIT;
     audio.victory();
     for (const hand of HANDS) this.pulse(hand.handedness, 1, 500);
   }
@@ -1622,6 +1674,8 @@ export class SurvivorsSystem extends createSystem({}) {
       let fy = y + 0.3;
       let fz = pz;
       let t = this.horde.nearest(px, pz, thunder ? 20 : 15, this.hitSet);
+      // A crack of light where it leaves you.
+      if (t >= 0) this.impacts.spawn(fx, fy, fz, thunder ? 0xfffbb0 : 0xfff27a, 1.1);
       for (let c = 0; c < chains && t >= 0; c++) {
         this.hitSet.add(t);
         const tx = this.horde.x[t];
@@ -2015,6 +2069,11 @@ export class SurvivorsSystem extends createSystem({}) {
       const e = this.near[0];
       this.hit(e, b.dmg[i], b.vx[i], b.vz[i], 2.5);
       this.impacts.spawn(b.x[i], b.y[i], b.z[i], b.color[i], 0.35 + b.radius[i]);
+      // The ice shatters off what it hits (a handful a frame at most).
+      if (this.shatters < SHATTERS) {
+        this.shatters++;
+        this.shards.burst(b.x[i], b.y[i], b.z[i], 4, b.color[i], 0.035 + 0.05 * b.radius[i], 2.4, 1.6);
+      }
       if (b.pierce[i] > 0) {
         b.pierce[i]--;
         b.cool[i] = 0.07;

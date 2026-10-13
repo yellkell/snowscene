@@ -582,8 +582,9 @@ export class GuideSystem extends createSystem({}) {
   /** In XR, does the panel live in the backpack (shown only while it's open)? */
   private panelInPack(): boolean {
     const phase = game.phase.peek();
-    // Snow Survivors: out of the way while you fight, in front when you fall.
-    if (survivors.active.peek()) return !survivors.dead.peek();
+    // Snow Survivors: always out of the way (the end of a run offers its
+    // choices as cards, like the upgrades).
+    if (survivors.active.peek()) return true;
     if (phase === Phase.Landed) return false;
     if (exp.active.peek()) return true;
     if (phase !== Phase.Poling) return true;

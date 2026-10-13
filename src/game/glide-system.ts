@@ -23,11 +23,15 @@ import { fadeThen, game, Phase, setPhase } from './state.js';
 import { clamp } from './terrain.js';
 
 const BAR_REACH = 0.2;
-/** The bar follows your hands this far from its resting spot at most (m). */
-const BAR_FOLLOW_MAX = 0.4;
+/** Hands this close to the bar's resting spot are on the bar, open or closed (m). */
+const BAR_FOLLOW_MAX = 0.6;
 /** How quickly the bar settles into your hands (per second). */
-const BAR_FOLLOW_RATE = 30;
+const BAR_FOLLOW_RATE = 45;
 const MAX_BAR_ROLL = 0.6;
+/** The wing twists to keep the bar across both hands, this far at most (rad). */
+const MAX_BAR_TWIST = 0.4;
+/** With one hand on it, the bar's grip under that hand: this far out from the middle. */
+const ONE_HAND_GRIP = 0.28;
 const MAX_TURN_RATE = 0.55; // rad/s
 const LAUNCH_HOLD_TIME = 0.35;
 
@@ -55,6 +59,7 @@ export class GlideSystem extends createSystem({}) {
   private readonly barOffset = new Vector3();
   private readonly barTarget = new Vector3();
   private barRoll = 0;
+  private barTwist = 0;
   private handBlend = 0;
   private readonly barLocal = new Vector3(0, BAR_Y, BAR_Z);
   private readonly handL = new Vector3();
@@ -120,9 +125,10 @@ export class GlideSystem extends createSystem({}) {
 
   /**
    * Hang the glider from its control bar. The bar rests below and in front
-   * of the eyes; while both hands hold it, it sits in your hands instead
-   * (centred between them, tilted with them), and the wing pivots about the
-   * bar like a real hang glider's.
+   * of the eyes; while your hands are on it (in flight, open or closed) it
+   * sits in them instead: across both hands, tilted and twisted with them,
+   * or under the one hand that is on it. The wing pivots about the bar like
+   * a real hang glider's.
    */
   private poseGlider(dt = 0, followHands = false): void {
     getHeadWorld(this.world, this.head);
@@ -133,32 +139,64 @@ export class GlideSystem extends createSystem({}) {
     const rest = this.tmp.set(this.head.x, this.head.y - BAR_BELOW_EYES, this.head.z).addScaledVector(this.fwd, -BAR_Z);
     let roll = -this.steer * 0.32;
 
-    const holding = followHands && hands.left.tracked && hands.right.tracked && hands.left.grip && hands.right.grip;
-    if (holding) {
+    let on = 0;
+    if (followHands) {
       // Fresh hand positions: the rig has moved since the hands were read this frame.
       const grips = this.player.gripSpaces;
-      grips.left.updateWorldMatrix(true, false);
-      grips.right.updateWorldMatrix(true, false);
-      const left = this.handL.setFromMatrixPosition(grips.left.matrixWorld);
-      const right = this.handR.setFromMatrixPosition(grips.right.matrixWorld);
-      this.barTarget.addVectors(left, right).multiplyScalar(0.5).sub(rest);
-      if (this.barTarget.length() > BAR_FOLLOW_MAX) this.barTarget.setLength(BAR_FOLLOW_MAX);
-      const span = Math.max(0.2, left.distanceTo(right));
-      const handRoll = clamp(Math.asin(clamp((right.y - left.y) / span, -1, 1)), -MAX_BAR_ROLL, MAX_BAR_ROLL);
-      const k = dt > 0 ? 1 - Math.exp(-BAR_FOLLOW_RATE * dt) : 1;
-      this.barOffset.lerp(this.barTarget, k);
-      this.barRoll += (handRoll - this.barRoll) * k;
+      if (hands.left.tracked) {
+        grips.left.updateWorldMatrix(true, false);
+        this.handL.setFromMatrixPosition(grips.left.matrixWorld);
+      }
+      if (hands.right.tracked) {
+        grips.right.updateWorldMatrix(true, false);
+        this.handR.setFromMatrixPosition(grips.right.matrixWorld);
+      }
+      const leftOn = hands.left.tracked && this.handL.distanceTo(rest) < BAR_FOLLOW_MAX;
+      const rightOn = hands.right.tracked && this.handR.distanceTo(rest) < BAR_FOLLOW_MAX;
+      on = (leftOn ? 1 : 0) + (rightOn ? 1 : 0);
+      let handRoll = this.barRoll;
+      let twist = this.barTwist;
+      if (on === 2) {
+        const left = this.handL;
+        const right = this.handR;
+        this.barTarget.addVectors(left, right).multiplyScalar(0.5).sub(rest);
+        const span = Math.max(0.2, left.distanceTo(right));
+        handRoll = clamp(Math.asin(clamp((right.y - left.y) / span, -1, 1)), -MAX_BAR_ROLL, MAX_BAR_ROLL);
+        // The bar runs left to right across the heading: how far the hands turn it.
+        const ax = right.x - left.x;
+        const az = right.z - left.z;
+        const side = ax * -this.fwd.z + az * this.fwd.x;
+        const ahead = ax * this.fwd.x + az * this.fwd.z;
+        twist = clamp(Math.atan2(ahead, Math.max(0.05, side)), -MAX_BAR_TWIST, MAX_BAR_TWIST);
+      } else if (on === 1) {
+        // One hand on it: that hand holds its own grip, out from the middle.
+        const hand = leftOn ? this.handL : this.handR;
+        const out = leftOn ? -ONE_HAND_GRIP : ONE_HAND_GRIP;
+        this.barTarget.copy(hand).sub(rest);
+        this.barTarget.x -= -this.fwd.z * out * Math.cos(this.barRoll);
+        this.barTarget.z -= this.fwd.x * out * Math.cos(this.barRoll);
+        this.barTarget.y -= out * Math.sin(this.barRoll);
+      }
+      if (on > 0) {
+        const k = dt > 0 ? 1 - Math.exp(-BAR_FOLLOW_RATE * dt) : 1;
+        if (this.handBlend < 0.05) this.barOffset.copy(this.barTarget);
+        this.barOffset.lerp(this.barTarget, k);
+        this.barRoll += (handRoll - this.barRoll) * k;
+        this.barTwist += (twist - this.barTwist) * k;
+      }
     }
-    const blendRate = dt > 0 ? 1 - Math.exp(-(holding ? 12 : 3) * dt) : 1;
+    const holding = on > 0;
+    const blendRate = dt > 0 ? 1 - Math.exp(-(holding ? 14 : 3) * dt) : 1;
     this.handBlend += ((holding ? 1 : 0) - this.handBlend) * blendRate;
     if (this.handBlend < 1e-3 && !holding) {
       this.barOffset.set(0, 0, 0);
       this.barRoll = roll;
+      this.barTwist = 0;
     }
     roll += (this.barRoll - roll) * this.handBlend;
     rest.addScaledVector(this.barOffset, this.handBlend);
 
-    this.euler.set(this.pitch * 0.14, yaw, roll, 'YXZ');
+    this.euler.set(this.pitch * 0.14, yaw + this.barTwist * this.handBlend, roll, 'YXZ');
     root.rotation.copy(this.euler);
     this.quat.setFromEuler(this.euler);
     root.position.copy(this.barLocal).applyQuaternion(this.quat).multiplyScalar(-1).add(rest);
