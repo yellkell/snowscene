@@ -38,7 +38,7 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import { GeometryBuilder, placed } from '../mesh-utils.js';
-import { additive, streakGeometry } from './survivors-fx.js';
+import { additive, fx, streakGeometry } from './survivors-fx.js';
 import { duneHeight } from './survivors-level.js';
 
 const tmpM = new Matrix4();
@@ -86,6 +86,7 @@ void main() {
 }
 `;
 const EMBER_FRAG = /* glsl */ `
+uniform float uGain;
 varying float vHeat;
 varying vec3 vTint;
 varying float vNear;
@@ -100,7 +101,8 @@ void main() {
   // A tinted spark (fireworks) keeps its colour, whitening at the core.
   vec3 col = mix(hot, vTint, step(0.001, dot(vTint, vec3(1.0))));
   col = mix(col, vec3(1.0), core * core * 0.22 * vHeat);
-  float a = core * smoothstep(0.0, 0.25, vHeat) * vNear;
+  // Under the glow budget, but never below half: fire is the point of fire.
+  float a = core * smoothstep(0.0, 0.25, vHeat) * vNear * (0.5 + 0.5 * uGain);
   gl_FragColor = vec4(col * (1.0 + 0.6 * vHeat), a);
 }
 `;
@@ -130,7 +132,7 @@ export class Embers {
     this.material = new ShaderMaterial({
       vertexShader: EMBER_VERT,
       fragmentShader: EMBER_FRAG,
-      uniforms: { uViewH: { value: 900 } },
+      uniforms: { uViewH: { value: 900 }, uGain: { value: 1 } },
       transparent: true,
       depthWrite: false,
       blending: AdditiveBlending,
@@ -175,13 +177,19 @@ export class Embers {
     }
   }
 
+  /** Sparks alight this frame. */
+  live = 0;
+
   tick(dt: number, time: number): void {
     const damp = Math.exp(-dt * 1.6);
+    this.material.uniforms.uGain.value = fx.gain;
+    let live = 0;
     for (let i = 0; i < EMBER_CAP; i++) {
       if (this.life[i] <= 0) {
         this.size[i] = 0;
         continue;
       }
+      live++;
       this.life[i] -= dt;
       const t = Math.max(0, this.life[i] / this.maxLife[i]);
       const o = i * 3;
@@ -197,6 +205,7 @@ export class Embers {
       // Swells as it catches, shrinks as it cools.
       this.size[i] = this.base[i] * (t > 0.85 ? (1 - t) / 0.15 * 0.6 + 0.4 : 0.4 + 0.6 * t);
     }
+    this.live = live;
     const geo = this.points.geometry;
     for (const name of ['position', 'aSize', 'aHeat', 'aTint']) (geo.getAttribute(name) as BufferAttribute).needsUpdate = true;
   }
@@ -237,6 +246,10 @@ const FLAME_CAP = 520;
 export class Flames {
   private readonly mesh: InstancedMesh;
   private n = 0;
+  /** Tongues standing this frame. */
+  get live(): number {
+    return this.n;
+  }
 
   constructor(parent: Group) {
     const geo = new PlaneGeometry(1, 2).translate(0, 1, 0);
@@ -260,7 +273,7 @@ export class Flames {
     tmpQ.multiply(tmpQ2.setFromAxisAngle(Z_AXIS, Math.sin(time * 5 + phase) * 0.15));
     tmpS.set(h * 0.45, h * 0.5, 1);
     this.mesh.setMatrixAt(this.n, tmpM.compose(tmpP, tmpQ, tmpS));
-    this.mesh.setColorAt(this.n, tmpC.setRGB(1.3, 1.1, 1.0).multiplyScalar(0.6 + 0.6 * strength));
+    this.mesh.setColorAt(this.n, tmpC.setRGB(1.3, 1.1, 1.0).multiplyScalar((0.6 + 0.6 * strength) * (0.55 + 0.45 * fx.gain)));
     this.n++;
   }
 
@@ -440,7 +453,7 @@ export class Rockets {
       this.body.setColorAt(i, tmpC.setRGB(1, 1, 1));
       tmpS.set(1, 1, 1.4);
       this.trail.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.trail.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(1.4));
+      this.trail.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(1.4 * (0.5 + 0.5 * fx.gain)));
     }
     for (const m of [this.body, this.trail]) {
       m.count = this.n;

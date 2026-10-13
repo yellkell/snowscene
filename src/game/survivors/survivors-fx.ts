@@ -30,6 +30,7 @@ import {
   RingGeometry,
   Sprite,
   SpriteMaterial,
+  SphereGeometry,
   SRGBColorSpace,
   Euler,
   Vector3,
@@ -48,12 +49,30 @@ const WHITE = new Color(1, 1, 1);
 const spinQ = new Quaternion();
 const tmpC = new Color();
 const tmpE = new Euler(0, 0, 0, 'YXZ');
+const GOLD = new Color(1, 0.82, 0.4);
+const prism = new Color();
 
 /**
  * The way the viewer faces this frame (the system sets it before drawing):
  * glows drawn as flat cards turned to it always face you.
  */
 export const billboard = new Quaternion();
+
+/**
+ * The glow budget. Every glow, trail, sweep and flash is added light, and
+ * late in a run hundreds of them stack up into a white haze that hides the
+ * horde and the shape of every attack. The system works out how much is
+ * on screen each frame and eases `gain` down as it fills (never below
+ * MIN_GAIN): the glows soften, while the crisp cores of the attacks (the
+ * crystals, the swords, the lightning's white-hot spine, the ice spikes)
+ * stay at full strength, so each weapon keeps its shape.
+ */
+export const fx = { gain: 1 };
+export const MIN_GAIN = 0.38;
+/** Glows this close to your eyes fade out (a volley leaves from your chest). */
+function nearFade(d: number): number {
+  return Math.min(1, Math.max(0, (d - 0.7) / 1.3));
+}
 
 /** Shared soft glow for halos and glints (one texture for all of them). */
 let flare: CanvasTexture | null = null;
@@ -107,6 +126,33 @@ export function additive(extra: { vertexColors?: boolean; map?: CanvasTexture } 
   });
 }
 
+/**
+ * A see-through colour that tints what is behind it (normal blending). The
+ * snow is nearly white, so added light low over it only ever bleaches it
+ * whiter: everything that hugs the snow (sword arcs, a nova's wall, rings
+ * of reach) tints it in its colour instead, and stays readable.
+ */
+export function tinted(extra: { vertexColors?: boolean; map?: CanvasTexture } = {}): MeshBasicMaterial {
+  return new MeshBasicMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: DoubleSide,
+    toneMapped: false,
+    fog: false,
+    ...extra,
+  });
+}
+
+/** Per-vertex strengths as a colour attribute's alpha (white rgb, so the instance colour shows true). */
+function alphaColors(strength: number[]): BufferAttribute {
+  const col = new Float32Array(strength.length * 4);
+  for (let i = 0; i < strength.length; i++) {
+    col[i * 4] = col[i * 4 + 1] = col[i * 4 + 2] = 1;
+    col[i * 4 + 3] = strength[i];
+  }
+  return new BufferAttribute(col, 4);
+}
+
 /** A soft four-pointed flare with a bright core, for hit flashes. */
 export function flareTexture(): CanvasTexture {
   const c = document.createElement('canvas');
@@ -155,6 +201,8 @@ export class Impacts {
   private readonly spin = new Float32Array(IMPACT_CAP);
   private readonly color = new Uint32Array(IMPACT_CAP);
   private next = 0;
+  /** Flashes showing this frame. */
+  live = 0;
 
   constructor(parent: Group) {
     this.mesh = new InstancedMesh(new PlaneGeometry(1, 1), additive({ map: flareTexture() }), IMPACT_CAP);
@@ -193,13 +241,15 @@ export class Impacts {
       // Pops big, then shrinks as it fades; never filling your view, and
       // dimmed when it goes off right beside you.
       const d = tmpP.distanceTo(eye);
-      const s = Math.min(this.size[i], d * 0.45) * (t < 0.2 ? 0.6 + 2.4 * t : 1.08 - 0.5 * (t - 0.2));
+      const s = Math.min(this.size[i], d * 0.45) * (t < 0.2 ? 0.6 + 2.4 * t : 1.08 - 0.5 * (t - 0.2)) * (0.65 + 0.35 * fx.gain);
       const near = Math.min(1, Math.max(0.15, (d - 0.8) / 2.5));
       tmpS.set(s, s, s);
       this.mesh.setMatrixAt(n, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.mesh.setColorAt(n, tmpC.set(this.color[i]).lerp(WHITE, 0.5 * (1 - t)).multiplyScalar(1.8 * near * (1 - t) * (1 - t)));
+      // In the colour of what made it (a white-hot core only at the very start).
+      this.mesh.setColorAt(n, tmpC.set(this.color[i]).lerp(WHITE, 0.3 * (1 - t) * (1 - t)).multiplyScalar(1.5 * near * (1 - t) * (1 - t) * fx.gain));
       n++;
     }
+    this.live = n;
     this.mesh.count = n;
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
@@ -215,9 +265,36 @@ export class Impacts {
 
 export const BOLT_CAP = 700;
 
+/** What a bolt is: an icicle, a Hailstorm icicle, a compass shard, a Starfall star. */
+export const BOLT_ICICLE = 0;
+export const BOLT_HAIL = 1;
+export const BOLT_SHARD = 2;
+export const BOLT_STAR = 3;
+
+/**
+ * A four-pointed star of ice lying flat (it spins about its up axis as it
+ * flies): the compass shards, so they never read as icicles.
+ */
+function starGeometry(): BufferGeometry {
+  const b = new GeometryBuilder();
+  for (const [x, z] of [
+    [1, 0],
+    [0, 1],
+  ]) {
+    b.add(new OctahedronGeometry(1, 0), placed(0, 0, 0, 0, x ? 0.3 : 0.06, 0.035, z ? 0.3 : 0.06), new Color(1, 1, 1));
+  }
+  for (const a of [Math.PI / 4, -Math.PI / 4]) {
+    b.add(new OctahedronGeometry(1, 0), placed(0, 0, 0, a, 0.04, 0.03, 0.16), new Color(1, 1, 1));
+  }
+  b.add(new OctahedronGeometry(1, 0), placed(0, 0, 0, 0, 0.07, 0.05, 0.07), new Color(2.4, 2.4, 2.4));
+  return b.build();
+}
+
 /** Flying projectiles: icicles at the nearest, compass shards every way. */
 export class Bolts {
   readonly mesh: InstancedMesh;
+  /** The compass shards' stars. */
+  readonly stars: InstancedMesh;
   n = 0;
   readonly x = new Float32Array(BOLT_CAP);
   readonly y = new Float32Array(BOLT_CAP);
@@ -231,6 +308,7 @@ export class Bolts {
   /** Seconds before it can hit again (it passes through what it just hit). */
   readonly cool = new Float32Array(BOLT_CAP);
   readonly color = new Uint32Array(BOLT_CAP);
+  readonly kind = new Uint8Array(BOLT_CAP);
   /** A streak of light behind each one. */
   readonly trail: InstancedMesh;
   /** A soft glow round each one, always facing you: they shine like magic ice. */
@@ -248,6 +326,13 @@ export class Bolts {
     this.mesh.frustumCulled = false;
     this.mesh.name = 'Bolts';
     parent.add(this.mesh);
+    this.stars = new InstancedMesh(starGeometry(), new MeshBasicMaterial({ vertexColors: true, toneMapped: false }), BOLT_CAP);
+    this.stars.instanceMatrix.setUsage(DynamicDrawUsage);
+    this.stars.setColorAt(0, tmpC.set(0xffffff));
+    this.stars.count = 0;
+    this.stars.frustumCulled = false;
+    this.stars.name = 'CompassStars';
+    parent.add(this.stars);
     this.trail = new InstancedMesh(streakGeometry(0.16), additive({ vertexColors: true }), BOLT_CAP);
     this.trail.instanceMatrix.setUsage(DynamicDrawUsage);
     this.trail.setColorAt(0, tmpC.set(0xffffff));
@@ -256,7 +341,7 @@ export class Bolts {
     this.trail.renderOrder = 5;
     this.trail.name = 'BoltTrails';
     parent.add(this.trail);
-    this.halo = new InstancedMesh(new PlaneGeometry(1, 1), additive({ map: sharedFlare() }), BOLT_CAP);
+    this.halo = new InstancedMesh(new PlaneGeometry(1, 1), tinted({ map: sharedFlare() }), BOLT_CAP);
     this.halo.instanceMatrix.setUsage(DynamicDrawUsage);
     this.halo.setColorAt(0, tmpC.set(0xffffff));
     this.halo.count = 0;
@@ -266,9 +351,10 @@ export class Bolts {
     parent.add(this.halo);
   }
 
-  fire(x: number, y: number, z: number, dirX: number, dirZ: number, speed: number, dmg: number, radius: number, pierce: number, life: number, color: number): void {
+  fire(x: number, y: number, z: number, dirX: number, dirZ: number, speed: number, dmg: number, radius: number, pierce: number, life: number, color: number, kind = BOLT_ICICLE): void {
     if (this.n >= BOLT_CAP) return;
     const i = this.n++;
+    this.kind[i] = kind;
     this.x[i] = x;
     this.y[i] = y;
     this.z[i] = z;
@@ -297,41 +383,72 @@ export class Bolts {
     this.pierce[i] = this.pierce[j];
     this.cool[i] = this.cool[j];
     this.color[i] = this.color[j];
+    this.kind[i] = this.kind[j];
   }
 
-  draw(): void {
+  /**
+   * Icicles fly point first, rolling so their facets catch the light;
+   * compass shards are stars spinning flat. Every one trails a streak and
+   * wears a soft glow (the glows and streaks under the glow budget, faded
+   * near your eyes). The evolved ones shimmer: a Hailstorm icicle's glow
+   * runs through the colours of a prism, a Starfall star's flares gold.
+   */
+  draw(eye: Vector3): void {
+    let ni = 0;
+    let ns = 0;
+    const gain = fx.gain;
     for (let i = 0; i < this.n; i++) {
       tmpP.set(this.x[i], this.y[i], this.z[i]);
+      const kind = this.kind[i];
+      const star = kind === BOLT_SHARD || kind === BOLT_STAR;
+      const evolved = kind === BOLT_HAIL || kind === BOLT_STAR;
       const heading = Math.atan2(this.vx[i], this.vz[i]);
-      tmpQ.setFromAxisAngle(UP, heading);
-      const s = this.radius[i] / 0.35;
-      // A little roll as it flies, so its facets catch the light.
-      tmpQ.multiply(spinQ.setFromAxisAngle(Z_AXIS, this.life[i] * 14));
+      // What it hits grows with Area; what you see only a little (a late
+      // build's icicles were metres across and their glows fogged the view).
+      const hit = this.radius[i] / 0.35;
+      const s = hit <= 1 ? hit : 1 + (hit - 1) * 0.3;
       tmpS.set(s, s, s);
-      this.mesh.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.mesh.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(1.5));
+      if (star) {
+        tmpQ.setFromAxisAngle(UP, this.life[i] * (evolved ? 16 : 12) + i);
+        this.stars.setMatrixAt(ns, tmpM.compose(tmpP, tmpQ, tmpS));
+        this.stars.setColorAt(ns, tmpC.set(this.color[i]).lerp(evolved ? GOLD : WHITE, evolved ? 0.35 : 0.1).multiplyScalar(1.5));
+        ns++;
+      } else {
+        tmpQ.setFromAxisAngle(UP, heading);
+        tmpQ.multiply(spinQ.setFromAxisAngle(Z_AXIS, this.life[i] * 14));
+        this.mesh.setMatrixAt(ni, tmpM.compose(tmpP, tmpQ, tmpS));
+        this.mesh.setColorAt(ni, tmpC.set(this.color[i]).multiplyScalar(1.5));
+        ni++;
+      }
       // The streak, as long as a few frames of its flight, fading as it dies.
+      const fade = Math.min(1, this.life[i] * 4);
+      const near = nearFade(tmpP.distanceTo(eye));
       tmpQ.setFromAxisAngle(UP, heading);
       const speed = Math.hypot(this.vx[i], this.vz[i]);
-      tmpS.set(s, s, Math.min(1.6, speed * 0.05) * s);
+      tmpS.set(s, s, Math.min(evolved ? 2.2 : 1.6, speed * 0.05) * s);
       this.trail.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
-      const fade = Math.min(1, this.life[i] * 4);
-      this.trail.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(1.3 * fade));
-      // The glow: a little twinkle so a volley glitters as it flies.
-      const g = s * (0.55 + 0.08 * Math.sin(this.life[i] * 40 + i));
+      this.trail.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(1.3 * fade * near * gain));
+      // The glow: a small see-through spark of its colour (it tints the
+      // snow instead of bleaching it), twinkling, and shrinking away as the
+      // bolt dies or comes near your eyes.
+      const tw = Math.sin(this.life[i] * (evolved ? 55 : 40) + i);
+      const g = s * (evolved ? 0.5 + 0.12 * tw : 0.36 + 0.05 * tw) * fade * near * (0.7 + 0.3 * gain);
       tmpS.set(g, g, g);
       this.halo.setMatrixAt(i, tmpM.compose(tmpP, billboard, tmpS));
-      this.halo.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(0.75 * fade));
+      tmpC.set(this.color[i]);
+      if (kind === BOLT_HAIL) tmpC.lerp(prism.setHSL((this.life[i] * 1.6 + i * 0.137) % 1, 0.9, 0.62), 0.6);
+      else if (kind === BOLT_STAR) tmpC.lerp(GOLD, 0.45 + 0.25 * tw);
+      this.halo.setColorAt(i, tmpC);
     }
-    this.mesh.count = this.n;
+    (this.halo.material as MeshBasicMaterial).opacity = 0.7;
+    this.mesh.count = ni;
+    this.stars.count = ns;
     this.trail.count = this.n;
     this.halo.count = this.n;
-    this.mesh.instanceMatrix.needsUpdate = true;
-    this.trail.instanceMatrix.needsUpdate = true;
-    this.halo.instanceMatrix.needsUpdate = true;
-    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
-    if (this.trail.instanceColor) this.trail.instanceColor.needsUpdate = true;
-    if (this.halo.instanceColor) this.halo.instanceColor.needsUpdate = true;
+    for (const m of [this.mesh, this.stars, this.trail, this.halo]) {
+      m.instanceMatrix.needsUpdate = true;
+      if (m.instanceColor) m.instanceColor.needsUpdate = true;
+    }
   }
 }
 
@@ -458,14 +575,15 @@ function sweepGeometry(span: number): BufferGeometry {
   const steps = 16;
   // Radii across the arc and their brightness: dark inside, a thin bright
   // band where the tips cut.
-  const R = [0.55, 0.86, 0.97, 1.02];
-  const B = [0, 0.18, 1, 0];
+  const R = [0.68, 0.9, 0.975, 1.02];
+  const B = [0, 0.12, 1, 0];
   const pos: number[] = [];
   const col: number[] = [];
   const at = (k: number, r: number): number[] => {
     const a = (-k / steps) * span;
     return [Math.sin(a) * r, 0, Math.cos(a) * r];
   };
+  // (col holds one strength per vertex: the arc's alpha.)
   for (let k = 0; k < steps; k++) {
     const f0 = Math.pow(1 - k / steps, 1.8);
     const f1 = Math.pow(1 - (k + 1) / steps, 1.8);
@@ -483,13 +601,13 @@ function sweepGeometry(span: number): BufferGeometry {
         [a1, B[j] * f1],
       ] as [number[], number][]) {
         pos.push(v[0], v[1], v[2]);
-        col.push(c, c, c);
+        col.push(c);
       }
     }
   }
   const g = new BufferGeometry();
   g.setAttribute('position', new BufferAttribute(new Float32Array(pos), 3));
-  g.setAttribute('color', new BufferAttribute(new Float32Array(col), 3));
+  g.setAttribute('color', alphaColors(col));
   return g;
 }
 
@@ -499,21 +617,33 @@ export class Blades {
   readonly sweep: InstancedMesh;
   /** A star of light riding each sword's tip. */
   readonly glint: InstancedMesh;
+  /** A ring of light on the snow under each circle of swords: their reach. */
+  private readonly rings: Mesh[] = [];
+  /** The arc each sword sweeps behind it (radians): shorter the more swords there are. */
+  private span = 0.9;
+  private ringsUsed = 0;
   private turn = 0;
 
   constructor(parent: Group) {
+    // Steel with its light baked in (the material is unlit): bright along
+    // the bevels facing up, darker on the flats below, a hot edge line.
+    const steel = (bright: Color, dark: Color) => (_p: Vector3, n: Vector3, out: Color) => {
+      const k = Math.max(0, n.x * 0.25 + n.y * 0.92 + n.z * 0.3);
+      out.copy(dark).lerp(bright, k);
+    };
     const b = new GeometryBuilder();
-    b.add(new BoxGeometry(0.07, 0.02, 0.9), placed(0, 0, 0.45), new Color(1.6, 1.5, 1.2));
-    b.add(new ConeGeometry(0.05, 0.16, 4).rotateX(Math.PI / 2), placed(0, 0, 0.98), new Color(1.6, 1.5, 1.2));
-    b.add(new BoxGeometry(0.3, 0.04, 0.05), placed(0, 0, 0), new Color(1.5, 1.0, 0.2));
-    b.add(new CylinderGeometry(0.025, 0.025, 0.2, 6).rotateX(Math.PI / 2), placed(0, 0, -0.12), new Color(0.35, 0.18, 0.08));
+    b.add(new OctahedronGeometry(1, 0), placed(0, 0, 0.47, 0, 0.055, 0.016, 0.5), steel(new Color(1.9, 1.85, 1.6), new Color(0.42, 0.44, 0.52)));
+    b.add(new BoxGeometry(0.008, 0.02, 0.8), placed(0, 0.004, 0.42), new Color(2.2, 2.1, 1.7));
+    b.add(new BoxGeometry(0.26, 0.035, 0.045), placed(0, 0, 0), steel(new Color(1.8, 1.25, 0.35), new Color(0.5, 0.3, 0.08)));
+    b.add(new CylinderGeometry(0.022, 0.022, 0.18, 6).rotateX(Math.PI / 2), placed(0, 0, -0.11), new Color(0.35, 0.18, 0.08));
+    b.add(new SphereGeometry(0.03, 6, 4), placed(0, 0, -0.21), new Color(1.6, 1.1, 0.3));
     this.mesh = new InstancedMesh(b.build(), new MeshBasicMaterial({ vertexColors: true, toneMapped: false, side: DoubleSide }), BLADE_CAP);
     this.mesh.instanceMatrix.setUsage(DynamicDrawUsage);
     this.mesh.count = 0;
     this.mesh.frustumCulled = false;
     this.mesh.name = 'OrbitBlades';
     parent.add(this.mesh);
-    this.sweep = new InstancedMesh(sweepGeometry(0.9), additive({ vertexColors: true }), BLADE_CAP);
+    this.sweep = new InstancedMesh(sweepGeometry(this.span), tinted({ vertexColors: true }), BLADE_CAP);
     this.sweep.instanceMatrix.setUsage(DynamicDrawUsage);
     this.sweep.setColorAt(0, tmpC.set(0xffffff));
     this.sweep.count = 0;
@@ -521,7 +651,7 @@ export class Blades {
     this.sweep.renderOrder = 5;
     this.sweep.name = 'BladeSweeps';
     parent.add(this.sweep);
-    this.glint = new InstancedMesh(new PlaneGeometry(1, 1), additive({ map: sharedFlare() }), BLADE_CAP);
+    this.glint = new InstancedMesh(new PlaneGeometry(1, 1), tinted({ map: sharedFlare() }), BLADE_CAP);
     this.glint.instanceMatrix.setUsage(DynamicDrawUsage);
     this.glint.setColorAt(0, tmpC.set(0xffffff));
     this.glint.count = 0;
@@ -529,6 +659,15 @@ export class Blades {
     this.glint.renderOrder = 6;
     this.glint.name = 'BladeGlints';
     parent.add(this.glint);
+    const ringGeo = new RingGeometry(0.965, 1, 96).rotateX(-Math.PI / 2);
+    for (let k = 0; k < 2; k++) {
+      const ring = new Mesh(ringGeo, tinted());
+      ring.renderOrder = 4;
+      ring.visible = false;
+      ring.name = 'BladeReach';
+      parent.add(ring);
+      this.rings.push(ring);
+    }
   }
 
   /** No swords out. */
@@ -536,7 +675,9 @@ export class Blades {
     this.mesh.count = 0;
     this.sweep.count = 0;
     this.glint.count = 0;
+    for (const r of this.rings) r.visible = false;
   }
+
 
   /**
    * Lay out `count` swords on a circle round (x, y, z), pointing outward,
@@ -559,8 +700,36 @@ export class Blades {
     // Where the tips reach: the sword runs from 0.35 r out by its length.
     const tip = radius * 0.35 + size * radius * 0.75 * 1.06;
     this.turn += 0.016;
+    // A dozen swords each sweeping a long arc made a solid ring of light at
+    // your hips: the more swords, the shorter and fainter each one's arc,
+    // so at most about half the circle is lit and they read as slashes.
+    const sweepGain = 0.85 * (0.5 + 0.5 * fx.gain) * Math.min(1, Math.sqrt(4 / Math.max(1, count)));
+    if (start === 0) {
+      // A fresh frame's swords: the rings are laid again, one per circle.
+      for (const r of this.rings) r.visible = false;
+      this.ringsUsed = 0;
+      const span = Math.round(Math.min(0.9, Math.max(0.25, 2.2 / Math.max(1, count))) * 20) / 20;
+      if (span !== this.span) {
+        this.span = span;
+        this.sweep.geometry.dispose();
+        this.sweep.geometry = sweepGeometry(span);
+      }
+    }
+    const ring = this.rings[this.ringsUsed++];
+    if (ring) {
+      ring.visible = true;
+      ring.position.set(x, duneHeight(x, z) + 0.05, z);
+      ring.scale.setScalar(tip);
+      const rm = ring.material as MeshBasicMaterial;
+      rm.color.set(color);
+      rm.opacity = (0.4 + 0.12 * Math.sin(this.turn * 5)) * (0.6 + 0.4 * fx.gain);
+    }
+    // One strength for every arc and glint (the colour stays true; the
+    // see-through amount does the dimming).
+    (this.sweep.material as MeshBasicMaterial).opacity = sweepGain;
+    (this.glint.material as MeshBasicMaterial).opacity = 0.75 * (0.5 + 0.5 * fx.gain);
     for (let k = 0; k < count; k++) {
-      tmpC.set(color).multiplyScalar(0.8);
+      tmpC.set(color);
       const a = angle + (k / count) * Math.PI * 2;
       const dx = Math.sin(a);
       const dz = Math.cos(a);
@@ -575,11 +744,11 @@ export class Blades {
       this.sweep.setColorAt(start + k, tmpC);
       // The glint at the tip, turning and pulsing as it goes round.
       tmpP.set(x + dx * tip * 0.97, y, z + dz * tip * 0.97);
-      const g = 0.42 * size * (0.8 + 0.35 * Math.sin(this.turn * 9 + k * 2.1));
+      const g = 0.3 * size * (0.8 + 0.35 * Math.sin(this.turn * 9 + k * 2.1));
       tmpS.set(g, g, g);
       tmpQ.copy(billboard).multiply(spinQ.setFromAxisAngle(Z_AXIS, this.turn * 3 + k));
       this.glint.setMatrixAt(start + k, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.glint.setColorAt(start + k, tmpC.set(color).lerp(WHITE, 0.4).multiplyScalar(1.1));
+      this.glint.setColorAt(start + k, tmpC.set(color).lerp(WHITE, 0.35));
     }
     this.mesh.count = start + count;
     this.sweep.count = start + count;
@@ -599,12 +768,9 @@ export class Blades {
 function wallGeometry(): BufferGeometry {
   const g = new CylinderGeometry(1, 1, 1, 48, 1, true).translate(0, 0.5, 0);
   const pos = g.getAttribute('position');
-  const col = new Float32Array(pos.count * 3);
-  for (let i = 0; i < pos.count; i++) {
-    const c = Math.pow(1 - pos.getY(i), 2);
-    col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = c;
-  }
-  g.setAttribute('color', new BufferAttribute(col, 3));
+  const strength: number[] = [];
+  for (let i = 0; i < pos.count; i++) strength.push(Math.pow(1 - pos.getY(i), 2));
+  g.setAttribute('color', alphaColors(strength));
   return g;
 }
 
@@ -629,7 +795,10 @@ function spikeGeometry(): BufferGeometry {
   const pos = g.getAttribute('position');
   const col = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
-    const c = 0.55 + 0.9 * pos.getY(i);
+    // Deep at the foot, bright at the point, and every other facet darker
+    // so each spike reads as cut crystal.
+    const facet = Math.floor(i / 3) % 2 ? 0.75 : 1;
+    const c = (0.35 + 0.95 * pos.getY(i)) * facet;
     col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = c;
   }
   g.setAttribute('color', new BufferAttribute(col, 3));
@@ -643,13 +812,14 @@ export class Novas {
 
   constructor(parent: Group) {
     const wallGeo = wallGeometry();
-    const ringGeo = new RingGeometry(0.82, 1, 64).rotateX(-Math.PI / 2);
+    // A thin, crisp edge: the blast's reach, not a band of glare.
+    const ringGeo = new RingGeometry(0.95, 1, 96).rotateX(-Math.PI / 2);
     const flashGeo = new PlaneGeometry(2, 2).rotateX(-Math.PI / 2);
     const flashTex = flareTexture();
     for (let k = 0; k < 14; k++) {
-      const ring = new Mesh(ringGeo, additive());
-      const wall = new Mesh(wallGeo, additive({ vertexColors: true }));
-      const flash = new Mesh(flashGeo, additive({ map: flashTex }));
+      const ring = new Mesh(ringGeo, tinted());
+      const wall = new Mesh(wallGeo, tinted({ vertexColors: true }));
+      const flash = new Mesh(flashGeo, tinted({ map: flashTex }));
       for (const m of [ring, wall, flash]) {
         m.visible = false;
         m.renderOrder = 4;
@@ -682,7 +852,7 @@ export class Novas {
     n.color = color;
     for (const m of [n.ring, n.wall, n.flash]) {
       m.position.set(x, y, z);
-      (m.material as MeshBasicMaterial).color.set(color).multiplyScalar(1.6);
+      (m.material as MeshBasicMaterial).color.set(color).multiplyScalar(1.15);
       m.visible = true;
     }
     n.flash.position.y += 0.02;
@@ -698,12 +868,15 @@ export class Novas {
       const e = 1 - Math.pow(1 - t, 3);
       const r = Math.max(0.01, n.r * e);
       n.ring.scale.setScalar(r);
-      (n.ring.material as MeshBasicMaterial).opacity = 1 - t;
-      // The wall stands tallest early and sinks as it spreads.
-      n.wall.scale.set(r, Math.max(0.01, Math.min(0.7, 0.3 + 0.06 * n.r) * (1 - t) * (1 - t)), r);
-      (n.wall.material as MeshBasicMaterial).opacity = 0.45 * (1 - t);
-      n.flash.scale.setScalar(Math.max(0.01, 0.4 * n.r * (0.6 + 0.6 * e)));
-      (n.flash.material as MeshBasicMaterial).opacity = Math.max(0, 1 - t * 2.5);
+      // The ring's edge stays bright (it is the blast's reach); its wall and
+      // flash soften under the glow budget.
+      (n.ring.material as MeshBasicMaterial).opacity = (1 - t) * (0.75 + 0.25 * fx.gain);
+      // A low wall of light that sinks as it spreads (kept under the
+      // crowd's knees: a big nova used to haze over the whole horde).
+      n.wall.scale.set(r, Math.max(0.01, Math.min(0.45, 0.22 + 0.025 * n.r) * (1 - t) * (1 - t)), r);
+      (n.wall.material as MeshBasicMaterial).opacity = 0.45 * (1 - t) * (0.5 + 0.5 * fx.gain);
+      n.flash.scale.setScalar(Math.max(0.01, Math.min(3.5, 0.3 * n.r) * (0.6 + 0.6 * e)));
+      (n.flash.material as MeshBasicMaterial).opacity = Math.max(0, 1 - t * 3) * 0.7 * (0.5 + 0.5 * fx.gain);
       if (t >= 1) {
         n.ring.visible = false;
         n.wall.visible = false;
@@ -727,7 +900,8 @@ export class Novas {
     const grow = Math.min(1, t / 0.12);
     const sink = Math.pow(1 - t, 1.6);
     const tall = Math.min(1.4, 0.45 + 0.07 * n.r);
-    tmpC.set(n.color).lerp(WHITE, 0.45).multiplyScalar(1.25);
+    // Crystal in the blast's own colour (a white spike reads as glare).
+    tmpC.set(n.color).lerp(WHITE, 0.15).multiplyScalar(1.05);
     for (let k = 0; k < NOVA_SPIKES; k++) {
       const r1 = spikeRnd(k);
       const r2 = spikeRnd(k + 37);
@@ -769,6 +943,10 @@ export class Zaps {
   private readonly pts = new Float32Array(7 * 3);
   private readonly glow = new Color(1.0, 0.95, 0.45);
   private n = 0;
+  /** Bolts showing this frame. */
+  get live(): number {
+    return this.n;
+  }
 
   constructor(parent: Group) {
     const geo = new BufferGeometry();
@@ -829,9 +1007,11 @@ export class Zaps {
         sz /= sl;
         for (let layer = 0; layer < 2; layer++) {
           const half = layer === 0 ? 0.19 : 0.04;
-          const r = layer === 0 ? this.glow.r * 0.9 * fade : 2.4 * fade;
-          const g = layer === 0 ? this.glow.g * 0.9 * fade : 2.4 * fade;
-          const b = layer === 0 ? this.glow.b * 0.9 * fade : 2.2 * fade;
+          // The glow round it softens under the budget; the white-hot spine never does.
+          const k = layer === 0 ? 0.9 * fade * (0.35 + 0.65 * fx.gain) : fade;
+          const r = layer === 0 ? this.glow.r * k : 2.4 * k;
+          const g = layer === 0 ? this.glow.g * k : 2.4 * k;
+          const b = layer === 0 ? this.glow.b * k : 2.2 * k;
           for (let q = 0; q < 2; q++) {
             const ox = q === 0 ? 0 : sx * half;
             const oy = q === 0 ? half : 0;
