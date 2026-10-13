@@ -47,7 +47,7 @@ import { fadeThen, game, Phase, requestRestart, setPhase, toast } from '../state
 import { WALL_Z } from '../terrain.js';
 import { startTutorialKit } from '../tutorial-kit.js';
 import { tutorialLevel } from '../tutorial-level.js';
-import { CAP, Horde, KINDS } from './horde.js';
+import { BLOATER, BRUTE, CAP, GHOUL, GLITTER, Horde, KINDS, LUNGER, SPLITTER, TITAN } from './horde.js';
 import { Blades, Bolts, Chests, Gems, Hurls, Impacts, Novas, Orbs, Zaps } from './survivors-fx.js';
 import { SurvivorsHud } from './survivors-hud.js';
 import { ARENA_X, ARENA_Z, duneHeight, survivorsLevel, survivorsView } from './survivors-level.js';
@@ -73,9 +73,13 @@ import {
   type WeaponId,
 } from './upgrades.js';
 
-const GHOUL = 0;
-const BRUTE = 1;
-const TITAN = 2;
+/** A bloater's burst: how far it reaches, and how close it hurts you. */
+const BURST_RADIUS = 3.4;
+const BURST_HURTS = 2.1;
+/** Kill flares shown per frame, at most. */
+const KILL_FLARES = 6;
+/** A crystal streak pays out a chord every this many. */
+const STREAK_CHORD = 20;
 
 /** Enemies come up out of the snow this far from you... */
 const SPAWN_NEAR = 24;
@@ -155,6 +159,19 @@ export class SurvivorsSystem extends createSystem({}) {
   private bossWarned = 0;
   /** The run's own clock for animation: it stops while you choose. */
   private simClock = 0;
+  /** Slow motion for the big moments: the run's speed (1 = normal), held for a while. */
+  private timeScale = 1;
+  private slowHold = 0;
+  /** Bloaters about to burst (a beat after they die, so a chain ripples outward). */
+  private readonly bursts: { x: number; z: number; t: number; dmg: number }[] = [];
+  /** Bursts in the chain going now, and how long since the last. */
+  private chain = 0;
+  private chainT = 0;
+  private nextGlitter = 50;
+  private glitterTrail = 0;
+  private killFlares = 0;
+  private gemHaptic = 0;
+  private growlT = 0;
   private nextOrb = 8;
   private nextVacuum = 80;
   private nextHeart = 20;
@@ -321,6 +338,12 @@ export class SurvivorsSystem extends createSystem({}) {
     this.nextOrb = 8;
     this.nextVacuum = 80;
     this.nextHeart = 20;
+    this.timeScale = 1;
+    this.slowHold = 0;
+    this.bursts.length = 0;
+    this.chain = 0;
+    this.chainT = 0;
+    this.nextGlitter = 50;
     this.combo = 0;
     this.comboT = 0;
     this.bestCombo = 0;
@@ -387,10 +410,15 @@ export class SurvivorsSystem extends createSystem({}) {
     // and your hands move) until you poke one.
     const choosing = !this.dead && this.updateChoice(dt);
     this.hud.held = this.menu.choosing;
-    const simDt = choosing ? 0 : dt;
+    // Slow motion eases back to full speed once its hold runs out.
+    this.slowHold -= dt;
+    if (this.slowHold <= 0) this.timeScale += (1 - this.timeScale) * Math.min(1, dt * 2.2);
+    const simDt = choosing ? 0 : dt * this.timeScale;
     this.simClock += simDt;
     const clock = this.simClock;
+    this.killFlares = 0;
     if (!this.dead && !choosing) {
+      const dt = simDt;
       this.time += dt;
       this.levelBlast = false;
       // Speed is power: every m/s adds to all your damage.
@@ -409,7 +437,14 @@ export class SurvivorsSystem extends createSystem({}) {
       this.moveBolts(dt);
       this.collect(dt, px, pz);
       this.recycle(px, pz);
+      this.burstBloaters(dt, px, pz);
+      this.updateGlitters(dt);
       this.horde.sweep();
+      if (this.horde.tells > 0 && this.growlT <= 0) {
+        this.growlT = 0.35;
+        audio.growl();
+      }
+      this.growlT -= dt;
       this.feel(dt);
       this.clock();
     } else if (this.dead) {
@@ -422,6 +457,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.novas.tick(simDt);
     this.zaps.tick(simDt);
     this.impacts.tick(simDt, this.head);
+    this.gems.tick(simDt);
     this.gems.draw(clock);
     this.hurls.draw(clock);
     this.orbs.tick(simDt, clock);
@@ -483,8 +519,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.spawnAcc += dt * Math.max(flow, (want - this.horde.n) * 1.2 * ease * ease);
     while (this.spawnAcc >= 1 && this.horde.n < want) {
       this.spawnAcc -= 1;
-      const brute = Math.random() < Math.min(0.32, Math.max(0, (t - 40) / 260));
-      this.spawnOne(brute ? BRUTE : GHOUL, px, pz, 1);
+      this.spawnOne(this.pickKind(t), px, pz, 1);
     }
     if (this.spawnAcc > 20) this.spawnAcc = 20;
     // Elites, more often as the run goes on: each one carries an upgrade.
@@ -494,10 +529,16 @@ export class SurvivorsSystem extends createSystem({}) {
       if (i >= 0) this.horde.carrier[i] = 1;
     }
     // Something different every 45 s: a ring closing round you, a
-    // stampede from one side, a wall of brutes across your path.
+    // stampede from one side, a wall of brutes across your path, and once
+    // the new kinds are about, a pack of lungers or a drift of bloaters.
     if (t >= this.nextEvent) {
       this.nextEvent = t + 45;
-      this.waveEvent(this.eventIndex++ % 3, px, pz);
+      this.waveEvent(this.eventIndex++ % (t >= 120 ? 5 : 3), px, pz);
+    }
+    // Now and then a glitterback, crusted in crystals, running away.
+    if (t >= this.nextGlitter) {
+      this.nextGlitter = t + 65 + Math.random() * 25;
+      this.spawnGlitter(px, pz);
     }
     // The bosses, at 2:30, 5:00 and for the final minute, each heralded a
     // few seconds ahead. A boss always comes: if the field is full, the
@@ -520,6 +561,52 @@ export class SurvivorsSystem extends createSystem({}) {
       if (this.chests.place(px + Math.cos(a) * r, pz + Math.sin(a) * r)) {
         this.hud.announce('TREASURE CHEST!', '#ffd166', 3.5, 1, 'Follow the pillar of light');
       }
+    }
+  }
+
+  /**
+   * What comes out of the snow next: ghouls mostly; brutes from 40 s;
+   * bloaters from the first minute, lungers from 1:30 and splitters from
+   * 2:30, each a growing share.
+   */
+  private pickKind(t: number): number {
+    const r = Math.random();
+    let edge = Math.min(0.08, Math.max(0, (t - 60) / 1500));
+    if (r < edge) return BLOATER;
+    edge += Math.min(0.09, Math.max(0, (t - 90) / 1500));
+    if (r < edge) return LUNGER;
+    edge += Math.min(0.06, Math.max(0, (t - 150) / 2000));
+    if (r < edge) return SPLITTER;
+    edge += Math.min(0.3, Math.max(0, (t - 40) / 260));
+    return r < edge ? BRUTE : GHOUL;
+  }
+
+  /** A glitterback turns up near you, already running. */
+  private spawnGlitter(px: number, pz: number): void {
+    const a = Math.atan2(this.moveDir.z, this.moveDir.x) + (Math.random() - 0.5) * 1.4;
+    const i = this.horde.spawn(GLITTER, px + Math.cos(a) * 13, pz + Math.sin(a) * 13, this.hpScale(), 1);
+    if (i < 0) return;
+    this.horde.timer[i] = 22;
+    this.horde.veer[i] = (Math.random() - 0.5) * 0.8;
+    this.hud.announce('GLITTERBACK!', '#ffd166', 3.5, 2, 'Catch it before it burrows away');
+    audio.sparkle();
+  }
+
+  /** Glitterbacks sparkle as they run, and burrow away when their time is up. */
+  private updateGlitters(dt: number): void {
+    const h = this.horde;
+    this.glitterTrail -= dt;
+    const trail = this.glitterTrail <= 0;
+    if (trail) this.glitterTrail = 0.12;
+    for (let i = 0; i < h.n; i++) {
+      if (h.kind[i] !== GLITTER || h.dead[i]) continue;
+      h.timer[i] -= dt;
+      const r = h.radius(i);
+      if (trail) this.impacts.spawn(h.x[i] + (Math.random() - 0.5) * r, r * (0.8 + Math.random()), h.z[i] + (Math.random() - 0.5) * r, 0xffd166, 0.35);
+      if (h.timer[i] > 0) continue;
+      h.dead[i] = 1;
+      this.shards.burst(h.x[i], 0.3, h.z[i], 30, 0xe8e2d0, 0.1, 2, 2.5);
+      this.hud.announce('IT GOT AWAY', '#c9b98a', 2.5, 1, 'Quicker next time');
     }
   }
 
@@ -568,7 +655,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.hud.announce('STAMPEDE!', '#ffb347', 3, 2, `Coming ${where.toLowerCase()}`);
       audio.rumble(1);
       audio.whoosh();
-    } else {
+    } else if (kind === 2) {
       // A wall of brutes across the way you are going.
       const fx = this.moveDir.x;
       const fz = this.moveDir.z;
@@ -579,6 +666,27 @@ export class SurvivorsSystem extends createSystem({}) {
       }
       this.hud.announce('WALL OF BRUTES!', '#e0c8a0', 3.5, 2, 'Ram through or go round');
       audio.thud();
+    } else if (kind === 3) {
+      // A pack of lungers fanned out on one side, all with their eyes on you.
+      const a = Math.atan2(this.moveDir.z, this.moveDir.x) + (Math.random() < 0.5 ? 1 : -1) * (0.6 + Math.random() * 0.9);
+      const count = Math.min(room, Math.floor(8 + m * 3));
+      for (let k = 0; k < count; k++) {
+        const b = a + (k / Math.max(1, count - 1) - 0.5) * 1.2;
+        const i = h.spawn(LUNGER, px + Math.cos(b) * 15, pz + Math.sin(b) * 15, this.hpScale());
+        if (i >= 0) h.timer[i] = 0.5 + Math.random() * 1.2;
+      }
+      this.hud.announce('LUNGER PACK!', '#ff5470', 3, 2, 'Watch for the scrabble, then sidestep');
+      audio.growl();
+    } else {
+      // A drift of bloaters in a loose ring: pop one and watch them go.
+      const count = Math.min(room, Math.floor(12 + m * 3));
+      for (let k = 0; k < count; k++) {
+        const a = (k / count) * Math.PI * 2 + Math.random() * 0.2;
+        const r = 12 + Math.random() * 3;
+        h.spawn(BLOATER, px + Math.cos(a) * r, pz + Math.sin(a) * r, this.hpScale());
+      }
+      this.hud.announce('BLOATER DRIFT!', '#ff8a3d', 3, 2, 'Pop one and they all go up');
+      audio.whoosh();
     }
   }
 
@@ -663,7 +771,8 @@ export class SurvivorsSystem extends createSystem({}) {
     for (let i = 0; i < h.n; i++) {
       const kind = h.kind[i];
       if (h.dead[i] || h.rise[i] < 1 || h.ice[i] > 0) continue;
-      if (kind === GHOUL || (kind === BRUTE && (t < 180 || i % 5 !== 0))) continue;
+      if (kind !== TITAN && kind !== BRUTE) continue;
+      if (kind === BRUTE && (t < 180 || i % 5 !== 0)) continue;
       h.throwT[i] -= dt;
       if (h.throwT[i] > 0) continue;
       const dx = px - h.x[i];
@@ -739,7 +848,8 @@ export class SurvivorsSystem extends createSystem({}) {
     if (ice > 0) h.ice[i] = Math.max(h.ice[i], boss ? ice * 0.3 : ice);
     if (knock > 0) {
       const d = Math.hypot(kx, kz) || 1;
-      const heavy = boss ? 0.04 : h.kind[i] === TITAN ? 0.25 : h.kind[i] === BRUTE ? 0.6 : 1;
+      const kind = h.kind[i];
+      const heavy = boss ? 0.04 : kind === TITAN ? 0.25 : kind === BRUTE || kind === SPLITTER ? 0.6 : kind === BLOATER ? 0.75 : 1;
       h.kvx[i] = (kx / d) * knock * heavy;
       h.kvz[i] = (kz / d) * knock * heavy;
       h.kT[i] = 0.18;
@@ -769,7 +879,32 @@ export class SurvivorsSystem extends createSystem({}) {
       return;
     }
     // A few shards each: with a hundred kills a second, more would bury the view.
-    this.shards.burst(x, r * 0.6, z, kind === TITAN ? 22 : kind === BRUTE ? 4 : 2, k.accent, r * 0.16, 1.5 + r, 1.5 + r * 0.8);
+    this.shards.burst(x, r * 0.6, z, kind === TITAN ? 22 : kind === GHOUL ? 2 : 4, k.accent, r * 0.16, 1.5 + r, 1.5 + r * 0.8);
+    // A pop of light where it went (a few a frame).
+    if (this.killFlares < KILL_FLARES) {
+      this.killFlares++;
+      this.impacts.spawn(x, r * 0.7, z, k.accent, 0.5 + r * 0.6);
+    }
+    if (kind === GLITTER) {
+      this.glitterDown(x, z, r);
+      return;
+    }
+    if (kind === BLOATER) {
+      // It bursts a beat later; one caught in another's burst carries the chain on.
+      this.bursts.push({ x, z, t: 0.09 + Math.random() * 0.06, dmg: (45 + 20 * (this.time / 60)) * this.stats.might });
+    } else if (kind === SPLITTER) {
+      // Out pour three ghouls, thrown clear.
+      for (let s = 0; s < 3; s++) {
+        const a = (s / 3) * Math.PI * 2 + Math.random();
+        const j = h.spawn(GHOUL, x + Math.cos(a) * 0.4, z + Math.sin(a) * 0.4, this.hpScale(), 0.75);
+        if (j < 0) continue;
+        h.rise[j] = 1;
+        h.kvx[j] = Math.cos(a) * 4.5;
+        h.kvz[j] = Math.sin(a) * 4.5;
+        h.kT[j] = 0.3;
+      }
+      this.shards.burst(x, r * 0.8, z, 16, k.accent, 0.08, 3, 3);
+    }
     this.gems.drop(x, z, k.xp * frenzy);
     if (kind === TITAN) {
       for (let g = 0; g < 6; g++) this.gems.drop(x + (Math.random() - 0.5) * 2, z + (Math.random() - 0.5) * 2, 4 * frenzy);
@@ -823,9 +958,75 @@ export class SurvivorsSystem extends createSystem({}) {
     // on the spot if every chest is out).
     if (!this.chests.place(x, z, 2)) this.openTreasure(x, z, 2);
     this.hud.announce('BOSS DOWN!', '#ffd166', 4.5, 3, 'Its hoard holds two upgrades');
+    this.slowMo(0.25, 0.9);
     audio.fanfare();
     audio.crack();
     for (const hand of HANDS) this.pulse(hand.handedness, 1, 500);
+  }
+
+  /**
+   * Bloaters burst a beat after they die: a ring of fire that hurts
+   * everything in it (and you, up close) and sets off any bloater it
+   * catches, so a crowd of them goes up in a rippling chain. A long chain
+   * is announced and slows time for a moment.
+   */
+  private burstBloaters(dt: number, px: number, pz: number): void {
+    this.chainT += dt;
+    if (this.chainT > 0.6 && this.chain > 0) {
+      if (this.chain >= 4) {
+        this.hud.announce(`CHAIN REACTION ×${this.chain}`, '#ff8a3d', 2.5, 2, this.chain >= 10 ? 'Glorious' : 'Keep them close together');
+        if (this.chain >= 6) this.slowMo(0.35, 0.5);
+      }
+      this.chain = 0;
+    }
+    for (let b = this.bursts.length - 1; b >= 0; b--) {
+      const burst = this.bursts[b];
+      burst.t -= dt;
+      if (burst.t > 0) continue;
+      this.bursts.splice(b, 1);
+      const { x, z, dmg } = burst;
+      this.chain++;
+      this.chainT = 0;
+      this.novas.burst(x, z, BURST_RADIUS, 0xff8a3d);
+      this.impacts.spawn(x, 0.9, z, 0xffb054, 2.6);
+      this.shards.burst(x, 0.9, z, 26, 0xff8a3d, 0.12, 5, 5);
+      if (this.chain <= 8 || this.chain % 3 === 0) audio.boom(Math.min(1.2, 0.7 + this.chain * 0.05));
+      const n = this.horde.gather(x, z, BURST_RADIUS, this.near);
+      for (let j = 0; j < n; j++) {
+        const i = this.near[j];
+        this.hit(i, dmg, this.horde.x[i] - x, this.horde.z[i] - z, 10);
+      }
+      if (Math.hypot(px - x, pz - z) < BURST_HURTS) {
+        this.hurt(12 * this.stats.armor, 0.3);
+        this.hud.bitten(0.3);
+        for (const hand of HANDS) this.pulse(hand.handedness, 0.8, 100);
+      }
+    }
+  }
+
+  /** A glitterback caught: a fountain of crystals and an upgrade, in slow motion. */
+  private glitterDown(x: number, z: number, r: number): void {
+    const y = duneHeight(x, z) + r;
+    for (let k = 0; k < 40; k++) {
+      const a = Math.random() * Math.PI * 2;
+      const out = 1 + Math.random() * 3.2;
+      this.gems.fling(x, y, z, k % 8 === 0 ? 20 : 4, Math.cos(a) * out, 5 + Math.random() * 4, Math.sin(a) * out);
+    }
+    this.dropOrb(x, z, CHOICE);
+    this.shards.burst(x, y, z, 70, 0xffd166, 0.12, 5, 8);
+    this.novas.burst(x, z, 6, 0xffd166);
+    this.impacts.spawn(x, y, z, 0xffe7a0, 3);
+    this.hud.announce('CAUGHT IT!', '#ffd166', 3, 2, 'A fountain of crystals');
+    audio.coins();
+    audio.levelUp();
+    this.slowMo(0.3, 0.6);
+    for (const hand of HANDS) this.pulse(hand.handedness, 1, 220);
+  }
+
+  /** Slow the run to `scale` for `hold` seconds, then ease back. */
+  private slowMo(scale: number, hold: number): void {
+    this.timeScale = Math.min(this.timeScale, scale);
+    this.slowHold = Math.max(this.slowHold, hold);
   }
 
   private dropOrb(x: number, z: number, u: Upgrade): void {
@@ -1012,29 +1213,53 @@ export class SurvivorsSystem extends createSystem({}) {
 
   private collect(dt: number, px: number, pz: number): void {
     const g = this.gems;
+    this.gemHaptic -= dt;
     const magnet = this.stats.magnet;
     for (let i = g.n - 1; i >= 0; i--) {
       const dx = px - g.x[i];
       const dz = pz - g.z[i];
       const d = Math.hypot(dx, dz);
-      if (!g.pulled[i] && d < magnet) g.pulled[i] = 1;
+      if (!g.pulled[i] && d < magnet) {
+        g.pulled[i] = 1;
+        g.air[i] = 0;
+        // A little leap up as it lets go of the snow.
+        g.y[i] += 0.25;
+      }
       if (!g.pulled[i]) continue;
       if (d < 0.6) {
-        this.gainXp(g.value[i]);
+        const value = g.value[i];
+        const big = value >= 4;
+        // A spark where it reaches you, in its own colour.
+        if (this.gemBudget < 1) {
+          this.impacts.spawn(g.x[i], g.y[i], g.z[i], value >= 20 ? 0xff4060 : big ? 0x40ff90 : 0x40b8ff, big ? 0.38 : 0.22);
+        }
+        this.gainXp(value);
         g.remove(i);
-        // Each pickup a note, climbing while they keep coming.
+        // Each pickup a note, climbing while they keep coming, and every
+        // so many in a streak a chord and a ring of light.
         this.gemStep = this.gemT > 0 ? this.gemStep + 1 : 0;
         this.gemT = 0.45;
         if (this.gemBudget < 1) {
           this.gemBudget += 0.08;
-          audio.gem(this.gemStep);
+          audio.gem(this.gemStep, big);
+        }
+        if (this.gemStep > 0 && this.gemStep % STREAK_CHORD === 0) {
+          audio.gemChord(this.gemStep / STREAK_CHORD);
+          this.novas.burst(px, pz, 1.6 + Math.min(2, this.gemStep / 60), 0x7fdcff);
+        }
+        if (this.gemHaptic <= 0) {
+          this.gemHaptic = 0.045;
+          for (const hand of HANDS) this.pulse(hand.handedness, big ? 0.35 : 0.15, 12);
         }
         continue;
       }
+      // Spiral in: home on you with a swirl round you, faster the closer.
       const v = Math.max(9, Math.min(d * 7, 30 + d * 0.5)) * dt;
-      g.x[i] += (dx / d) * Math.min(v, d);
-      g.z[i] += (dz / d) * Math.min(v, d);
-      g.y[i] += (this.head.y - 0.7 - g.y[i]) * Math.min(1, dt * 6);
+      const step = Math.min(v, d);
+      const swirl = Math.min(0.9, d * 0.18);
+      g.x[i] += (dx / d) * step - (dz / d) * step * swirl;
+      g.z[i] += (dz / d) * step + (dx / d) * step * swirl;
+      g.y[i] += (this.head.y - 0.7 + Math.min(0.6, d * 0.08) - g.y[i]) * Math.min(1, dt * 6);
     }
     for (const orb of this.orbs.list) {
       if (!orb.active) continue;

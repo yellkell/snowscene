@@ -732,7 +732,11 @@ export class Zaps {
 
 export const GEM_CAP = 1800;
 
-/** Experience crystals on the snow: blue, green, red by worth. Pulled to you inside the magnet. */
+/**
+ * Experience crystals: blue, green, red by worth. They hop out of whatever
+ * died, bounce once on the snow and sit there spinning until you come
+ * within your magnet, then spiral in to you.
+ */
 export class Gems {
   readonly mesh: InstancedMesh;
   n = 0;
@@ -742,6 +746,11 @@ export class Gems {
   readonly value = new Float32Array(GEM_CAP);
   /** Flying to you (once inside the magnet it never lets go). */
   readonly pulled = new Uint8Array(GEM_CAP);
+  /** In the air (hopping out of a kill or flung from a fountain), and its flight. */
+  readonly air = new Uint8Array(GEM_CAP);
+  readonly vx = new Float32Array(GEM_CAP);
+  readonly vy = new Float32Array(GEM_CAP);
+  readonly vz = new Float32Array(GEM_CAP);
 
   constructor(parent: Group) {
     this.mesh = new InstancedMesh(new OctahedronGeometry(0.11, 0), new MeshBasicMaterial({ toneMapped: false }), GEM_CAP);
@@ -753,18 +762,52 @@ export class Gems {
     parent.add(this.mesh);
   }
 
+  /** A crystal hops out of (x, z) and lands nearby. */
   drop(x: number, z: number, value: number): void {
+    const a = Math.random() * Math.PI * 2;
+    const out = 0.6 + Math.random() * 1.2;
+    this.fling(x, 0.6 + duneHeight(x, z), z, value, Math.cos(a) * out, 2.6 + Math.random() * 1.8, Math.sin(a) * out);
+  }
+
+  /** A crystal thrown from (x, y, z) with velocity (vx, vy, vz). */
+  fling(x: number, y: number, z: number, value: number, vx: number, vy: number, vz: number): void {
     if (this.n >= GEM_CAP) {
       // Full: fold it into the oldest crystal instead of losing it.
       this.value[0] += value;
       return;
     }
     const i = this.n++;
-    this.x[i] = x + (Math.random() - 0.5) * 0.4;
-    this.z[i] = z + (Math.random() - 0.5) * 0.4;
-    this.y[i] = 0.35 + duneHeight(this.x[i], this.z[i]);
+    this.x[i] = x;
+    this.z[i] = z;
+    this.y[i] = y;
     this.value[i] = value;
     this.pulled[i] = 0;
+    this.air[i] = 1;
+    this.vx[i] = vx;
+    this.vy[i] = vy;
+    this.vz[i] = vz;
+  }
+
+  /** Fly the airborne ones: arc, a bounce, then rest. */
+  tick(dt: number): void {
+    for (let i = 0; i < this.n; i++) {
+      if (!this.air[i] || this.pulled[i]) continue;
+      this.vy[i] -= 11 * dt;
+      this.x[i] += this.vx[i] * dt;
+      this.z[i] += this.vz[i] * dt;
+      this.y[i] += this.vy[i] * dt;
+      const floor = 0.35 + duneHeight(this.x[i], this.z[i]);
+      if (this.y[i] < floor && this.vy[i] < 0) {
+        this.y[i] = floor;
+        if (this.vy[i] < -2.2) {
+          this.vy[i] *= -0.32;
+          this.vx[i] *= 0.5;
+          this.vz[i] *= 0.5;
+        } else {
+          this.air[i] = 0;
+        }
+      }
+    }
   }
 
   remove(i: number): void {
@@ -775,14 +818,20 @@ export class Gems {
     this.y[i] = this.y[j];
     this.value[i] = this.value[j];
     this.pulled[i] = this.pulled[j];
+    this.air[i] = this.air[j];
+    this.vx[i] = this.vx[j];
+    this.vy[i] = this.vy[j];
+    this.vz[i] = this.vz[j];
   }
 
   draw(time: number): void {
     for (let i = 0; i < this.n; i++) {
       const v = this.value[i];
       const s = v >= 20 ? 2.1 : v >= 4 ? 1.5 : 1;
-      tmpP.set(this.x[i], this.y[i] + Math.sin(time * 3 + i) * 0.06, this.z[i]);
-      tmpQ.setFromAxisAngle(UP, time * 2 + i);
+      const bob = this.air[i] || this.pulled[i] ? 0 : Math.sin(time * 3 + i) * 0.06;
+      tmpP.set(this.x[i], this.y[i] + bob, this.z[i]);
+      // Spinning, and faster still in flight.
+      tmpQ.setFromAxisAngle(UP, time * (this.air[i] || this.pulled[i] ? 14 : 2) + i);
       tmpS.set(s, s * 1.4, s);
       this.mesh.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
       this.mesh.setColorAt(i, tmpC.set(v >= 20 ? 0xff4060 : v >= 4 ? 0x40ff90 : 0x40b8ff).multiplyScalar(1.5));

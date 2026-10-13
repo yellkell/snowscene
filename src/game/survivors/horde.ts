@@ -40,7 +40,31 @@ export const KINDS: Kind[] = [
   { name: 'brute', radius: 0.7, speed: 1.7, hp: 28, dps: 7, xp: 4, body: 0x4a3830, accent: 0xf0dfc0 },
   // The titan: an elite. Always drops something worth walking to.
   { name: 'titan', radius: 1.45, speed: 1.2, hp: 240, dps: 16, xp: 25, body: 0x2a2833, accent: 0xffb54a },
+  // The bloater: a slow sac of ember. It bursts when it dies, hurting
+  // everything round it (you too, up close), and bloaters set each other off.
+  { name: 'bloater', radius: 0.62, speed: 1.15, hp: 16, dps: 5, xp: 3, body: 0x3b2a36, accent: 0xff8a3d },
+  // The lunger: stops, scrabbles (its tell), then charges in a straight line.
+  { name: 'lunger', radius: 0.5, speed: 2.1, hp: 10, dps: 6, xp: 2, body: 0x3a1f28, accent: 0xff5470 },
+  // The splitter: a brood-carrier that bursts into three ghouls when it dies.
+  { name: 'splitter', radius: 0.78, speed: 1.5, hp: 36, dps: 7, xp: 5, body: 0x2a2440, accent: 0xc39bff },
+  // The glitterback: crusted in crystals, harmless, and running away. Catch
+  // it before it burrows and it bursts in a fountain of crystals.
+  { name: 'glitterback', radius: 0.55, speed: 3.0, hp: 70, dps: 0, xp: 20, body: 0x3d321e, accent: 0xffd166 },
 ];
+
+export const GHOUL = 0;
+export const BRUTE = 1;
+export const TITAN = 2;
+export const BLOATER = 3;
+export const LUNGER = 4;
+export const SPLITTER = 5;
+export const GLITTER = 6;
+
+/** A lunger charges from this far (m), after this tell (s), this fast (m/s) for this long (s). */
+const LUNGE_RANGE = 9;
+const LUNGE_TELL = 0.7;
+const LUNGE_SPEED = 9.5;
+const LUNGE_TIME = 0.55;
 
 /** Crowd and hash grid: cell edge (m) and cells per side, centred on the player. */
 const CELL = 1.0;
@@ -83,6 +107,14 @@ export class Horde {
   /** A boss's number in the run (0, 1, 2) and its full health, for its ring. */
   readonly bossNo = new Uint8Array(CAP);
   readonly maxHp = new Float32Array(CAP);
+  /** A lunger's move (0 closing in, 1 its tell, 2 charging) and seconds left of it; a glitterback's time left. */
+  readonly state = new Uint8Array(CAP);
+  readonly timer = new Float32Array(CAP);
+  /** A charge's locked velocity. */
+  readonly dvx = new Float32Array(CAP);
+  readonly dvz = new Float32Array(CAP);
+  /** Lungers that began their tell this step (the system growls for them). */
+  tells = 0;
 
   /** Crowd density per cell, and the hash: first enemy per cell, next in cell. */
   private readonly density = new Float32Array(CELLS);
@@ -114,6 +146,10 @@ export class Horde {
     this.bladeCd[i] = 0;
     this.carrier[i] = 0;
     this.throwT[i] = 3 + Math.random() * 5;
+    this.state[i] = 0;
+    this.timer[i] = kind === LUNGER ? 1 + Math.random() * 2 : 0;
+    this.dvx[i] = 0;
+    this.dvz[i] = 0;
     return i;
   }
 
@@ -152,6 +188,10 @@ export class Horde {
     this.bossNo[to] = this.bossNo[from];
     this.maxHp[to] = this.maxHp[from];
     this.throwT[to] = this.throwT[from];
+    this.state[to] = this.state[from];
+    this.timer[to] = this.timer[from];
+    this.dvx[to] = this.dvx[from];
+    this.dvz[to] = this.dvz[from];
   }
 
   clear(): void {
@@ -169,6 +209,7 @@ export class Horde {
    */
   step(dt: number, px: number, pz: number, speedScale: number): number {
     this.rebuild(px, pz);
+    this.tells = 0;
     let dps = 0;
     const { x, z, density } = this;
     for (let i = 0; i < this.n; i++) {
@@ -200,10 +241,43 @@ export class Horde {
         this.bite[i] = Math.max(0, this.bite[i] - dt * 8);
         continue;
       }
+      const kind = this.kind[i];
+      if (kind === LUNGER) this.timer[i] -= dt;
       if (this.kT[i] > 0) {
         this.kT[i] -= dt;
         mx = this.kvx[i];
         mz = this.kvz[i];
+        if (kind === LUNGER) this.state[i] = 0;
+      } else if (kind === GLITTER) {
+        // Away from you, weaving.
+        const lean = this.veer[i] * 1.6 + Math.sin(this.stride[i] * 0.35) * 0.6;
+        const c = Math.cos(lean);
+        const s = Math.sin(lean);
+        const ux = -dx / d;
+        const uz = -dz / d;
+        const v = k.speed * this.pace[i] * (this.chill[i] > 0 ? 0.55 : 1) * (d < 6 ? 1.25 : 1);
+        mx = (ux * c - uz * s) * v;
+        mz = (ux * s + uz * c) * v;
+      } else if (kind === LUNGER && this.state[i] === 1) {
+        // The tell: stopped dead, scrabbling, eyes on you.
+        if (this.timer[i] <= 0) {
+          this.state[i] = 2;
+          this.timer[i] = LUNGE_TIME;
+          this.dvx[i] = (dx / d) * LUNGE_SPEED;
+          this.dvz[i] = (dz / d) * LUNGE_SPEED;
+        }
+      } else if (kind === LUNGER && this.state[i] === 2) {
+        // The charge: a straight line, wherever you have gone.
+        mx = this.dvx[i];
+        mz = this.dvz[i];
+        if (this.timer[i] <= 0) {
+          this.state[i] = 0;
+          this.timer[i] = 2 + Math.random() * 1.5;
+        }
+      } else if (kind === LUNGER && d < LUNGE_RANGE && d > reach + 1 && this.timer[i] <= 0) {
+        this.state[i] = 1;
+        this.timer[i] = LUNGE_TELL;
+        this.tells++;
       } else if (d > reach) {
         // Lean off the line a little (less as it closes in).
         const lean = this.veer[i] * Math.min(1, d / 12);
@@ -236,9 +310,10 @@ export class Horde {
         x[i] = px + (ex / e) * reach * 0.92;
         z[i] = pz + (ez / e) * reach * 0.92;
       }
-      const biting = e < reach + 0.08 && this.kT[i] <= 0;
+      const biting = e < reach + 0.08 && this.kT[i] <= 0 && kind !== GLITTER;
       this.bite[i] += ((biting ? 1 : 0) - this.bite[i]) * Math.min(1, dt * 8);
-      if (biting) dps += k.dps * this.scale[i];
+      // A charging lunger hits far harder than a bite.
+      if (biting) dps += k.dps * this.scale[i] * (kind === LUNGER && this.state[i] === 2 ? 4 : 1);
       const moved = Math.hypot(mx, mz) * dt;
       this.stride[i] += moved;
       // Face where it is going (or at you, when it bites).

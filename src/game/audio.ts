@@ -369,11 +369,16 @@ class SnowAudio {
    * A crystal picked up: a glassy blip that climbs a pentatonic scale while
    * pickups keep coming (`step`), so a stream of them sings upward.
    */
-  gem(step: number): void {
+  gem(step: number, big = false): void {
     const penta = [0, 2, 4, 7, 9];
     const f = 880 * Math.pow(2, (penta[step % 5] + 12 * Math.min(2, Math.floor(step / 5))) / 12);
     this.tone(f, 0.09, 0.05, 'sine');
     this.tone(f * 2, 0.05, 0.015, 'triangle');
+    // A worthy crystal rings out under it.
+    if (big) {
+      this.tone(f / 2, 0.35, 0.06, 'sine');
+      this.tone(f * 1.5, 0.25, 0.03, 'sine', 0.03);
+    }
   }
 
   /** Lightning: a dry electric snap. */
@@ -399,6 +404,70 @@ class SnowAudio {
   evolve(): void {
     [261.63, 329.63, 392, 523.25, 659.25, 783.99, 1046.5].forEach((f, i) => this.tone(f, 2.4, 0.1, i % 2 ? 'sine' : 'triangle', i * 0.06));
     this.burst(600, 0.5, 1.4, 0.25, 'lowpass');
+  }
+
+  /** A bloater bursting: a wet, deep pop with a crackle of ember. */
+  boom(strength = 1): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(160 + Math.random() * 40, t);
+    osc.frequency.exponentialRampToValueAtTime(38, t + 0.35);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.42 * strength, t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.45);
+    osc.connect(gain).connect(this.master!);
+    osc.start(t);
+    osc.stop(t + 0.5);
+    this.burst(240, 0.8, 0.35, 0.45 * strength, 'lowpass');
+    this.burst(3600, 1.5, 0.12, 0.16 * strength, 'highpass');
+  }
+
+  /** A lunger's tell: a short rising hiss-snarl. */
+  growl(): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(90, t);
+    osc.frequency.exponentialRampToValueAtTime(240, t + 0.55);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 700;
+    filter.Q.value = 2;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.12, t + 0.08);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.6);
+    osc.connect(filter).connect(gain).connect(this.master!);
+    osc.start(t);
+    osc.stop(t + 0.65);
+    this.burst(2400, 2, 0.4, 0.06, 'bandpass');
+  }
+
+  /** A glitterback turning up: a run of glassy twinkles. */
+  sparkle(): void {
+    [2093, 2637, 3136, 2637, 3520, 4186].forEach((f, i) => this.tone(f, 0.25, 0.04, 'sine', i * 0.06));
+  }
+
+  /** A fountain of crystals: a long, glittering cascade of clinks. */
+  coins(): void {
+    for (let i = 0; i < 14; i++) {
+      const f = 1800 + Math.random() * 2400;
+      this.tone(f, 0.12, 0.035, 'triangle', i * 0.045 + Math.random() * 0.02);
+    }
+    this.burst(5000, 1, 0.6, 0.05, 'highpass');
+  }
+
+  /** A streak of crystals paying out: a bright chord, higher every time. */
+  gemChord(level: number): void {
+    const root = 523.25 * Math.pow(2, (Math.min(level, 8) * 2) / 12);
+    [1, 1.25, 1.5, 2].forEach((m, i) => this.tone(root * m, 0.6, 0.07, 'sine', i * 0.035));
+    this.tone(root * 4, 0.3, 0.025, 'triangle', 0.12);
   }
 
   /** Time stopping: everything drops away in a falling, muffled whoomp. */

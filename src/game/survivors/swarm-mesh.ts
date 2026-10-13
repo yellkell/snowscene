@@ -33,7 +33,7 @@ import {
   Vector3,
   Vector4,
 } from '@iwsdk/core';
-import { CAP, type Horde, KINDS } from './horde.js';
+import { CAP, type Horde, KINDS, LUNGER } from './horde.js';
 import { duneHeight } from './survivors-level.js';
 
 /** Where the key light comes from: the valley's low sun, lifted a little so
@@ -102,6 +102,19 @@ class Body {
     }
     if (front) this.fan(front, rings[0]);
     if (back) this.fan(back, rings[rings.length - 1]);
+  }
+
+  /** Scale everything built so far (and where its parts turn) about the origin. */
+  stretch(sx: number, sy: number, sz: number): this {
+    for (let i = 0; i < this.pos.length; i += 3) {
+      this.pos[i] *= sx;
+      this.pos[i + 1] *= sy;
+      this.pos[i + 2] *= sz;
+      this.pivot[i] *= sx;
+      this.pivot[i + 1] *= sy;
+      this.pivot[i + 2] *= sz;
+    }
+    return this;
   }
 
   fan(apex: P, ring: P[]): void {
@@ -489,6 +502,100 @@ function hulkBody(): Body {
   return b;
 }
 
+/* ── the bloater ────────────────────────────────────────────────────────── */
+
+const BLOAT_NECK: V3 = [0, 0.62, 0.78];
+
+/**
+ * THE BLOATER. A swollen sac of ember on spindly legs, caged in dark ribs,
+ * the fire inside throbbing faster as it nears you: it is going to burst.
+ * A small, low head hangs off the front of it.
+ */
+function bloatBody(): Body {
+  const b = new Body();
+  b.on(PART_CORE);
+  b.gem([0, 1.0, -0.12], 0.8, 0.9, 0.78, 0.5, 8, (s) => (s % 2 ? 1.7 : 1.2), 2.5, 1.1);
+  b.on(PART_BODY);
+  // Ribs arching over the sac.
+  for (const z of [-0.62, -0.14, 0.34]) {
+    for (const sx of [-1, 1]) b.limb([sx * 0.86, 0.85, z], [0, 1.84, z * 0.8], 0.09, 0.07, 0, 0.3, 3, 0.2);
+  }
+  // A spine of studs down the top.
+  for (const z of [-0.5, 0, 0.4]) b.limb([0, 1.76, z], [0, 2.02, z - 0.1], 0.08, 0, 0.2, 1.3, 4);
+  // The head and its little mandibles.
+  b.on(PART_HEAD, BLOAT_NECK);
+  const head = b.gem([0, 0.6, 0.98], 0.28, 0.26, 0.2, 0.16, 5, (s) => (s === 0 ? 0.5 : 0), 0);
+  for (const s of [0, 4]) b.inset(head.top, head.ring[s], head.ring[(s + 1) % 5], [0, 0.6, 0.98], 0.6, 0.015, 2.4);
+  for (const sx of [-1, 1]) {
+    const base: V3 = [sx * 0.12, 0.5, 1.16];
+    b.on(PART_JAW, base);
+    b.blade(base, [sx * 0.04, 0.44, 1.42], 0.06, 0.6, 1.5);
+  }
+  // Six thin legs straining under the weight.
+  const legs: Array<[number, V3, V3]> = [
+    [0.45, [1.05, 1.0, 0.8], [1.3, 0, 1.15]],
+    [0, [1.2, 1.05, 0.05], [1.55, 0, 0.1]],
+    [-0.5, [1.05, 1.0, -0.75], [1.3, 0, -1.15]],
+  ];
+  legs.forEach(([z, knee, foot], k) => {
+    for (const sx of [-1, 1]) {
+      const hip: V3 = [sx * 0.7, 0.62, z];
+      b.on(PART_LEG, hip, (k % 2 === 0) === sx < 0 ? 0 : 1);
+      const kn: V3 = [sx * knee[0], knee[1], knee[2]];
+      b.blade(kn, hip, 0.07, 1.3, 0.6);
+      b.blade(kn, [sx * foot[0], foot[1], foot[2]], 0.06, 1.3, 1.0);
+    }
+  });
+  return b;
+}
+
+/* ── the lunger, the splitter and the glitterback ───────────────────────── */
+
+/** The lunger: a mite drawn out long and low, built to charge. */
+const LUNGER_STRETCH: V3 = [0.86, 0.88, 1.42];
+const LUNGER_NECK: V3 = [MITE_NECK[0], MITE_NECK[1] * LUNGER_STRETCH[1], MITE_NECK[2] * LUNGER_STRETCH[2]];
+function lungerBody(): Body {
+  const b = miteBody().stretch(...LUNGER_STRETCH);
+  // Swept-back spines along its back, hot at the tips.
+  b.on(PART_BODY);
+  for (const z of [-0.2, -0.75, -1.25]) b.limb([0, 0.68, z], [0, 1.05, z - 0.42], 0.09, 0, 0.3, 1.6, 4);
+  return b;
+}
+
+/** The splitter: a broad beetle with three glowing brood sacs on its back. */
+const SPLITTER_STRETCH: V3 = [1.12, 1.15, 1.05];
+const SPLITTER_NECK: V3 = [BEETLE_NECK[0], BEETLE_NECK[1] * SPLITTER_STRETCH[1], BEETLE_NECK[2] * SPLITTER_STRETCH[2]];
+function splitterBody(): Body {
+  const b = beetleBody();
+  b.on(PART_CORE);
+  for (const [x, z] of [
+    [-0.32, -0.25],
+    [0.32, -0.25],
+    [0, -0.65],
+  ]) {
+    b.gem([x, 1.0, z], 0.22, 0.24, 0.22, 0.12, 6, () => 1.5, 2.2);
+  }
+  return b.stretch(...SPLITTER_STRETCH);
+}
+
+/** The glitterback: a small beetle crusted in crystals that blaze. */
+const GLITTER_STRETCH: V3 = [0.9, 0.9, 0.9];
+const GLITTER_NECK: V3 = [BEETLE_NECK[0], BEETLE_NECK[1] * 0.9, BEETLE_NECK[2] * 0.9];
+function glitterBody(): Body {
+  const b = beetleBody();
+  b.on(PART_CORE);
+  const crystals: Array<[V3, number, number]> = [
+    [[0, 0.95, -0.1], 0.2, 0.75],
+    [[-0.34, 0.86, -0.35], 0.15, 0.55],
+    [[0.34, 0.86, -0.35], 0.15, 0.55],
+    [[-0.2, 0.9, 0.2], 0.13, 0.45],
+    [[0.22, 0.88, 0.18], 0.13, 0.5],
+    [[0, 0.8, -0.72], 0.14, 0.45],
+  ];
+  for (const [c, r, h] of crystals) b.gem(c, r, r, h, 0.05, 5, () => 1.6, 2.8);
+  return b.stretch(...GLITTER_STRETCH);
+}
+
 /* ── the shader ─────────────────────────────────────────────────────────── */
 
 const SWARM_VERT = /* glsl */ `
@@ -641,6 +748,10 @@ const GAITS: Array<{ body: () => Body; neck: V3; gait: Vector4; move: Vector4 }>
   { body: miteBody, neck: MITE_NECK, gait: new Vector4(2.6, 0.46, 0.38, 0.06), move: new Vector4(0, 0.45, 0, 30) },
   { body: beetleBody, neck: BEETLE_NECK, gait: new Vector4(3.0, 0.3, 0.24, 0.04), move: new Vector4(0.03, 0.35, 0, 22) },
   { body: hulkBody, neck: HULK_NECK, gait: new Vector4(3.8, 0.24, 0.42, 0.07), move: new Vector4(0.07, 0.3, 0.3, 12) },
+  { body: bloatBody, neck: BLOAT_NECK, gait: new Vector4(3.4, 0.32, 0.3, 0.09), move: new Vector4(0.06, 0.3, 0, 26) },
+  { body: lungerBody, neck: LUNGER_NECK, gait: new Vector4(2.2, 0.5, 0.36, 0.05), move: new Vector4(0, 0.6, 0, 40) },
+  { body: splitterBody, neck: SPLITTER_NECK, gait: new Vector4(3.0, 0.3, 0.24, 0.05), move: new Vector4(0.04, 0.35, 0, 22) },
+  { body: glitterBody, neck: GLITTER_NECK, gait: new Vector4(2.8, 0.42, 0.34, 0.07), move: new Vector4(0.03, 0.35, 0, 30) },
 ];
 
 /** One kind's mesh: its own body, its own instance columns. */
@@ -937,7 +1048,8 @@ export class SwarmMesh {
       anim[o + 3] = h.rise[i];
       const q = n * 3;
       act[q] = duneHeight(h.x[i], h.z[i]) + (h.rise[i] - 1) * KINDS[k].radius * 1.4;
-      act[q + 1] = h.kT[i] > 0 ? 1 : 0;
+      // Flailing: knocked flying, or a lunger's tell (scrabbling on the spot).
+      act[q + 1] = h.kT[i] > 0 || (k === LUNGER && h.state[i] === 1) ? 1 : 0;
       act[q + 2] = h.bite[i];
     }
     for (let k = 0; k < this.broods.length; k++) this.broods[k].flush(count[k]);
