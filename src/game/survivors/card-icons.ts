@@ -231,6 +231,58 @@ export function drawIcon(ctx: Ctx, id: string, cx: number, cy: number, r: number
         });
       }
       break;
+    case 'mortar':
+      // A snowball at the top of its arc, the arc dotted behind it.
+      for (let k = 0; k < 4; k++) {
+        const t = k / 4;
+        ink(ctx, r, () => ctx.arc(cx - r * 0.85 + t * r * 0.7, cy + r * 0.75 - Math.sin(t * Math.PI * 0.5) * r * 0.9, r * (0.06 + 0.03 * k), 0, Math.PI * 2), false);
+      }
+      ink(ctx, r, () => ctx.arc(cx + r * 0.25, cy - r * 0.2, r * 0.55, 0, Math.PI * 2));
+      ctx.fillStyle = 'rgba(8, 16, 36, 0.25)';
+      ctx.beginPath();
+      ctx.arc(cx + r * 0.38, cy - r * 0.05, r * 0.36, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case 'aura':
+      // A whirl of blizzard.
+      line(ctx, r * 0.12, () => {
+        for (let k = 0; k <= 40; k++) {
+          const t = k / 40;
+          const a = t * Math.PI * 3.2;
+          const rr = r * (0.12 + 0.8 * t);
+          if (k === 0) ctx.moveTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+          else ctx.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+        }
+      });
+      break;
+    case 'discs':
+      // A toothed disc with a hole, and a swoosh round it.
+      ink(ctx, r, () => star(ctx, cx, cy, 6, r * 0.8, r * 0.58, 0));
+      ctx.fillStyle = 'rgba(8, 16, 36, 0.8)';
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      line(ctx, r * 0.07, () => ctx.arc(cx, cy, r * 0.98, -2.6, -1.2));
+      break;
+    case 'spikes':
+      // Crystals bursting up out of the ground.
+      line(ctx, r * 0.1, () => {
+        ctx.moveTo(cx - r * 0.95, cy + r * 0.7);
+        ctx.lineTo(cx + r * 0.95, cy + r * 0.7);
+      });
+      for (const [dx, h, w] of [
+        [0, 1.6, 0.26],
+        [-0.48, 1.05, 0.2],
+        [0.48, 1.15, 0.2],
+      ]) {
+        ink(ctx, r, () => {
+          ctx.moveTo(cx + r * (dx - w), cy + r * 0.66);
+          ctx.lineTo(cx + r * dx, cy + r * (0.66 - h));
+          ctx.lineTo(cx + r * (dx + w), cy + r * 0.66);
+          ctx.closePath();
+        });
+      }
+      break;
     default:
       // Evolutions and anything else: a great star.
       ink(ctx, r, () => star(ctx, cx, cy, 5, r * 0.98, r * 0.42));

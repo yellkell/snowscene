@@ -504,7 +504,7 @@ function hulkBody(): Body {
 
 /* ── the bloater ────────────────────────────────────────────────────────── */
 
-const BLOAT_NECK: V3 = [0, 0.62, 0.78];
+const BLOAT_NECK: V3 = [0, 0.95, 0.66];
 
 /**
  * THE BLOATER. A swollen sac of ember on spindly legs, caged in dark ribs,
@@ -522,14 +522,16 @@ function bloatBody(): Body {
   }
   // A spine of studs down the top.
   for (const z of [-0.5, 0, 0.4]) b.limb([0, 1.76, z], [0, 2.02, z - 0.1], 0.08, 0, 0.2, 1.3, 4);
-  // The head and its little mandibles.
+  // A thick neck out of the front of the sac (at its widest), the head on
+  // it, and its little mandibles.
+  b.limb([0, 1.0, 0.45], [0, 0.95, 0.86], 0.2, 0.16, 0, 0.2, 5, 0.5);
   b.on(PART_HEAD, BLOAT_NECK);
-  const head = b.gem([0, 0.6, 0.98], 0.28, 0.26, 0.2, 0.16, 5, (s) => (s === 0 ? 0.5 : 0), 0);
-  for (const s of [0, 4]) b.inset(head.top, head.ring[s], head.ring[(s + 1) % 5], [0, 0.6, 0.98], 0.6, 0.015, 2.4);
+  const head = b.gem([0, 0.95, 0.98], 0.28, 0.26, 0.2, 0.16, 5, (s) => (s === 0 ? 0.5 : 0), 0);
+  for (const s of [0, 4]) b.inset(head.top, head.ring[s], head.ring[(s + 1) % 5], [0, 0.95, 0.98], 0.6, 0.015, 2.4);
   for (const sx of [-1, 1]) {
-    const base: V3 = [sx * 0.12, 0.5, 1.16];
+    const base: V3 = [sx * 0.12, 0.84, 1.16];
     b.on(PART_JAW, base);
-    b.blade(base, [sx * 0.04, 0.44, 1.42], 0.06, 0.6, 1.5);
+    b.blade(base, [sx * 0.04, 0.76, 1.42], 0.06, 0.6, 1.5);
   }
   // Six thin legs straining under the weight.
   const legs: Array<[number, V3, V3]> = [

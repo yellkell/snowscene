@@ -449,6 +449,18 @@ class SnowAudio {
     this.burst(2400, 2, 0.4, 0.06, 'bandpass');
   }
 
+  /** A disc thrown: a short, bright swish. */
+  swish(): void {
+    this.burst(2600, 2.5, 0.16, 0.12, 'bandpass');
+    this.tone(1400, 0.08, 0.025, 'triangle');
+  }
+
+  /** Ice spikes bursting up: a glassy crack. */
+  spike(): void {
+    this.burst(4200, 3, 0.07, 0.16, 'bandpass');
+    this.tone(1900 + Math.random() * 600, 0.12, 0.04, 'triangle');
+  }
+
   /** A glitterback turning up: a run of glassy twinkles. */
   sparkle(): void {
     [2093, 2637, 3136, 2637, 3520, 4186].forEach((f, i) => this.tone(f, 0.25, 0.04, 'sine', i * 0.06));

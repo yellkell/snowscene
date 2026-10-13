@@ -51,7 +51,7 @@ const tmpC = new Color();
  * `tail`), `width` wide: a streak that reads from any side (one quad
  * upright, one flat), for additive trails.
  */
-function streakGeometry(width: number, head = 1, tail = 0): BufferGeometry {
+export function streakGeometry(width: number, head = 1, tail = 0): BufferGeometry {
   const w = width / 2;
   const pos: number[] = [];
   const col: number[] = [];
@@ -79,7 +79,7 @@ function streakGeometry(width: number, head = 1, tail = 0): BufferGeometry {
   return g;
 }
 
-function additive(extra: { vertexColors?: boolean; map?: CanvasTexture } = {}): MeshBasicMaterial {
+export function additive(extra: { vertexColors?: boolean; map?: CanvasTexture } = {}): MeshBasicMaterial {
   return new MeshBasicMaterial({
     transparent: true,
     blending: AdditiveBlending,
@@ -92,7 +92,7 @@ function additive(extra: { vertexColors?: boolean; map?: CanvasTexture } = {}): 
 }
 
 /** A soft four-pointed flare with a bright core, for hit flashes. */
-function flareTexture(): CanvasTexture {
+export function flareTexture(): CanvasTexture {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
   const ctx = c.getContext('2d')!;

@@ -100,6 +100,8 @@ export class Horde {
   readonly kT = new Float32Array(CAP);
   /** Per-enemy cooldown for the orbiting blades (s), so one pass is one hit. */
   readonly bladeCd = new Float32Array(CAP);
+  /** The same for the glacier discs. */
+  readonly discCd = new Float32Array(CAP);
   /** Seconds until it next hurls an ice boulder (the big ones). */
   readonly throwT = new Float32Array(CAP);
   /** Drops something when it dies: 1 an upgrade orb, 2 (a boss) a chest. */
@@ -144,6 +146,7 @@ export class Horde {
     this.bite[i] = 0;
     this.kT[i] = 0;
     this.bladeCd[i] = 0;
+    this.discCd[i] = 0;
     this.carrier[i] = 0;
     this.throwT[i] = 3 + Math.random() * 5;
     this.state[i] = 0;
@@ -184,6 +187,7 @@ export class Horde {
     this.kvz[to] = this.kvz[from];
     this.kT[to] = this.kT[from];
     this.bladeCd[to] = this.bladeCd[from];
+    this.discCd[to] = this.discCd[from];
     this.carrier[to] = this.carrier[from];
     this.bossNo[to] = this.bossNo[from];
     this.maxHp[to] = this.maxHp[from];
@@ -219,6 +223,7 @@ export class Horde {
       this.flash[i] = Math.max(0, this.flash[i] - dt);
       this.chill[i] = Math.max(0, this.chill[i] - dt);
       this.bladeCd[i] = Math.max(0, this.bladeCd[i] - dt);
+      this.discCd[i] = Math.max(0, this.discCd[i] - dt);
       if (this.rise[i] < 1) {
         // Clawing out of the snow first.
         this.rise[i] = Math.min(1, this.rise[i] + dt * 1.6);

@@ -15,7 +15,10 @@
  *
  * Weapons: Icicle Volley (at the nearest), Orbit Blades (swords spinning
  * round you), Compass Shards (every way at once), Frost Nova (a blast ring
- * that freezes and throws them back) and Chain Lightning. Each evolves (see
+ * that freezes and throws them back), Chain Lightning, Avalanche Mortar
+ * (snowballs lobbed into the thick of them), Frost Aura (a blizzard round
+ * you), Glacier Discs (thrown out and back) and Ice Spikes (bursting up
+ * under them); you carry up to six. Each evolves (see
  * upgrades.ts) once it is levelled up alongside its partner passive: the
  * next treasure chest turns it into something else entirely.
  *
@@ -49,6 +52,7 @@ import { startTutorialKit } from '../tutorial-kit.js';
 import { tutorialLevel } from '../tutorial-level.js';
 import { BLOATER, BRUTE, CAP, GHOUL, GLITTER, Horde, KINDS, LUNGER, SPLITTER, TITAN } from './horde.js';
 import { Blades, Bolts, Chests, Gems, Hurls, Impacts, Novas, Orbs, Zaps } from './survivors-fx.js';
+import { Aura, Discs, Shells, Spikes } from './weapons-fx.js';
 import { SurvivorsHud } from './survivors-hud.js';
 import { ARENA_X, ARENA_Z, duneHeight, survivorsLevel, survivorsView } from './survivors-level.js';
 import { survivors, survivorsControl } from './survivors-state.js';
@@ -125,6 +129,14 @@ export class SurvivorsSystem extends createSystem({}) {
   private chests!: Chests;
   private hurls!: Hurls;
   private impacts!: Impacts;
+  private shells!: Shells;
+  private aura!: Aura;
+  private discs!: Discs;
+  private spikes!: Spikes;
+  /** Seconds to the aura's next bite, and how many it has made (every third freezes, evolved). */
+  private auraT = 0;
+  private auraTicks = 0;
+  private hitFlares = 0;
   private hud = new SurvivorsHud();
   private menu = new UpgradeMenu();
   /** Upgrade choices waiting their turn (a burst of levels queues several). */
@@ -144,7 +156,17 @@ export class SurvivorsSystem extends createSystem({}) {
   private busy = false;
   private pendingUrlStart = false;
 
-  private readonly cd: Record<WeaponId, number> = { icicles: 0, blades: 0, compass: 0, nova: 0, lightning: 0 };
+  private readonly cd: Record<WeaponId, number> = {
+    icicles: 0,
+    blades: 0,
+    compass: 0,
+    nova: 0,
+    lightning: 0,
+    mortar: 0,
+    aura: 0,
+    discs: 0,
+    spikes: 0,
+  };
   private bladeAngle = 0;
   private compassTurn = 0;
   private spawnAcc = 0;
@@ -240,6 +262,10 @@ export class SurvivorsSystem extends createSystem({}) {
     this.chests = new Chests(this.root);
     this.hurls = new Hurls(this.root);
     this.impacts = new Impacts(this.root);
+    this.shells = new Shells(this.root);
+    this.aura = new Aura(this.root);
+    this.discs = new Discs(this.root);
+    this.spikes = new Spikes(this.root);
     this.root.visible = false;
     this.world.createTransformEntity(this.root, { persistent: true });
     this.world.createTransformEntity(this.hud.root, { persistent: true });
@@ -360,6 +386,11 @@ export class SurvivorsSystem extends createSystem({}) {
     this.gems.n = 0;
     this.hurls.n = 0;
     this.impacts.clear();
+    this.shells.clear();
+    this.discs.clear();
+    this.spikes.clear();
+    this.auraT = 0;
+    this.auraTicks = 0;
     this.orbs.clear();
     this.chests.clear();
     survivors.dead.value = false;
@@ -435,6 +466,8 @@ export class SurvivorsSystem extends createSystem({}) {
       this.hurl(dt, px, pz);
       this.fireWeapons(dt, clock, px, pz);
       this.moveBolts(dt);
+      this.moveShells(dt);
+      this.moveDiscs(dt, px, pz);
       this.collect(dt, px, pz);
       this.recycle(px, pz);
       this.burstBloaters(dt, px, pz);
@@ -449,6 +482,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.clock();
     } else if (this.dead) {
       this.blades.hide();
+      this.discs.clear();
     }
 
     this.swarm.update(this.horde, clock, this.scene.fog as Fog | null);
@@ -457,6 +491,11 @@ export class SurvivorsSystem extends createSystem({}) {
     this.novas.tick(simDt);
     this.zaps.tick(simDt);
     this.impacts.tick(simDt, this.head);
+    this.shells.draw(clock);
+    this.discs.draw(clock);
+    this.spikes.tick(simDt, this.erupt);
+    const auraR = this.dead || this.stats.weapons.aura <= 0 ? 0 : this.auraRadius();
+    this.aura.draw(simDt, clock, this.head.x, this.head.z, auraR, !!this.stats.evolved.aura);
     this.gems.tick(simDt);
     this.gems.draw(clock);
     this.hurls.draw(clock);
@@ -464,6 +503,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.chests.tick(simDt, clock);
     void time;
     this.killSounds = Math.max(0, this.killSounds - dt * 14);
+    this.spikeSounds = 0;
     this.biteSound = Math.max(0, this.biteSound - dt);
 
     this.player.head.getWorldDirection(this.gaze).negate();
@@ -1572,8 +1612,192 @@ export class SurvivorsSystem extends createSystem({}) {
       }
       if (this.hitSet.size > 0) audio.zap();
     }
+
+    this.hitFlares = 0;
+
+    // Avalanche Mortar: snowballs lobbed onto the thickest of the crowd.
+    // Avalanche: three more a volley, wider and heavier.
+    if (w.mortar > 0 && this.cd.mortar <= 0) {
+      const L = w.mortar;
+      const ava = !!evo.mortar;
+      this.cd.mortar = (2.9 - 0.14 * L) * s.haste * (ava ? 0.8 : 1);
+      const shots = 1 + Math.floor(L / 4) + Math.floor(s.amount / 2) + (ava ? 2 : 0);
+      const radius = (2.2 + 0.12 * L) * s.area * (ava ? 1.35 : 1);
+      const dmg = (30 + 12 * L) * s.might * (ava ? 1.4 : 1);
+      for (let k = 0; k < shots; k++) {
+        const t = this.crowdTarget(px, pz);
+        if (t < 0) break;
+        const tx = this.horde.x[t] + (Math.random() - 0.5) * (k > 0 ? 2.5 : 0.5);
+        const tz = this.horde.z[t] + (Math.random() - 0.5) * (k > 0 ? 2.5 : 0.5);
+        const d = Math.hypot(tx - px, tz - pz);
+        this.shells.lob(px, y + 0.3, pz, tx, tz, 0.75 + d * 0.025 + k * 0.08, radius, dmg, (ava ? 1.4 : 1) * Math.sqrt(s.area));
+      }
+      if (shots > 0) audio.thud();
+    }
+
+    // Glacier Discs: thrown out round you and spun back.
+    // Moon Discs: twice as many, flying twice as far.
+    if (w.discs > 0 && this.cd.discs <= 0) {
+      const L = w.discs;
+      const moon = !!evo.discs;
+      this.cd.discs = (2.4 - 0.1 * L) * s.haste;
+      const count = (1 + Math.floor((L + 1) / 3) + s.amount) * (moon ? 2 : 1);
+      const range = (6 + 0.45 * L) * s.area * (moon ? 2 : 1);
+      const near = this.horde.nearest(px, pz, range + 4);
+      const a0 = near >= 0 ? Math.atan2(this.horde.x[near] - px, this.horde.z[near] - pz) : Math.random() * Math.PI * 2;
+      for (let k = 0; k < count; k++) {
+        const a = a0 + (k / count) * Math.PI * 2;
+        this.discs.throw(px, y + 0.1, pz, Math.sin(a), Math.cos(a), range, moon ? 1.7 : 1.3, (9 + 4 * L) * s.might, (0.2 + 0.015 * L) * s.area);
+      }
+      audio.swish();
+    }
+
+    // Ice Spikes: crystals burst up under a few of them after a frosty warning.
+    // Ice Cathedral: a ring of spikes round each one as well.
+    if (w.spikes > 0 && this.cd.spikes <= 0) {
+      const L = w.spikes;
+      const cathedral = !!evo.spikes;
+      this.cd.spikes = (1.9 - 0.06 * L) * s.haste;
+      const count = 2 + Math.floor(L / 2) + s.amount;
+      const radius = (0.85 + 0.05 * L) * s.area;
+      this.hitSet.clear();
+      for (let k = 0; k < count; k++) {
+        const t = this.horde.nearest(px + (Math.random() - 0.5) * 16, pz + (Math.random() - 0.5) * 16, 9, this.hitSet);
+        if (t < 0) continue;
+        this.hitSet.add(t);
+        const tx = this.horde.x[t];
+        const tz = this.horde.z[t];
+        this.spikes.place(tx, tz, radius, 0.3);
+        if (cathedral) {
+          for (let c = 0; c < 5; c++) {
+            const a = (c / 5) * Math.PI * 2;
+            this.spikes.place(tx + Math.cos(a) * radius * 1.9, tz + Math.sin(a) * radius * 1.9, radius * 0.8, 0.38 + c * 0.03);
+          }
+        }
+      }
+    }
+
+    // Frost Aura: a blizzard round you, biting everything in it and
+    // slowing it. Whiteout: wider, and every third bite freezes them solid.
+    if (w.aura > 0) {
+      this.auraT -= dt;
+      if (this.auraT <= 0) {
+        const L = w.aura;
+        const white = !!evo.aura;
+        this.auraT = 0.5 * s.haste;
+        this.auraTicks++;
+        const radius = this.auraRadius();
+        const dmg = (5 + 2.5 * L) * s.might * (white ? 1.5 : 1);
+        const freeze = white && this.auraTicks % 3 === 0 ? 0.9 : 0;
+        const n = this.horde.gather(px, pz, radius, this.near);
+        for (let j = 0; j < n; j++) {
+          const i = this.near[j];
+          this.hit(i, dmg, this.horde.x[i] - px, this.horde.z[i] - pz, 0.8, 1.2, freeze);
+        }
+        this.aura.flare();
+        if (freeze > 0 && n > 0) audio.crack();
+      }
+    }
     void time;
   }
+
+  /** The Frost Aura's reach (m). */
+  private auraRadius(): number {
+    const s = this.stats;
+    return (2.0 + 0.18 * s.weapons.aura) * s.area * (s.evolved.aura ? 1.6 : 1);
+  }
+
+  /**
+   * An enemy in the thick of the crowd, 5-24 m off: a few picked at
+   * random, the one with the most round it wins. -1 if none.
+   */
+  private crowdTarget(px: number, pz: number): number {
+    const h = this.horde;
+    let best = -1;
+    let most = -1;
+    for (let k = 0; k < 10 && h.n > 0; k++) {
+      const i = Math.floor(Math.random() * h.n);
+      if (h.dead[i] || h.rise[i] < 1) continue;
+      const d = Math.hypot(h.x[i] - px, h.z[i] - pz);
+      if (d < 5 || d > 24) continue;
+      const crowd = h.gather(h.x[i], h.z[i], 2.5, this.near);
+      if (crowd > most) {
+        most = crowd;
+        best = i;
+      }
+    }
+    return best >= 0 ? best : h.nearest(px, pz, 24);
+  }
+
+  /** Mortar shells landing: a burst of snow that throws them all back. */
+  private moveShells(dt: number): void {
+    const sh = this.shells;
+    sh.move(dt);
+    for (let i = sh.n - 1; i >= 0; i--) {
+      if (sh.age[i] < sh.flight[i]) continue;
+      const x = sh.tx[i];
+      const z = sh.tz[i];
+      const r = sh.radius[i];
+      const gy = duneHeight(x, z);
+      this.novas.burst(x, z, r, 0xe6f0ff);
+      this.shards.burst(x, gy + 0.3, z, 24, 0xf2f6ff, 0.1, 4, 5);
+      this.impacts.spawn(x, gy + 0.5, z, 0xdfeaff, 1.6 + r * 0.4);
+      sceneRefs.puffs?.emit(this.pickAt.set(x, gy + 0.1, z), 12, 2.2);
+      const n = this.horde.gather(x, z, r, this.near);
+      for (let j = 0; j < n; j++) {
+        const e = this.near[j];
+        this.hit(e, sh.dmg[i], this.horde.x[e] - x, this.horde.z[e] - z, 9, 0.8);
+      }
+      audio.impact(0.7);
+      sh.remove(i);
+    }
+  }
+
+  /** Discs cut whatever they pass through, once a pass, and come home. */
+  private moveDiscs(dt: number, px: number, pz: number): void {
+    const d = this.discs;
+    d.move(dt, px, this.head.y - 0.45, pz);
+    for (let i = d.n - 1; i >= 0; i--) {
+      if (d.age[i] >= d.trip[i]) {
+        d.remove(i);
+        continue;
+      }
+      const n = this.horde.gather(d.x[i], d.z[i], d.size[i] * 1.4 + 0.15, this.near);
+      for (let j = 0; j < n; j++) {
+        const e = this.near[j];
+        if (this.horde.discCd[e] > 0) continue;
+        this.horde.discCd[e] = 0.3;
+        this.hit(e, d.dmg[i], this.horde.x[e] - d.x[i], this.horde.z[e] - d.z[i], 3.5);
+        if (this.hitFlares < 6) {
+          this.hitFlares++;
+          this.impacts.spawn(this.horde.x[e], this.horde.radius(e) * 0.7, this.horde.z[e], 0x9fdcff, 0.45);
+        }
+      }
+    }
+  }
+
+  /** Ice Spikes bursting up: everything over them is speared, thrown and chilled. */
+  private readonly erupt = (x: number, z: number, radius: number): void => {
+    const s = this.stats;
+    const L = s.weapons.spikes;
+    const dmg = (16 + 7 * L) * s.might * (s.evolved.spikes ? 1.2 : 1);
+    const n = this.horde.gather(x, z, radius, this.near);
+    for (let j = 0; j < n; j++) {
+      const e = this.near[j];
+      this.hit(e, dmg, this.horde.x[e] - x + 0.01, this.horde.z[e] - z, 2.5, 1.5);
+    }
+    const gy = duneHeight(x, z);
+    this.shards.burst(x, gy + 0.3, z, 8, 0xcff4ff, 0.06, 2, 4);
+    if (this.hitFlares < 6) {
+      this.hitFlares++;
+      this.impacts.spawn(x, gy + radius, z, 0xcff4ff, 0.8);
+    }
+    if (this.spikeSounds < 3) {
+      this.spikeSounds++;
+      audio.spike();
+    }
+  };
+  private spikeSounds = 0;
 
   /** One ring of blades: each sword hits what it passes through, once a pass. */
   private bladeRing(count: number, px: number, pz: number, radius: number, angle: number, dmg: number): void {
