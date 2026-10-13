@@ -12,10 +12,18 @@
  * - Rockets: fireworks climbing on a sparkling trail, then diving.
  * - Comets: burning rocks falling out of the sky on a long tail, a ring on
  *   the snow where each will strike.
+ * - Scorches: the snow charred where fire has been (under the ember trail,
+ *   in a comet's crater), so you can see where the ground is burning.
+ *
+ * Fire is drawn in see-through colour, not added light: the snow is
+ * nearly white, and added light over it only bleaches it whiter (late in a
+ * run, a white haze where the crowd should be). Tinted, it reads as fire.
  */
 
 import {
   AdditiveBlending,
+  MultiplyBlending,
+  NormalBlending,
   BufferAttribute,
   CanvasTexture,
   Color,
@@ -38,7 +46,7 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import { GeometryBuilder, placed } from '../mesh-utils.js';
-import { additive, streakGeometry } from './survivors-fx.js';
+import { additive, fx, streakGeometry, tinted } from './survivors-fx.js';
 import { duneHeight } from './survivors-level.js';
 
 const tmpM = new Matrix4();
@@ -81,11 +89,14 @@ void main() {
   gl_Position = projectionMatrix * mv;
   float depth = max(0.05, -mv.z);
   // Never a screenful: capped in pixels, and gone when right at your eyes.
-  gl_PointSize = min(aSize * projectionMatrix[1][1] * uViewH * 0.5 / depth, 30.0);
+  // (Drawn in see-through colour, a spark reads at a little over half the
+  // size it needed as added light.)
+  gl_PointSize = min(aSize * 0.6 * projectionMatrix[1][1] * uViewH * 0.5 / depth, 18.0);
   vNear = smoothstep(0.8, 2.2, depth);
 }
 `;
 const EMBER_FRAG = /* glsl */ `
+uniform float uGain;
 varying float vHeat;
 varying vec3 vTint;
 varying float vNear;
@@ -94,14 +105,18 @@ void main() {
   float d = length(c) * 2.0;
   if (d > 1.0) discard;
   float core = 1.0 - smoothstep(0.0, 1.0, d);
-  // Fire: white-hot, through yellow and orange to deep red as it cools.
-  vec3 hot = mix(vec3(0.9, 0.12, 0.02), vec3(1.0, 0.55, 0.08), smoothstep(0.15, 0.5, vHeat));
-  hot = mix(hot, vec3(1.0, 0.82, 0.45), smoothstep(0.7, 1.0, vHeat));
-  // A tinted spark (fireworks) keeps its colour, whitening at the core.
+  // Fire: golden, through orange to deep red as it cools (never white:
+  // it is drawn over snow).
+  vec3 hot = mix(vec3(0.7, 0.06, 0.02), vec3(1.0, 0.4, 0.04), smoothstep(0.15, 0.5, vHeat));
+  hot = mix(hot, vec3(1.0, 0.78, 0.22), smoothstep(0.7, 1.0, vHeat));
+  // A tinted spark (fireworks) keeps its colour.
   vec3 col = mix(hot, vTint, step(0.001, dot(vTint, vec3(1.0))));
-  col = mix(col, vec3(1.0), core * core * 0.22 * vHeat);
-  float a = core * smoothstep(0.0, 0.25, vHeat) * vNear;
-  gl_FragColor = vec4(col * (1.0 + 0.6 * vHeat), a);
+  // A hot heart, still coloured, inside a soft glow of its colour.
+  col = mix(col, col * 0.4 + vec3(0.7, 0.65, 0.42), core * core * core * 0.7 * vHeat);
+  // See-through colour, so it tints the snow; soft all the way out, a
+  // spark rather than a disc.
+  float a = core * core * smoothstep(0.0, 0.25, vHeat) * vNear * (0.75 + 0.25 * uGain) * 1.4;
+  gl_FragColor = vec4(col * 1.1, a);
 }
 `;
 
@@ -130,10 +145,10 @@ export class Embers {
     this.material = new ShaderMaterial({
       vertexShader: EMBER_VERT,
       fragmentShader: EMBER_FRAG,
-      uniforms: { uViewH: { value: 900 } },
+      uniforms: { uViewH: { value: 900 }, uGain: { value: 1 } },
       transparent: true,
       depthWrite: false,
-      blending: AdditiveBlending,
+      blending: NormalBlending,
       toneMapped: false,
     });
     this.points = new Points(geo, this.material);
@@ -175,13 +190,19 @@ export class Embers {
     }
   }
 
+  /** Sparks alight this frame. */
+  live = 0;
+
   tick(dt: number, time: number): void {
     const damp = Math.exp(-dt * 1.6);
+    this.material.uniforms.uGain.value = fx.gain;
+    let live = 0;
     for (let i = 0; i < EMBER_CAP; i++) {
       if (this.life[i] <= 0) {
         this.size[i] = 0;
         continue;
       }
+      live++;
       this.life[i] -= dt;
       const t = Math.max(0, this.life[i] / this.maxLife[i]);
       const o = i * 3;
@@ -197,6 +218,7 @@ export class Embers {
       // Swells as it catches, shrinks as it cools.
       this.size[i] = this.base[i] * (t > 0.85 ? (1 - t) / 0.15 * 0.6 + 0.4 : 0.4 + 0.6 * t);
     }
+    this.live = live;
     const geo = this.points.geometry;
     for (const name of ['position', 'aSize', 'aHeat', 'aTint']) (geo.getAttribute(name) as BufferAttribute).needsUpdate = true;
   }
@@ -215,10 +237,10 @@ function flameTexture(): CanvasTexture {
   c.height = 128;
   const ctx = c.getContext('2d')!;
   const g = ctx.createLinearGradient(0, 128, 0, 0);
-  g.addColorStop(0, 'rgba(255,250,220,1)');
-  g.addColorStop(0.25, 'rgba(255,190,70,0.95)');
-  g.addColorStop(0.6, 'rgba(255,90,20,0.75)');
-  g.addColorStop(1, 'rgba(160,20,0,0)');
+  g.addColorStop(0, 'rgba(255,214,96,0.95)');
+  g.addColorStop(0.25, 'rgba(255,150,36,0.92)');
+  g.addColorStop(0.6, 'rgba(232,66,14,0.78)');
+  g.addColorStop(1, 'rgba(140,18,0,0)');
   ctx.fillStyle = g;
   ctx.beginPath();
   ctx.moveTo(32, 2);
@@ -231,16 +253,20 @@ function flameTexture(): CanvasTexture {
   return t;
 }
 
-const FLAME_CAP = 520;
+const FLAME_CAP = 640;
 
 /** Tongues of fire on the snow, each one a flickering billboard turned to face you. */
 export class Flames {
   private readonly mesh: InstancedMesh;
   private n = 0;
+  /** Tongues standing this frame. */
+  get live(): number {
+    return this.n;
+  }
 
   constructor(parent: Group) {
     const geo = new PlaneGeometry(1, 2).translate(0, 1, 0);
-    this.mesh = instanced(geo, additive({ map: flameTexture() }), FLAME_CAP, 'Flames', parent);
+    this.mesh = instanced(geo, tinted({ map: flameTexture() }), FLAME_CAP, 'Flames', parent);
     this.mesh.renderOrder = 6;
   }
 
@@ -249,8 +275,11 @@ export class Flames {
     this.n = 0;
   }
 
-  /** One tongue at (x, y, z), `height` m tall, flickering on `phase`, at `strength` 0..1. */
-  add(x: number, y: number, z: number, height: number, phase: number, strength: number, time: number, eye: Vector3): void {
+  /**
+   * One tongue at (x, y, z), `height` m tall, flickering on `phase`, at
+   * `strength` 0..1; `wild` burns gold at the root (Wildfire).
+   */
+  add(x: number, y: number, z: number, height: number, phase: number, strength: number, time: number, eye: Vector3, wild = false): void {
     if (this.n >= FLAME_CAP) return;
     const flick = 0.75 + 0.25 * Math.sin(time * 13 + phase) + 0.12 * Math.sin(time * 29 + phase * 2.3);
     const h = height * flick * strength;
@@ -260,7 +289,8 @@ export class Flames {
     tmpQ.multiply(tmpQ2.setFromAxisAngle(Z_AXIS, Math.sin(time * 5 + phase) * 0.15));
     tmpS.set(h * 0.45, h * 0.5, 1);
     this.mesh.setMatrixAt(this.n, tmpM.compose(tmpP, tmpQ, tmpS));
-    this.mesh.setColorAt(this.n, tmpC.setRGB(1.3, 1.1, 1.0).multiplyScalar(0.6 + 0.6 * strength));
+    if (wild) this.mesh.setColorAt(this.n, tmpC.setRGB(1.25, 1.2, 0.85));
+    else this.mesh.setColorAt(this.n, tmpC.setRGB(1.1, 1.0, 0.95));
     this.n++;
   }
 
@@ -283,6 +313,7 @@ void main() {
 const BREATH_FRAG = /* glsl */ `
 uniform float uTime;
 uniform float uAlpha;
+uniform float uDragon;
 varying vec2 vUv;
 float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float noise(vec2 p) {
@@ -296,10 +327,20 @@ void main() {
   float along = 1.0 - vUv.y;
   float n = noise(vec2(vUv.x * 9.0, along * 5.0 - uTime * 7.0)) * 0.6 + noise(vec2(vUv.x * 21.0, along * 11.0 - uTime * 13.0)) * 0.4;
   float body = smoothstep(0.05, 0.3, along) * (1.0 - smoothstep(0.55, 1.0, along));
-  float a = body * smoothstep(0.25, 0.75, n + 0.35 - along * 0.3) * uAlpha * 0.45;
-  vec3 col = mix(vec3(1.0, 0.8, 0.45), vec3(1.0, 0.35, 0.05), smoothstep(0.1, 0.6, along));
-  col = mix(col, vec3(0.6, 0.06, 0.02), smoothstep(0.7, 1.0, along));
-  gl_FragColor = vec4(col, a);
+  // Separate tongues with clear air between them (you always look straight
+  // down the jet: as a film of colour it veiled the middle of the view),
+  // and none at all in the first stretch out from your chest.
+  float lick = smoothstep(0.52, 0.82, n + 0.2 - along * 0.25);
+  body *= smoothstep(0.08, 0.3, along);
+  float a = body * lick * uAlpha * 0.6;
+  // Gold at the mouth, through orange to a smoky crimson at the far end.
+  vec3 col = mix(vec3(1.0, 0.72, 0.18), vec3(1.0, 0.32, 0.04), smoothstep(0.1, 0.6, along));
+  col = mix(col, vec3(0.55, 0.05, 0.02), smoothstep(0.7, 1.0, along));
+  // Dragon's Breath: a white-gold heart down the middle of the jet, and
+  // the churn picks out in bright gold.
+  float heart = (1.0 - smoothstep(0.0, 0.32, abs(vUv.x - 0.5) * 2.0 * 0.5 + along * 0.4)) * uDragon;
+  col = mix(col, vec3(1.0, 0.92, 0.55), heart * 0.8 + uDragon * lick * 0.15);
+  gl_FragColor = vec4(col * 1.05, min(1.0, a * (1.0 + 0.4 * uDragon)));
 }
 `;
 
@@ -314,10 +355,10 @@ export class Breath {
     this.material = new ShaderMaterial({
       vertexShader: BREATH_VERT,
       fragmentShader: BREATH_FRAG,
-      uniforms: { uTime: { value: 0 }, uAlpha: { value: 0 } },
+      uniforms: { uTime: { value: 0 }, uAlpha: { value: 0 }, uDragon: { value: 0 } },
       transparent: true,
       depthWrite: false,
-      blending: AdditiveBlending,
+      blending: NormalBlending,
       side: DoubleSide,
       toneMapped: false,
     });
@@ -328,8 +369,9 @@ export class Breath {
     parent.add(this.mesh);
   }
 
-  /** Out from (x, y, z) along `yaw`, `length` long and `width` across at the end, at `alpha` (0 hides it). */
-  draw(x: number, y: number, z: number, yaw: number, length: number, width: number, alpha: number, time: number): void {
+  /** Out from (x, y, z) along `yaw`, `length` long and `width` across at the end, at `alpha` (0 hides it); `dragon` for Dragon's Breath. */
+  draw(x: number, y: number, z: number, yaw: number, length: number, width: number, alpha: number, time: number, dragon = false): void {
+    this.material.uniforms.uDragon.value = dragon ? 1 : 0;
     this.mesh.visible = alpha > 0.01;
     if (!this.mesh.visible) return;
     this.mesh.position.set(x, y, z);
@@ -440,7 +482,7 @@ export class Rockets {
       this.body.setColorAt(i, tmpC.setRGB(1, 1, 1));
       tmpS.set(1, 1, 1.4);
       this.trail.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.trail.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(1.4));
+      this.trail.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(1.4 * (0.5 + 0.5 * fx.gain)));
     }
     for (const m of [this.body, this.trail]) {
       m.count = this.n;
@@ -481,7 +523,9 @@ export class Comets {
   constructor(parent: Group) {
     this.rock = instanced(new IcosahedronGeometry(0.5, 0), new MeshBasicMaterial({ toneMapped: false }), COMET_CAP, 'Comets', parent);
     this.tail = instanced(streakGeometry(1.1), additive({ vertexColors: true }), COMET_CAP, 'CometTails', parent);
-    this.ring = instanced(new RingGeometry(0.88, 1, 48).rotateX(-Math.PI / 2), additive(), COMET_CAP, 'CometMarks', parent);
+    // Where each will strike, in see-through red on the snow (readable on white).
+    this.ring = instanced(new RingGeometry(0.9, 1, 48).rotateX(-Math.PI / 2), tinted(), COMET_CAP, 'CometMarks', parent);
+    (this.ring.material as MeshBasicMaterial).opacity = 0.85;
   }
 
   drop(tx: number, tz: number, fall: number, dmg: number, radius: number, size: number): void {
@@ -544,13 +588,13 @@ export class Comets {
       tmpQ.setFromRotationMatrix(tmpM);
       tmpS.set(s * 1.2, s * 1.2, 9 * s);
       this.tail.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.tail.setColorAt(i, tmpC.setRGB(1.6, 0.7, 0.2));
+      this.tail.setColorAt(i, tmpC.setRGB(1.6, 0.7, 0.2).multiplyScalar(0.55 + 0.45 * fx.gain));
       // Where it will strike: a ring tightening and reddening.
       tmpP.set(this.tx[i], duneHeight(this.tx[i], this.tz[i]) + 0.06, this.tz[i]);
       const r = this.radius[i] * (1.6 - 0.6 * t);
       tmpS.set(r, 1, r);
       this.ring.setMatrixAt(i, tmpM.compose(tmpP, tmpQ.identity(), tmpS));
-      this.ring.setColorAt(i, tmpC.setRGB(1.6, 0.5 + 0.4 * (1 - t), 0.15).multiplyScalar(0.3 + 0.7 * t));
+      this.ring.setColorAt(i, tmpC.setRGB(1.0, 0.45 * (1 - t) + 0.12, 0.06));
     }
     for (const m of [this.rock, this.tail, this.ring]) {
       m.count = this.n;
@@ -561,5 +605,91 @@ export class Comets {
 
   clear(): void {
     this.n = 0;
+  }
+}
+
+// ----------------------------------------------------------- scorches ---
+
+/**
+ * The shape of a scorch, in its alpha (white, so the char colour comes from
+ * each instance): heavy at the heart, soft at the edge, blotched so it reads
+ * as burnt ground rather than a disc.
+ */
+function scorchTexture(): CanvasTexture {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,255,255,0.85)');
+  g.addColorStop(0.5, 'rgba(255,255,255,0.65)');
+  g.addColorStop(0.82, 'rgba(255,255,255,0.25)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  for (let k = 0; k < 26; k++) {
+    const a = k * 2.399;
+    const r = 18 + ((k * 37) % 30);
+    const bx = 64 + Math.cos(a) * r;
+    const by = 64 + Math.sin(a) * r;
+    const b = ctx.createRadialGradient(bx, by, 0, bx, by, 9 + (k % 4) * 3);
+    b.addColorStop(0, 'rgba(255,255,255,0.3)');
+    b.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = b;
+    ctx.fillRect(0, 0, 128, 128);
+  }
+  const t = new CanvasTexture(c);
+  t.colorSpace = SRGBColorSpace;
+  return t;
+}
+
+const SCORCH_CAP = 140;
+const CHAR = new Color(0.16, 0.09, 0.05);
+
+/**
+ * Scorched snow, laid each frame (like the flames): multiplied into the
+ * snow under it, so it darkens it; an instance fades by turning back
+ * toward white, which leaves the snow as it was.
+ */
+export class Scorches {
+  private readonly mesh: InstancedMesh;
+  private n = 0;
+
+  constructor(parent: Group) {
+    const material = new MeshBasicMaterial({
+      map: scorchTexture(),
+      transparent: true,
+      blending: MultiplyBlending,
+      premultipliedAlpha: true,
+      depthWrite: false,
+      toneMapped: false,
+      fog: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    });
+    this.mesh = instanced(new PlaneGeometry(2, 2).rotateX(-Math.PI / 2), material, SCORCH_CAP, 'Scorches', parent);
+    this.mesh.renderOrder = 3;
+  }
+
+  begin(): void {
+    this.n = 0;
+  }
+
+  /** Charred snow at (x, z), `radius` across, `amount` 0 (none) .. 1 (black), turned by `spin`. */
+  add(x: number, z: number, radius: number, amount: number, spin: number): void {
+    if (this.n >= SCORCH_CAP || amount <= 0.01) return;
+    tmpP.set(x, duneHeight(x, z) + 0.03, z);
+    tmpQ.setFromAxisAngle(UP, spin);
+    tmpS.set(radius, 1, radius);
+    this.mesh.setMatrixAt(this.n, tmpM.compose(tmpP, tmpQ, tmpS));
+    // White leaves the snow as it is; toward char, the deeper the burn.
+    this.mesh.setColorAt(this.n, tmpC.setRGB(1, 1, 1).lerp(CHAR, Math.min(1, amount)));
+    this.n++;
+  }
+
+  end(): void {
+    this.mesh.count = this.n;
+    this.mesh.instanceMatrix.needsUpdate = true;
+    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
   }
 }

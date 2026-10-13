@@ -31,6 +31,7 @@ import {
   TorusGeometry,
   Vector3,
 } from '@iwsdk/core';
+import { displayFont } from './lettering.js';
 import type { Handedness } from '../hand-input.js';
 import { poleMeshes } from '../pole-system.js';
 import type { HudState } from './survivors-hud.js';
@@ -184,10 +185,10 @@ export class PoleScreens {
     this.arc(ctx, 112, 18, f, low ? `rgba(255,59,78,${pulse})` : '#ff5c76');
     this.arc(ctx, 88, 9, s.xp / s.xpNext, '#4dc3ff');
     ctx.fillStyle = low ? '#ff8a96' : '#ffffff';
-    ctx.font = '800 64px system-ui, sans-serif';
+    ctx.font = displayFont(64);
     ctx.fillText(`${Math.ceil(Math.max(0, s.hp))}`, c, c - 8);
     ctx.fillStyle = '#9fd6ff';
-    ctx.font = '800 26px system-ui, sans-serif';
+    ctx.font = displayFont(26);
     ctx.fillText(`LEVEL ${s.level}`, c, c + 42);
     p.texture.needsUpdate = true;
   }
@@ -205,20 +206,20 @@ export class PoleScreens {
     const mm = Math.floor(left / 60);
     const ss = left % 60;
     ctx.fillStyle = last ? '#ff8a8a' : '#ffffff';
-    ctx.font = '800 58px system-ui, sans-serif';
+    ctx.font = displayFont(58);
     ctx.fillText(`${mm}:${ss.toString().padStart(2, '0')}`, c, c - 46);
     ctx.fillStyle = '#ffd166';
     let size = 44;
     const kills = s.kills.toLocaleString();
-    ctx.font = `800 ${size}px system-ui, sans-serif`;
+    ctx.font = displayFont(size);
     while (ctx.measureText(kills).width > 170 && size > 24) {
       size -= 2;
-      ctx.font = `800 ${size}px system-ui, sans-serif`;
+      ctx.font = displayFont(size);
     }
     ctx.fillText(kills, c, c + 8);
-    ctx.font = '700 16px system-ui, sans-serif';
+    ctx.font = displayFont(16);
     ctx.fillText('KILLS', c, c + 36);
-    ctx.font = '800 22px system-ui, sans-serif';
+    ctx.font = displayFont(22);
     ctx.fillStyle = s.combo >= 10 ? '#ffb347' : 'rgba(200,215,235,0.45)';
     ctx.fillText(s.combo >= 10 ? `${s.combo.toLocaleString()} COMBO` : '', c, c + 66);
     ctx.fillStyle = s.speedMul >= 1.05 ? '#7fe9ff' : 'rgba(200,215,235,0.45)';

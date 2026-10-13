@@ -20,11 +20,15 @@ shadowed snow and granite, a snow-laden spruce forest and a horizon of
    their own clock. Step onto a deck when its signal lamps are green; amber
    lamps go out one per beat before it leaves, and red means it is moving.
    No room to walk? Reach over the green deck and close your hand to be
-   carried onto it. Take the left wing, right wing and control bar from their
-   racks on the way up (they pulse; reach in with a closed hand to take one
-   and it goes into your backpack; a deck leaving a rack waits until you have).
-4. **Light the beacon.** At the top of the chimney, take the torch off its
-   hook and hold it to the brazier. The beacon on top of the bluff tells the
+   carried onto it. Take the left wing and right wing from their racks on
+   the way up (they pulse; reach in with a closed hand, or just touch one, and
+   it goes into your backpack; a deck leaving a rack waits until you have).
+   The control bar, the last part, hangs from a gallows right across the
+   edge you step off its deck by: you can't leave without walking into it.
+4. **Light the beacon.** Once all three parts are found, the ribboned signal
+   torch flares up on its post at the top of the chimney. Take it (it sits in
+   your fist like a real torch, its flame always burning upward) and hold
+   its head to the brazier. The beacon on top of the bluff tells the
    party on the lake that you are on your way.
 5. **Build a glider.** You come up out of the chimney onto the beacon deck
    on top of the bluff. Open your pack, take out each part you recovered and
@@ -56,7 +60,8 @@ Drag the mouse to look around on desktop.
 Lost your bearings, or drifted towards the edge of your room? Open the
 backpack (either palm up, or A / X on a controller: a wooden tackle-box tray
 rises in front of you, your gear in its felt-lined slots and your notes on its
-open lid) and poke the brass **recentre** button standing off its left rim
+open lid; opened with a palm, it folds away as soon as you turn that hand
+back over) and poke the brass **recentre** button standing off its left rim
 with an index finger (R on desktop). In the cave it puts you back on
 the middle of the deck you're standing on; on the expedition's chute it
 makes where you stand the middle lane; on the trail it turns you up the trail; at the

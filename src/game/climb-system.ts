@@ -19,7 +19,7 @@ import { createSystem, Entity, Mesh, MeshStandardMaterial, Vector3 } from '@iwsd
 import { audio } from './audio.js';
 import { clearHands, holding } from './equipment.js';
 import { ClimbHold } from './game-components.js';
-import { HANDS, type Handedness } from './hand-input.js';
+import { HANDS, hands, type Handedness } from './hand-input.js';
 import { currentLevel, type ClimbWall } from './level.js';
 import { getHeadWorld, placeHeadAt } from './rig.js';
 import { sceneRefs } from './scene-system.js';
@@ -43,6 +43,23 @@ const MAX_SLIDE = 1.3;
  */
 const SMOOTH_BASE = 10;
 const SMOOTH_PER_SPEED = 80;
+/**
+ * A tracked hand that jumps further than this in one frame (rig space), and
+ * faster than any real pull, is a tracking glitch (a hand found again after
+ * the cameras lost it): the climb picks up from the new spot instead of
+ * yanking the world.
+ */
+const GLITCH_JUMP = 0.07;
+const GLITCH_SPEED = 4.5;
+/** The world never follows the climbing hand faster than this (m/s). */
+const MAX_PULL_SPEED = 3.2;
+/**
+ * A climbing hand that drops out of tracking (reaching above your head, out
+ * of the cameras' view) keeps its hold this long while you hang still.
+ */
+const LOST_GRACE = 1.2;
+/** A climbing hand opening past this has let go of the pull: the world stops following it. */
+const SLACK_CLOSURE = 0.38;
 /** Distance from the hand to the pick of a held ice axe. */
 const AXE_REACH = 0.42;
 /** Minimum swing speed toward the ice for a pick to bite (m/s). */
@@ -53,6 +70,8 @@ interface Grab {
   hold: Entity | null;
   active: boolean;
   readonly anchor: Vector3;
+  /** Seconds this grab's hand has been out of tracking (0 = tracked). */
+  lost: number;
 }
 
 type Tween = {
@@ -97,13 +116,16 @@ export class ClimbSystem extends createSystem({
   /** Filtered hand positions in rig space (see SMOOTH_BASE). */
   private readonly smoothLocal: Record<Handedness, Vector3> = { left: new Vector3(), right: new Vector3() };
   private readonly smoothReady: Record<Handedness, boolean> = { left: false, right: false };
+  /** Last raw hand positions in rig space, and whether this frame's was a glitch. */
+  private readonly lastRaw: Record<Handedness, Vector3> = { left: new Vector3(), right: new Vector3() };
+  private readonly glitched: Record<Handedness, boolean> = { left: false, right: false };
   private readonly raw = new Vector3();
   private readonly smoothed = new Vector3();
 
   init(): void {
     this.grabs = {
-      left: { hold: null, active: false, anchor: new Vector3() },
-      right: { hold: null, active: false, anchor: new Vector3() },
+      left: { hold: null, active: false, anchor: new Vector3(), lost: 0 },
+      right: { hold: null, active: false, anchor: new Vector3(), lost: 0 },
     };
     this.cleanupFuncs.push(
       game.phase.subscribe((phase) => {
@@ -134,6 +156,7 @@ export class ClimbSystem extends createSystem({
     for (const grab of [this.grabs.left, this.grabs.right]) {
       grab.hold = null;
       grab.active = false;
+      grab.lost = 0;
     }
     this.active = null;
     this.airTime = 0;
@@ -233,7 +256,10 @@ export class ClimbSystem extends createSystem({
       }
       this.player.worldToLocal(this.raw.copy(hand.position));
       const s = this.smoothLocal[side];
-      if (!this.smoothReady[side]) {
+      const last = this.lastRaw[side];
+      this.glitched[side] = this.smoothReady[side] && this.raw.distanceTo(last) > Math.max(GLITCH_JUMP, GLITCH_SPEED * dt);
+      last.copy(this.raw);
+      if (!this.smoothReady[side] || this.glitched[side]) {
         s.copy(this.raw);
         this.smoothReady[side] = true;
         continue;
@@ -260,10 +286,17 @@ export class ClimbSystem extends createSystem({
     for (const hand of HANDS) {
       const side = hand.handedness;
       const grab = this.grabs[side];
+      if (grab.active && (!hand.tracked || (grab.lost > 0 && !hand.grip))) {
+        // Out of the cameras' view: hang on where you are for a moment (and,
+        // once it is back, give the fist a moment to be seen again).
+        grab.lost += dt;
+        if (grab.lost < LOST_GRACE) continue;
+      }
       if (!hand.grip || !hand.tracked) {
         if (grab.active) {
           grab.active = false;
           grab.hold = null;
+          grab.lost = 0;
           if (this.active === side) {
             const other: Handedness = side === 'left' ? 'right' : 'left';
             this.active = this.grabs[other].active ? other : null;
@@ -273,7 +306,14 @@ export class ClimbSystem extends createSystem({
         }
         continue;
       }
-      if (grab.active) continue;
+      if (grab.active) {
+        // Back in view (or found again somewhere else): carry on from here.
+        if (grab.lost > 0 || this.glitched[side]) {
+          grab.lost = 0;
+          grab.anchor.copy(this.smoothHand(side));
+        }
+        continue;
+      }
 
       if (wall.mode === 'holds') {
         // Close the hand on a hold, or reach onto one with it already closed.
@@ -322,8 +362,26 @@ export class ClimbSystem extends createSystem({
     }
 
     if (this.active) {
-      const grab = this.grabs[this.active];
-      this.delta.subVectors(grab.anchor, this.smoothHand(this.active));
+      const side = this.active;
+      const grab = this.grabs[side];
+      if (grab.lost > 0) {
+        // Hanging on a hand the headset can't see: hold still.
+        this.airTime = 0;
+        this.fallSpeed = 0;
+        return;
+      }
+      if (hands[side].closure < SLACK_CLOSURE) {
+        // The hand is opening to let go: stop following it now (not after
+        // the release grace), so the reach that follows doesn't drag the view.
+        grab.anchor.copy(this.smoothHand(side));
+        this.airTime = 0;
+        this.fallSpeed = 0;
+        return;
+      }
+      this.delta.subVectors(grab.anchor, this.smoothHand(side));
+      // Never faster than a real pull: what is left is taken up next frame.
+      const step = MAX_PULL_SPEED * dt;
+      if (this.delta.lengthSq() > step * step) this.delta.setLength(step);
       // Hauling yourself up goes a little further than the pull itself. The
       // hand rides up with the body by that extra too, so move the anchor
       // with it (otherwise the next frame would pull you back down).

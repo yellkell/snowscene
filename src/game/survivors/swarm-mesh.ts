@@ -34,6 +34,7 @@ import {
   Vector4,
 } from '@iwsdk/core';
 import { CAP, type Horde, KINDS, LUNGER } from './horde.js';
+import { SOURCE_COLORS } from './weapon-colors.js';
 import { duneHeight } from './survivors-level.js';
 
 /** Where the key light comes from: the valley's low sun, lifted a little so
@@ -611,9 +612,11 @@ uniform float uTime;
 uniform vec4 uGait;     // cadence, leg swing, foot lift, body bob
 uniform vec4 uMove;     // roll, jaw snap, arm swing, thrash rate
 uniform vec3 uNeck;     // where the head nods
+uniform vec3 uFlashPal[${SOURCE_COLORS.length}];
 varying float vGlow;
 varying vec3 vW;
 varying float vFlash;
+varying vec3 vFlashCol;
 varying float vBurn;
 
 vec3 turnY(vec3 p, vec3 o, float a) {
@@ -688,7 +691,10 @@ void main() {
   vec4 wp = modelMatrix * vec4(w, 1.0);
   vW = wp.xyz;
   vGlow = glow;
-  vFlash = iAnim.y;
+  // The flash carries what hit it: (palette index) * 2 + strength.
+  float src = floor(iAnim.y * 0.5 + 0.001);
+  vFlash = iAnim.y - src * 2.0;
+  vFlashCol = uFlashPal[int(min(src, ${(SOURCE_COLORS.length - 1).toFixed(1)}))];
   vBurn = iAnim.z;
   gl_Position = projectionMatrix * viewMatrix * wp;
 }
@@ -705,6 +711,7 @@ uniform float uTime;
 varying float vGlow;
 varying vec3 vW;
 varying float vFlash;
+varying vec3 vFlashCol;
 varying float vBurn;
 
 void main() {
@@ -728,10 +735,11 @@ void main() {
   vec3 col = mix(shell, uAccent * (0.5 + 0.45 * ramp + 0.15 * sky), lit);
   // Past 1: eyes, knees, tips and the core keep a small warm glow.
   col = mix(col, vec3(1.0, 0.84, 0.5), clamp((vGlow - 1.0) * 0.5, 0.0, 0.7));
-  // Chilled, it frosts over; frozen solid, it is a block of blue ice
-  // with a glint on the facets facing the light.
-  vec3 ice = vec3(0.62, 0.84, 1.0) * (0.75 + 0.35 * ramp) + vec3(0.6) * pow(key, 6.0);
-  col = mix(col, ice, max(vBurn, 0.0) * 0.85);
+  // Chilled, it frosts over; frozen solid, it is a block of deep glacier
+  // blue (darker at its edges, a glint where the light catches it), so a
+  // frozen crowd still stands out against the white snow.
+  vec3 ice = vec3(0.26, 0.5, 0.92) * (0.5 + 0.5 * ramp) * (0.55 + 0.45 * facing) + vec3(0.55) * pow(key, 8.0);
+  col = mix(col, ice, max(vBurn, 0.0) * 0.8);
   // Burning: charred dark, ember licking up it in bands that flicker.
   float fire = max(-vBurn, 0.0);
   if (fire > 0.0) {
@@ -739,9 +747,11 @@ void main() {
     vec3 ember = mix(vec3(1.0, 0.25, 0.04), vec3(1.0, 0.75, 0.25), lick);
     col = mix(col * 0.55, ember * (1.2 + 0.6 * lick), fire * (0.35 + 0.4 * lick));
   }
-  // A hit flashes it pale (only partly, so a boss under constant fire
-  // keeps its colours).
-  col = mix(col, vec3(1.0, 0.95, 0.9), vFlash * 0.45);
+  // A hit flashes it in the colour of what hit it: a wash of that colour
+  // (only partly, so a boss under constant fire keeps its own) and a
+  // brighter rim of it round the silhouette.
+  col = mix(col, mix(vec3(1.0, 0.95, 0.9), vFlashCol, 0.7), vFlash * 0.5);
+  col += vFlashCol * pow(1.0 - facing, 2.0) * vFlash * 0.9;
   // The scene's fog, by distance.
   col = mix(col, uFogColor, smoothstep(uFogNear, uFogFar, length(vW - cameraPosition)));
   gl_FragColor = vec4(col, 1.0);
@@ -793,6 +803,7 @@ class Brood {
         uFogColor: fog.color,
         uFogNear: fog.near,
         uFogFar: fog.far,
+        uFlashPal: FLASH_PALETTE,
       },
     });
     this.mesh = new Mesh(this.geo, mat);
@@ -1012,6 +1023,9 @@ export class Shards {
 
 /* ── the horde, every frame ─────────────────────────────────────────────── */
 
+/** The weapons' colours, for the hit flash (shared by every kind). */
+const FLASH_PALETTE = { value: SOURCE_COLORS.map((c) => new Color(c)) };
+
 interface FogUniforms {
   color: { value: Color };
   near: { value: number };
@@ -1052,7 +1066,7 @@ export class SwarmMesh {
       pose[o + 2] = h.heading[i];
       pose[o + 3] = KINDS[k].radius * h.scale[i];
       anim[o] = h.stride[i];
-      anim[o + 1] = h.flash[i] > 0 ? Math.min(1, h.flash[i] / 0.1) : 0;
+      anim[o + 1] = (h.flash[i] > 0 ? Math.min(1, h.flash[i] / 0.1) : 0) + h.hitBy[i] * 2;
       // Frost as positive, fire as negative (burning, it glows ember).
       anim[o + 2] = h.ice[i] > 0 ? 1 : h.burn[i] > 0 ? -Math.min(1, 0.5 + h.burn[i] * 0.25) : h.chill[i] > 0 ? 0.3 : 0;
       anim[o + 3] = h.rise[i];
