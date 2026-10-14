@@ -1,6 +1,6 @@
 /**
  * The backpack as a thing you can hold (after gamblefish's tackle-box tray):
- * a wooden box with a felt lining and a grid of slots, its lid standing
+ * a wooden box with a pale slatted floor and a grid of slots, its lid standing
  * open at the back. It comes up in front of you at waist height, tipped
  * toward you, with your gear lying in the slots.
  *
@@ -11,6 +11,7 @@
 
 import {
   BoxGeometry,
+  CanvasTexture,
   Color,
   CylinderGeometry,
   Group,
@@ -18,6 +19,7 @@ import {
   Mesh,
   MeshStandardMaterial,
   Object3D,
+  SRGBColorSpace,
   Vector3,
 } from '@iwsdk/core';
 import { GeometryBuilder, placed } from './mesh-utils.js';
@@ -43,7 +45,6 @@ const LID_H = 0.3;
 const WOOD = new Color(0.4, 0.26, 0.15);
 const WOOD_DARK = new Color(0.22, 0.14, 0.08);
 const BRASS = new Color(0.78, 0.6, 0.25);
-const FELT = new Color(0.11, 0.23, 0.2);
 const LEATHER = new Color(0.36, 0.2, 0.11);
 
 export interface PackTray {
@@ -52,6 +53,48 @@ export interface PackTray {
   notes: Object3D;
   /** Where the side buttons stand, off the tray's left rim (tray-local). */
   sideButton: Vector3;
+}
+
+/** Pale birch slats running across the tray, with grain and soft seams. */
+function slatTexture(): CanvasTexture {
+  const size = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const slats = 6;
+  const sh = size / slats;
+  let seed = 11;
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+  for (let k = 0; k < slats; k++) {
+    const tone = 0.92 + rand() * 0.12;
+    ctx.fillStyle = `rgb(${Math.round(222 * tone)},${Math.round(190 * tone)},${Math.round(142 * tone)})`;
+    ctx.fillRect(0, k * sh, size, sh);
+    // Long, gently wavering grain.
+    for (let g = 0; g < 14; g++) {
+      const y0 = k * sh + rand() * sh;
+      ctx.strokeStyle = `rgba(150,105,60,${0.08 + rand() * 0.12})`;
+      ctx.lineWidth = 0.8 + rand() * 1.4;
+      ctx.beginPath();
+      for (let x = 0; x <= size; x += 16) {
+        const y = y0 + Math.sin(x * 0.012 + g) * 2.5 + Math.sin(x * 0.04 + k) * 1.2;
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    // The seam between slats, a shadow under a highlight.
+    ctx.fillStyle = 'rgba(90,60,30,0.45)';
+    ctx.fillRect(0, k * sh, size, 3);
+    ctx.fillStyle = 'rgba(255,240,215,0.35)';
+    ctx.fillRect(0, k * sh + 3, size, 2);
+  }
+  const texture = new CanvasTexture(canvas);
+  texture.colorSpace = SRGBColorSpace;
+  texture.anisotropy = 4;
+  return texture;
 }
 
 /** Tray-local position of a cell's centre. */
@@ -65,11 +108,12 @@ export function buildPackTray(): PackTray {
   const w = TRAY_W;
   const h = TRAY_H;
 
-  // The felt lining on the floor of the box.
-  const felt = new Mesh(new BoxGeometry(w, 0.01, h), new MeshStandardMaterial({ color: FELT, roughness: 1 }));
-  felt.position.y = -0.005;
-  felt.name = 'PackFelt';
-  group.add(felt);
+  // The floor of the box: pale birch slats, lighter than the walls, so
+  // the gear stands out against it.
+  const floor = new Mesh(new BoxGeometry(w, 0.01, h), new MeshStandardMaterial({ map: slatTexture(), roughness: 0.75 }));
+  floor.position.y = -0.005;
+  floor.name = 'PackFloor';
+  group.add(floor);
 
   const b = new GeometryBuilder();
   // Outer walls.

@@ -2,7 +2,7 @@
  * The backpack, a wooden tackle-box tray after gamblefish's: turn either
  * palm up and look at it (or press A / X on a controller) and the tray comes
  * up in front of you at waist height, tipped toward you, lid open with your
- * notes on it and your gear lying in its felt-lined slots. Reach in with
+ * notes on it and your gear lying in its slots. Reach in with
  * either hand and close it on an item to take it; let go of a held item over
  * the tray to put it back in its slot. The tray travels with you while it is
  * open. Palm up again, A / X, or look well away from it and it folds away.
@@ -82,7 +82,7 @@ const OPEN_HOLD = 0.2;
 const AWAY_COS = Math.cos((70 * Math.PI) / 180);
 const CLOSE_HOLD = 1.0;
 /** Every slot icon is scaled to fit this size (metres). */
-const ICON_SIZE = 0.078;
+const ICON_SIZE = 0.088;
 const SLOT_REACH = 0.08;
 /** The recentre button's cap radius and the height of its top (button axis frame). */
 const BUTTON_R = 0.034;
