@@ -22,9 +22,13 @@ import {
 } from '@iwsdk/core';
 import { GeometryBuilder, placed } from './mesh-utils.js';
 
-/** One slot's size (m); 4 x 3 slots make a 0.44 x 0.33 m tray. */
+/**
+ * One slot's size (m); 3 x 3 slots make a 0.33 m square tray. Nine is the
+ * most any level fills at once (the expedition's whole kit, both pairs of
+ * tools stowed); the tutorial's pack holds at most its three glider parts.
+ */
 export const CELL = 0.11;
-export const COLS = 4;
+export const COLS = 3;
 export const ROWS = 3;
 export const TRAY_W = COLS * CELL;
 export const TRAY_H = ROWS * CELL;
