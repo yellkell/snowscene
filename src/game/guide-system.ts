@@ -334,7 +334,7 @@ export class GuideSystem extends createSystem({}) {
       step: 'SNOW SURVIVORS',
       title: 'Survive the horde',
       body: immersive
-        ? 'Hold out for 8 minutes. Pole about: fist, plant, pull. Your weapons fire by themselves. Level up, then poke the upgrade you want. Go fast to ram straight through them.'
+        ? 'Hold out for 8 minutes. Pole about: fist, plant, pull. Jab a pole into the small ones to finish them. Your weapons fire by themselves. Level up, then poke the upgrade you want. Go fast to ram straight through them.'
         : 'Hold out for 8 minutes. W to move, drag to look. Your weapons fire by themselves. Level up, then press 1-4 for the upgrade you want. Go fast to ram straight through them.',
       hint: '',
     };
@@ -458,12 +458,13 @@ export class GuideSystem extends createSystem({}) {
     });
     this.expRestartButton.setProperties({ display: finished ? 'flex' : 'none' });
     this.tutorialButton.setProperties({ display: finished ? 'flex' : 'none' });
-    // Snow Survivors: offered at the trailhead and on the end screen; once
-    // in, a way back to the mountain (in the pack), and another go when you fall.
+    // Snow Survivors: offered at the trailhead and on the end screen, in VR
+    // only (it is played with the poles); once in, a way back to the
+    // mountain (in the pack), and another go when you fall.
     const inSurvivors = survivors.active.peek();
     const atTrailhead = !expedition && !inSurvivors && phase === Phase.Poling && !this.panelInPack();
     this.survivorsButton.setProperties({
-      display: !inSurvivors && !expedition && (atTrailhead || phase === Phase.Landed) ? 'flex' : 'none',
+      display: immersive && !inSurvivors && !expedition && (atTrailhead || phase === Phase.Landed) ? 'flex' : 'none',
     });
     this.survivorsAgainButton.setProperties({ display: inSurvivors && survivors.dead.peek() ? 'flex' : 'none' });
     this.survivorsExitButton.setProperties({ display: inSurvivors ? 'flex' : 'none' });
