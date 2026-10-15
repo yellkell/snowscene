@@ -5,9 +5,11 @@
  * notes on it and your gear lying in its slots. Reach in with
  * either hand and close it on an item to take it; let go of a held item over
  * the tray to put it back in its slot. The tray travels with you while it is
- * open. Palm up again, A / X, or look well away from it and it folds away.
- * (The palm-up pose must be held briefly to open, so a hand passing palm-up
- * mid-stride doesn't flash it open; from the FIRE FIGHT FLUX wrist panel.)
+ * open. Opened with a palm, it stays open while that palm stays up and folds
+ * away the moment you turn the hand back over; opened with A / X, press it
+ * again. Either way, look well away from it and it folds away. (The palm-up
+ * pose must be held briefly to open, so a hand passing palm-up mid-stride
+ * doesn't flash it open; from the FIRE FIGHT FLUX wrist panel.)
  *
  * RECENTRE: a big brass push button on a bracket off the tray's near-left
  * corner. Touch its cap with any fingertip (or your palm) to re-centre: back to the middle of the deck
@@ -69,6 +71,11 @@ const OPEN_HOLD = 0.2;
 /** Look this far away from the open tray for CLOSE_HOLD seconds and it folds away. */
 const AWAY_COS = Math.cos((70 * Math.PI) / 180);
 const CLOSE_HOLD = 1.0;
+/** The palm holding the tray open has turned back over below this (palm-normal·up)... */
+const TURNED_OVER = 0.3;
+/** ...for this long (a hair, against tracking noise), or dropped out of tracking for LOST_HOLD. */
+const TURN_HOLD = 0.05;
+const LOST_HOLD = 0.3;
 /** Every slot icon is scaled to fit this size (metres). */
 const ICON_SIZE = 0.088;
 const SLOT_REACH = 0.08;
@@ -111,6 +118,9 @@ export class BackpackSystem extends createSystem({}) {
   private readonly poseFor: Record<Handedness, number> = { left: 0, right: 0 };
   private clock = 0;
   private lostFor = 0;
+  /** The hand whose upturned palm is holding the tray open (null: opened by A / X). */
+  private heldBy: Handedness | null = null;
+  private overFor = 0;
   private scale = 0;
   private desktopOpen = false;
   private takeCooldown = 0;
@@ -394,7 +404,8 @@ export class BackpackSystem extends createSystem({}) {
     else this.updateDesktop();
 
     const open = game.packOpen.peek();
-    this.scale = Math.min(1, Math.max(0, this.scale + (open ? dt : -dt) / 0.15));
+    // Up in 0.15 s; folds away faster still.
+    this.scale = Math.min(1, Math.max(0, this.scale + (open ? dt / 0.15 : -dt / 0.09)));
     this.root.visible = this.scale > 0;
     if (this.root.visible) {
       this.placePack(presenting);
@@ -412,38 +423,52 @@ export class BackpackSystem extends createSystem({}) {
     // so does A or X on a controller. Once a toggle fires, every palm that is
     // up has to come down again before it counts, so both palms up at once
     // only toggle it once.
-    let toggle = false;
+    const open = game.packOpen.peek();
+    let openWith: Handedness | null = null;
     for (const h of HANDS) {
       const side = h.handedness;
       tmpA.subVectors(h.position, this.head).normalize();
       const palmUp = h.tracked && !h.grip && h.palmNormal.y > OPEN_UP && this.gaze.dot(tmpA) > OPEN_GAZE_COS;
       this.poseFor[side] = palmUp ? this.poseFor[side] + dt : 0;
-      if (this.poseFor[side] >= OPEN_HOLD && !this.palmWasUp[side]) toggle = true;
+      if (!open && !openWith && this.poseFor[side] >= OPEN_HOLD && !this.palmWasUp[side]) openWith = side;
       if (!palmUp && h.palmNormal.y < STAY_UP) this.palmWasUp[side] = false;
     }
-    if (toggle) {
-      for (const h of HANDS) if (this.poseFor[h.handedness] > 0) this.palmWasUp[h.handedness] = true;
-    }
     const pads = this.input.xr.gamepads;
-    if (pads.right?.getButtonDown(InputComponent.A_Button) || pads.left?.getButtonDown(InputComponent.X_Button)) toggle = true;
-    const open = game.packOpen.peek();
-    if (toggle) {
-      this.setOpen(!open);
+    if (pads.right?.getButtonDown(InputComponent.A_Button) || pads.left?.getButtonDown(InputComponent.X_Button)) {
+      this.setOpen(!open, null);
+      return;
+    }
+    if (openWith) {
+      // Every palm that is up now has to come down before it opens it again.
+      for (const h of HANDS) if (this.poseFor[h.handedness] > 0) this.palmWasUp[h.handedness] = true;
+      this.setOpen(true, openWith);
       return;
     }
     if (!open) return;
+    if (this.heldBy) {
+      // Held open by an upturned palm: it goes the moment that hand turns back over.
+      const h = hands[this.heldBy];
+      const over = !h.tracked || h.palmNormal.y < TURNED_OVER;
+      this.overFor = over ? this.overFor + dt : 0;
+      if (this.overFor >= (h.tracked ? TURN_HOLD : LOST_HOLD)) {
+        this.setOpen(false, null);
+        return;
+      }
+    }
     // Look well away from the open tray for a moment and it folds away.
     this.root.getWorldPosition(tmpB);
     tmpA.subVectors(tmpB, this.head);
     const far = tmpA.length() > 1.6;
     const away = far || this.gaze.dot(tmpA.normalize()) < AWAY_COS;
     this.lostFor = away ? this.lostFor + dt : 0;
-    if (this.lostFor >= CLOSE_HOLD) this.setOpen(false);
+    if (this.lostFor >= CLOSE_HOLD) this.setOpen(false, null);
   }
 
-  private setOpen(open: boolean): void {
+  private setOpen(open: boolean, heldBy: Handedness | null): void {
     game.packOpen.value = open;
     this.lostFor = 0;
+    this.overFor = 0;
+    this.heldBy = open ? heldBy : null;
     audio.zip();
     if (open) this.present();
   }

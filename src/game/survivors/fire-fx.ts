@@ -36,6 +36,7 @@ import {
   GroundGlow,
   InstPool,
   SUNVIS_VERT,
+  fx,
   fxMaterial,
   fxModel,
   fxTex,
@@ -85,6 +86,9 @@ vec3 ribbon(float taper) {
 
 // ------------------------------------------------------------- embers ---
 
+/** The glow budget's gain (survivors-fx `fx.gain`), as a uniform every fire material shares. */
+const fireGain = { value: 1 };
+
 const EMBER_CAP = 2400;
 
 /** Every spark of fire in the run: glowing grains with motion streaks, rising, flickering, burning down. */
@@ -104,7 +108,7 @@ export class Embers {
   constructor(parent: Group) {
     const mat = fxMaterial({
       blend: 'additive',
-      uniforms: { uViewH: this.viewH },
+      uniforms: { uViewH: this.viewH, uGain: fireGain },
       vertexShader: /* glsl */ `
         ${FX_VERT}
         uniform float uViewH;
@@ -139,6 +143,7 @@ export class Embers {
         }`,
       fragmentShader: /* glsl */ `
         ${FX_FRAG}
+        uniform float uGain;
         varying vec2 vQ;
         varying float vHeat;
         varying vec4 vTint;
@@ -148,10 +153,11 @@ export class Embers {
           float along = 1.0 - smoothstep(0.2, 1.0, abs(vQ.y));
           float k = across * along;
           if (k < 0.01) discard;
-          // A grain of burning soot: radiance climbs steeply with its heat.
-          float L = (0.25 + 9.0 * vHeat * vHeat * vHeat) ;
-          vec3 c = vTint.w > 0.5 ? mix(vTint.rgb, vec3(1.0), 0.25 * vHeat) * (0.6 + 6.0 * vHeat * vHeat) : fireTint(vHeat * 1.05) * L;
-          vec3 col = c * k * vFade * uEmit * (1.0 - vHazeF);
+          // A grain of burning soot: radiance climbs steeply with its heat, golden at its hottest and
+          // never white (it is seen over snow; white sparks by the hundred hazed the crowd over).
+          float L = 0.25 + 5.0 * vHeat * vHeat * vHeat;
+          vec3 c = vTint.w > 0.5 ? mix(vTint.rgb, vec3(1.0), 0.08 * vHeat) * (0.6 + 4.0 * vHeat * vHeat) : fireTint(min(vHeat, 0.78) * 1.05) * L;
+          vec3 col = c * k * vFade * uEmit * (1.0 - vHazeF) * (0.6 + 0.4 * uGain);
           gl_FragColor = fxOut(vec4(col, 0.0), bgAir());
         }`,
     });
@@ -190,8 +196,12 @@ export class Embers {
     }
   }
 
+  /** Sparks alight this frame (for the glow budget). */
+  live = 0;
+
   tick(dt: number, time: number): void {
     const damp = Math.exp(-dt * 1.6);
+    fireGain.value = fx.gain;
     const p = this.pool;
     p.begin();
     for (let i = 0; i < EMBER_CAP; i++) {
@@ -217,6 +227,7 @@ export class Embers {
       p.set('aTint', k, tinted ? this.tint[o] : 0, tinted ? this.tint[o + 1] : 0, tinted ? this.tint[o + 2] : 0, tinted ? 1 : 0);
     }
     p.end();
+    this.live = p.mesh.count;
   }
 
   clear(): void {
@@ -241,18 +252,19 @@ const FRAME_TOP = 0.86;
 function fireMaterial(atlas: 'fire' | 'fireball', lmax: number, grid: number, count: number, loop: boolean) {
   return fxMaterial({
     blend: 'premul',
-    uniforms: { tFire: { value: fxTex()[atlas] } },
+    uniforms: { tFire: { value: fxTex()[atlas] }, uGain: fireGain },
     defines: { LMAX: lmax.toFixed(3), GRID: grid.toFixed(1), COUNT: count.toFixed(1), LOOP: loop ? 1 : 0 },
     vertexShader: /* glsl */ `
       ${FX_VERT}
       ${SUNVIS_VERT}
       attribute vec4 aPos;   // base x, y, z, frame height (m)
       attribute vec4 aData;  // frame, strength 0..1, flip, roll (rad)
-      attribute vec4 aDir;   // 0: turned about the vertical (standing fire), 1: full billboard
+      attribute vec4 aDir;   // x 0: turned about the vertical (standing fire), 1: full billboard; y: gold root
       varying vec2 vUv;
       varying vec3 vData;
       varying float vSunVis;
       varying float vNear;
+      varying float vGold;
       void main() {
         float h = aPos.w;
         float w = h * 0.5;
@@ -277,18 +289,23 @@ function fireMaterial(atlas: 'fire' | 'fireball', lmax: number, grid: number, co
         vec3 wp = aPos.xyz + right * (q.x - 0.5) * w * (aDir.x < 0.5 ? 1.0 : 2.0) + up * (y0 + q.y * h);
         vData = aData.xyz;
         vData.y = aData.y;
+        vGold = aDir.y;
         vSunVis = groundSunVisibility(aPos.xz);
-        vNear = smoothstep(0.5, 1.8, length(toCam));
+        // Standing fires fade right at your eyes; the breath's balls over the first few metres of the jet
+        // (you always look straight down it: up close they veiled the middle of the view).
+        vNear = aDir.x < 0.5 ? smoothstep(0.5, 1.8, length(toCam)) : smoothstep(2.5, 6.5, length(toCam));
         computeHaze(wp);
         gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
       }`.replace('FLAME_BASE_V', FLAME_BASE.toFixed(3)),
     fragmentShader: /* glsl */ `
       ${FX_FRAG}
       uniform sampler2D tFire;
+      uniform float uGain;
       varying vec2 vUv;
       varying vec3 vData;
       varying float vSunVis;
       varying float vNear;
+      varying float vGold;
       void main() {
         vec4 s = flipbook(tFire, vUv, vData.x, vec2(GRID), COUNT, LOOP == 1);
         float strength = vData.y;
@@ -296,7 +313,12 @@ function fireMaterial(atlas: 'fire' | 'fireball', lmax: number, grid: number, co
         float L = s.r * s.r * LMAX * strength * sqrt(strength);
         float heat = s.g * mix(0.55, 1.0, strength);
         vec3 emit = fireTint(heat) * L;
-        float a = s.b * mix(0.55, 1.0, strength) * vNear;
+        // Wildfire burns gold at the root.
+        emit = mix(emit, vec3(1.0, 0.78, 0.3) * L * 0.9, vGold * (1.0 - smoothstep(0.05, 0.3, vUv.y)));
+        // Under the glow budget the flames soften (their smoke and shape stay).
+        emit *= 0.55 + 0.45 * uGain;
+        // The breath's smoke is thinner than a standing fire's, so the crowd shows through the jet.
+        float a = s.b * mix(0.55, 1.0, strength) * vNear * (aDir.x < 0.5 ? 1.0 : 0.45);
         // Soot lit by the evening (from above, a little sun) and by the flames beneath it.
         vec3 smoke = vec3(0.055, 0.052, 0.05) * (uOpenSky * uSkyTint * uSkyGain * 0.9 + uSunColor * 0.25 * vSunVis)
                      + vec3(0.6, 0.25, 0.08) * 0.012 * LMAX * strength * uEmit * (1.0 - vUv.y);
@@ -314,6 +336,10 @@ function fireMaterial(atlas: 'fire' | 'fireball', lmax: number, grid: number, co
 /** Fires standing on the snow (the ember trail), each a flipbook billboard turned to face you. */
 export class Flames {
   private readonly pool: InstPool;
+  /** Fires standing this frame (for the glow budget). */
+  get live(): number {
+    return this.pool.mesh.count;
+  }
 
   constructor(parent: Group) {
     // The quad stops below the top of the frame (only faint smoke up there): less to fill.
@@ -328,8 +354,11 @@ export class Flames {
     this.pool.begin();
   }
 
-  /** A fire at (x, y, z) with flames `height` m tall, flickering on `phase`, at `strength` 0..1. */
-  add(x: number, y: number, z: number, height: number, phase: number, strength: number, time: number, _eye?: Vector3): void {
+  /**
+   * A fire at (x, y, z) with flames `height` m tall, flickering on `phase`, at `strength` 0..1; `wild`
+   * burns gold at the root (Wildfire).
+   */
+  add(x: number, y: number, z: number, height: number, phase: number, strength: number, time: number, _eye?: Vector3, wild = false): void {
     const i = this.pool.add();
     if (i < 0) return;
     const h = (height * (0.55 + 0.45 * strength)) / FLAME_FRACTION;
@@ -337,7 +366,7 @@ export class Flames {
     const frame = time * (22 + (phase % 5)) + phase * 9.3;
     this.pool.set('aPos', i, x, y, z, h);
     this.pool.set('aData', i, frame, strength, Math.floor(phase * 3.7) % 2, 0);
-    this.pool.set('aDir', i, 0, 0, 0, 0);
+    this.pool.set('aDir', i, 0, wild ? 1 : 0, 0, 0);
   }
 
   end(): void {
@@ -373,33 +402,40 @@ export class Breath {
     this.pool = new InstPool(unitQuad(), fireMaterial('fireball', FIREBALL_LMAX * 0.6, 4, 16, false), PUFF_CAP, ['aPos', 'aData', 'aDir'], parent, 'FireBreath', 6);
   }
 
-  /** Out from (x, y, z) along `yaw`, `length` long and `width` across at the end, at `alpha` (0 stops it). */
-  draw(x: number, y: number, z: number, yaw: number, length: number, width: number, alpha: number, time: number): void {
+  /**
+   * Out from (x, y, z) along `yaw`, `length` long and `width` across at the end, at `alpha` (0 stops it);
+   * `dragon` for Dragon's Breath (a hotter, white-gold heart).
+   */
+  draw(x: number, y: number, z: number, yaw: number, length: number, width: number, alpha: number, time: number, dragon = false): void {
     const dt = this.lastTime < 0 ? 0 : Math.min(0.05, Math.max(0, time - this.lastTime));
     this.lastTime = time;
     const fx = -Math.sin(yaw);
     const fz = -Math.cos(yaw);
     // New fireballs while it roars (time stopped: none).
     if (alpha > 0.05 && dt > 0) {
-      this.spawnAcc += dt * 42 * alpha;
+      this.spawnAcc += dt * 50 * alpha;
       while (this.spawnAcc >= 1) {
         this.spawnAcc -= 1;
         const i = this.next;
         this.next = (this.next + 1) % PUFF_CAP;
-        const spread = (Math.random() - 0.5) * (width / length) * 1.3;
+        const spread = (Math.random() - 0.5) * (width / length) * 1.8;
         const life = 0.42 + Math.random() * 0.18;
         const speed = (length / life) * (1.1 + Math.random() * 0.25);
         const dx = fx + -fz * spread;
         const dz = fz + fx * spread;
-        this.px[i] = x + fx * 0.15;
+        // You always look straight down the jet: it starts a stride out, so the first stretch from your
+        // chest is clear air (as a film right in front of you it veiled the middle of the view).
+        this.px[i] = x + fx * 0.7;
         this.py[i] = y;
-        this.pz[i] = z + fz * 0.15;
+        this.pz[i] = z + fz * 0.7;
         this.vx[i] = dx * speed;
         this.vz[i] = dz * speed;
         this.vy[i] = -0.08 * speed + (Math.random() - 0.3) * 1.2;
         this.age[i] = 0;
         this.span[i] = life;
-        this.size[i] = width * (0.75 + Math.random() * 0.4);
+        // Separate tongues with clear air between them (one wall of fire hid the crowd): many small balls
+        // spread across the cone, not a few as wide as it.
+        this.size[i] = Math.min(2.4, width * (0.22 + Math.random() * 0.14));
         this.roll[i] = Math.random() * Math.PI * 2;
       }
     }
@@ -426,7 +462,7 @@ export class Breath {
       const s = this.size[i] * (0.28 + 0.95 * Math.sqrt(a));
       p.set('aPos', k, this.px[i], this.py[i], this.pz[i], s);
       // Through the first 11 frames (the burn); the smoke tail is left to the embers.
-      p.set('aData', k, a * 11, 1, i & 1, this.roll[i] + a * 1.5);
+      p.set('aData', k, a * 11, dragon ? 1.3 : 1, i & 1, this.roll[i] + a * 1.5);
       p.set('aDir', k, 1, 0, 0, 0);
       const heat = 1 - a;
       gx += this.px[i] * heat;
@@ -633,7 +669,7 @@ export class Rockets {
       tmpS.set(0.22, 1, Math.min(4.5, 0.4 + sp * 0.3 * Math.min(1, this.age[i] * 2)));
       tmpP.set(this.x[i] - this.vx[i] * 0.012, this.y[i] - this.vy[i] * 0.012, this.z[i] - this.vz[i] * 0.012);
       this.trail.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.trail.setColorAt(i, tmpC.set(this.color[i]));
+      this.trail.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(0.5 + 0.5 * fx.gain));
     }
     for (const m of [this.body, this.trail]) {
       m.count = this.n;
@@ -791,7 +827,7 @@ export class Comets {
     useModel(this.rock, 'rock', 0, 1.6);
     const tailMat = fxMaterial({
       blend: 'premul',
-      uniforms: { tMisc: { value: fxTex().misc } },
+      uniforms: { tMisc: { value: fxTex().misc }, uGain: fireGain },
       vertexShader: /* glsl */ `
         ${FX_VERT}
         ${RIBBON_VERT}
@@ -803,6 +839,7 @@ export class Comets {
       fragmentShader: /* glsl */ `
         ${FX_FRAG}
         uniform sampler2D tMisc;
+        uniform float uGain;
         varying vec2 vRib;
         void main() {
           float x = vRib.x, t = vRib.y;
@@ -813,7 +850,7 @@ export class Comets {
           // Fire close behind the rock, burning out into a long smoke trail.
           float fire = core * exp(-t * 7.0) * smoothstep(0.25, 0.65, n * 0.6 + n2 * 0.6 - t * 0.6 + 0.2);
           float heat = clamp(1.0 - t * 4.0, 0.0, 1.0);
-          vec3 emit = fireTint(heat) * fire * 7.0;
+          vec3 emit = fireTint(heat) * fire * 7.0 * (0.55 + 0.45 * uGain);
           float a = clamp(exp(-x * x * 2.0) * smoothstep(0.02, 0.2, t) * (1.0 - t) * (0.2 + 0.9 * n) * 0.8, 0.0, 1.0);
           vec3 smoke = vec3(0.06) * (uOpenSky * uSkyTint * uSkyGain + uSunColor * 0.2) + vec3(0.6, 0.25, 0.05) * 0.4 * uEmit * exp(-t * 5.0);
           gl_FragColor = fxOut(hazePremul(emit * uEmit, smoke, a, vHazeF), bgAir());

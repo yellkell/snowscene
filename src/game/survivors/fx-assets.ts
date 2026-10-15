@@ -111,6 +111,16 @@ export const fxUniforms = {
 };
 
 /** Once a frame, before drawing: the tone-mapping exposure in use and the effects' clock. */
+/**
+ * The glow budget. Every glow, trail, sweep and flash adds light, and late in a run hundreds of them stack
+ * into a white haze that hides the horde and the shape of every attack. The survivors system works out
+ * how much is on screen each frame and eases `gain` down as it fills (never below MIN_GAIN): the glows
+ * soften, while the crisp cores of the attacks (the ice, the steel, lightning's white-hot spine, the
+ * spikes) stay at full strength, so each weapon keeps its shape.
+ */
+export const fx = { gain: 1 };
+export const MIN_GAIN = 0.38;
+
 export function fxFrame(exposure: number, time: number): void {
   fxUniforms.uEmit.value = Math.pow(Math.max(exposure, 1e-3), -0.6);
   fxUniforms.uFxTime.value = time;

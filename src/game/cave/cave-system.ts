@@ -20,7 +20,7 @@
  * one square onto it.
  */
 
-import { Box3, Color, createSystem, Matrix4, Mesh, MeshBasicMaterial, type Object3D, type ShaderMaterial, TorusGeometry, Vector3 } from '@iwsdk/core';
+import { Box3, Color, createSystem, Matrix4, Mesh, MeshBasicMaterial, type Object3D, Quaternion, type ShaderMaterial, type Sprite, TorusGeometry, Vector3 } from '@iwsdk/core';
 import { audio } from '../audio.js';
 import { addToPack, PART_ITEM } from '../equipment.js';
 import { Bonfire, fires } from '../campfire.js';
@@ -48,7 +48,7 @@ import {
   validateScore,
   wheelTurns,
 } from './cave-score.js';
-import { applyBakedCave, buildCave, CAVE_ORIGIN, type CaveVisuals, LAMP, setRope, TILE_CORNERS, TILE_EDGES, EDGE_DIR, TILE_HALF, TORCH_HEAD, TORCH_SCALE } from './cave-build.js';
+import { applyBakedCave, buildCave, CAVE_ORIGIN, type CaveVisuals, LAMP, setRope, TILE_CORNERS, TILE_EDGES, EDGE_DIR, TILE_HALF, TORCH_CROWN, TORCH_GRIP, TORCH_HEAD, TORCH_SCALE } from './cave-build.js';
 import { captureCaveEnv, type CaveBaked, caveLight, caveView, loadCaveBaked } from './cave-baked.js';
 import type { GliderPartId } from '../glider-model.js';
 import { bakedLight } from '../baked/light.js';
@@ -69,20 +69,35 @@ const PART_LABEL: Record<GliderPartId, string> = {
   ControlBar: 'Control bar',
 };
 /** Seconds of summit view before the fade into the cave. */
-const PREROLL = 3.4;
+const PREROLL = 1.2;
 /**
- * In a headset, this much longer to stand in the middle of your play space
- * first: the works are walked for real across a 2 x 2 m grid around it.
+ * In a headset, up to this much longer to stand in the middle of your play
+ * space first (the works are walked for real across a 2 x 2 m grid round
+ * it). Already standing there, you go straight in.
  */
 const CENTRE_TIME = 6;
-/** Close enough to the middle of the play space (m). */
+/** Close enough to the middle of the play space (m)... */
 const CENTRED = 0.25;
+/** ...for this long (s). */
+const CENTRED_HOLD = 0.35;
 const RING_FAR = new Color(1.6, 0.85, 0.15);
 const RING_OK = new Color(0.3, 1.5, 0.5);
-/** Close a hand within this of the torch to take it. */
+/** Close a hand within this of the torch to take it... */
 const TAKE_RADIUS = 0.4;
-/** A closed hand within this of a glider part (its bounds) takes it. */
+/** ...or reach onto its handle with a hand already closed. */
+const TAKE_CATCH = 0.16;
+/** The held torch is only dropped once the hand has been open this long (s)... */
+const TORCH_LET_GO = 0.45;
+/** ...or out of tracking this long (it waits where it was meanwhile). */
+const TORCH_LOST = 2.5;
+/** Held, the torch leans this much from the fist's axis toward straight up. */
+const TORCH_UPRIGHT = 0.35;
+const UP = new Vector3(0, 1, 0);
+/** A closed hand within this of a glider part (its bounds) takes it... */
 const PART_REACH = 0.28;
+/** ...and so does an open hand that touches it, or walking into it. */
+const PART_TOUCH = 0.05;
+const PART_BODY = 0.16;
 /** How close the torch's head must come to the brazier. */
 const LIGHT_RADIUS = 0.55;
 /** The brazier's target glow starts to swell inside this. */
@@ -119,6 +134,13 @@ export class CaveSystem extends createSystem({}) {
   /** The torch only appears (with a flare) once all three parts are found. */
   private torchShown = false;
   private torchRevealAt = -1;
+  private torchOpenFor = 0;
+  private torchLostFor = 0;
+  private readonly torchQuat = new Quaternion();
+  private readonly torchInv = new Quaternion();
+  private readonly torchDir = new Vector3();
+  private readonly flameAt = new Vector3();
+  private readonly chest = new Vector3();
   /** The tracked cart was in the air last frame (the trolley's jump). */
   private airborne = false;
   private beaconTimer = -1;
@@ -144,6 +166,7 @@ export class CaveSystem extends createSystem({}) {
   private centreRing!: Mesh;
   private centreMat!: MeshBasicMaterial;
   private centring = false;
+  private centredFor = 0;
 
   init(): void {
     if (import.meta.env.DEV) validateScore();
@@ -201,6 +224,7 @@ export class CaveSystem extends createSystem({}) {
         if (phase === Phase.Cave && !this.inside && this.preroll < 0) {
           this.centring = this.world.renderer.xr.isPresenting;
           this.preroll = PREROLL + (this.centring ? CENTRE_TIME : 0);
+          this.centredFor = 0;
           toast('The glider parts are somewhere in the old works inside this cave.', PREROLL + 1);
         }
       }),
@@ -263,24 +287,35 @@ export class CaveSystem extends createSystem({}) {
     this.off.set(rig.position.x - this.head.x, 0, rig.position.z - this.head.z);
     this.placeRig();
     if (game.phase.peek() !== Phase.Cave) setPhase(Phase.Cave);
-    toast(this.world.renderer.xr.isPresenting ? 'Step onto decks with green lamps.' : 'W steps across when the lamps are green.', 5);
+    toast(
+      this.world.renderer.xr.isPresenting
+        ? 'The glider parts are up in these works. Step onto decks with green lamps.'
+        : 'The glider parts are up in these works. W steps across when the lamps are green.',
+      6,
+    );
   }
 
-  /** Before the cave: ask to stand in the middle of the play space, and show where it is. */
-  private updateCentring(before: number, time: number): void {
-    if (before > CENTRE_TIME && this.preroll <= CENTRE_TIME) {
-      toast('Before you go in: step to the middle of your play space (the ring on the floor) and stand still.', CENTRE_TIME + 0.5);
-    }
+  /**
+   * Before the cave: ask to stand in the middle of the play space, and show
+   * where it is. True once you have stood there a moment (in you go).
+   */
+  private updateCentring(before: number, time: number, dt: number): boolean {
     const show = this.preroll <= CENTRE_TIME && this.preroll >= 0;
     this.centreRing.visible = show;
-    if (!show) return;
+    if (!show) return false;
     const rig = this.player;
     getHeadWorld(this.world, this.head);
     const off = Math.hypot(this.head.x - rig.position.x, this.head.z - rig.position.z);
+    const centred = off < CENTRED;
+    if (before > CENTRE_TIME && !centred) {
+      toast('Before you go in: step to the middle of your play space (the ring on the floor) and stand still.', CENTRE_TIME + 0.5);
+    }
+    this.centredFor = centred ? this.centredFor + dt : 0;
     this.centreRing.position.set(rig.position.x, rig.position.y + 0.02, rig.position.z);
     this.centreRing.scale.setScalar(1 + 0.06 * Math.sin(time * 5));
-    this.centreMat.color.copy(off < CENTRED ? RING_OK : RING_FAR);
+    this.centreMat.color.copy(centred ? RING_OK : RING_FAR);
     this.centreMat.opacity = 0.6 + 0.3 * Math.sin(time * 5);
+    return this.centredFor >= CENTRED_HOLD;
   }
 
   /** Put the head back on the centre of the square you're standing on. */
@@ -343,7 +378,7 @@ export class CaveSystem extends createSystem({}) {
     if (this.preroll >= 0) {
       const before = this.preroll;
       this.preroll -= dt;
-      if (this.centring) this.updateCentring(before, time);
+      if (this.centring && this.updateCentring(before, time, dt)) this.preroll = -1;
       if (this.preroll < 0) {
         this.centreRing.visible = false;
         fadeThen(() => this.enter());
@@ -580,11 +615,18 @@ export class CaveSystem extends createSystem({}) {
    */
   private partInHand(): GliderPartId | null {
     for (const hand of HANDS) {
-      if (!hand.tracked || !hand.grip) continue;
+      if (!hand.tracked) continue;
+      const reach = hand.grip ? PART_REACH : PART_TOUCH;
       for (const [id, bounds] of this.partBounds) {
         if (this.collected.has(id)) continue;
-        if (bounds.distanceToPoint(hand.position) < PART_REACH) return id;
+        if (bounds.distanceToPoint(hand.position) < reach || bounds.distanceToPoint(hand.indexTip) < PART_TOUCH) return id;
       }
+    }
+    // Your chest, a hand's width under your chin.
+    getHeadWorld(this.world, this.chest);
+    this.chest.y -= 0.35;
+    for (const [id, bounds] of this.partBounds) {
+      if (!this.collected.has(id) && bounds.distanceToPoint(this.chest) < PART_BODY) return id;
     }
     return null;
   }
@@ -620,35 +662,73 @@ export class CaveSystem extends createSystem({}) {
     }
     torch.getWorldPosition(this.m);
     if (this.torchHand === null) {
+      // It crackles on its post: you hear it before you see it.
+      if (Math.random() < dt * 4) audio.crackle(0.25);
       for (const hand of HANDS) {
-        if (hand.gripDown && hand.position.distanceTo(this.m) < TAKE_RADIUS) {
+        if (!hand.tracked || !hand.grip) continue;
+        const d = hand.position.distanceTo(this.m);
+        if ((hand.gripDown && d < TAKE_RADIUS) || d < TAKE_CATCH) {
           this.torchHand = hand.handedness;
+          this.torchOpenFor = 0;
+          this.torchLostFor = 0;
+          this.holdTorch(hand, 1);
           audio.clack();
-          this.pulse(hand.handedness, 0.5, 40);
-          toast('Now hold the flame in the glowing basket.', 4);
+          audio.ignite();
+          this.pulse(hand.handedness, 0.8, 90);
+          toast('You have the signal torch! Hold its flame in the glowing basket.', 4);
           return true;
         }
       }
       return false;
     }
     const hand = HANDS.find((h) => h.handedness === this.torchHand)!;
-    if (!hand.tracked || !hand.grip) {
-      this.torchHand = null;
-      torch.position.copy(this.v.torchHome);
-      torch.quaternion.identity();
+    // A torch is not dropped by a flicker of the hand tracking: it stays in
+    // a hand that opens for a moment, and waits where it was while the
+    // headset loses sight of your hand.
+    if (!hand.tracked) {
+      this.torchLostFor += dt;
+      if (this.torchLostFor > TORCH_LOST) this.dropTorch();
+      return true;
+    }
+    this.torchLostFor = 0;
+    this.torchOpenFor = hand.grip ? 0 : this.torchOpenFor + dt;
+    if (this.torchOpenFor > TORCH_LET_GO) {
+      this.dropTorch();
       return false;
     }
-    // Held upright in the fist; its head is what lights the beacon.
-    torch.position.copy(hand.position).sub(CAVE_ORIGIN);
-    torch.quaternion.identity();
-    this.n.set(0, TORCH_HEAD * TORCH_SCALE, 0).add(torch.position);
+    this.holdTorch(hand, 1 - Math.exp(-dt * 28));
+    this.n.set(0, TORCH_HEAD * TORCH_SCALE, 0).applyQuaternion(torch.quaternion).add(torch.position);
     const d = this.n.distanceTo(this.v.brazier);
     this.torchNear = Math.max(0, Math.min(1, (LIGHT_HINT - d) / (LIGHT_HINT - LIGHT_RADIUS)));
+    if (Math.random() < dt * 7) audio.crackle(0.35 + 0.4 * this.torchNear);
     if (d < LIGHT_RADIUS) {
       this.pulse(hand.handedness, 1, 140);
       this.light();
     }
     return true;
+  }
+
+  /**
+   * Held in the fist like a real torch: the shaft runs through it with the
+   * head out of the thumb side (grip -Z), tipped a little toward upright,
+   * and the fist round the middle of the leather grip.
+   */
+  private holdTorch(hand: (typeof HANDS)[number], ease: number): void {
+    const torch = this.v.torch;
+    this.torchDir.set(0, 0, -1).applyQuaternion(hand.quaternion).lerp(UP, TORCH_UPRIGHT).normalize();
+    this.torchQuat.setFromUnitVectors(UP, this.torchDir);
+    torch.quaternion.slerp(this.torchQuat, ease);
+    this.flameAt.set(0, TORCH_GRIP * TORCH_SCALE, 0).applyQuaternion(torch.quaternion);
+    torch.position.copy(hand.position).sub(CAVE_ORIGIN).sub(this.flameAt);
+  }
+
+  /** Back on its post (let go of, or lost from view too long). */
+  private dropTorch(): void {
+    this.torchHand = null;
+    this.torchNear = 0;
+    this.v.torch.position.copy(this.v.torchHome);
+    this.v.torch.quaternion.identity();
+    if (!game.beaconLit.peek()) toast('The torch went back on its post. Take it again and bring it to the basket.', 4);
   }
 
   private pulse(side: Handedness, value: number, ms: number): void {
@@ -683,6 +763,46 @@ export class CaveSystem extends createSystem({}) {
     audio.ignite();
     audio.fanfare();
     toast('The beacon is lit. The party below can see you coming!', BEACON_HOLD);
+  }
+
+  /**
+   * The torch's flame: a bright core, three tongues licking up and sparks
+   * rising off it. However the torch is tipped they burn straight up from
+   * its head (they are placed in torch space through its inverse rotation).
+   */
+  private updateTorchFlame(time: number, held: boolean, near: number, lit: boolean): void {
+    const v = this.v;
+    const show = !lit && v.torch.visible;
+    v.torchFlame.visible = show;
+    for (const t of v.torchTongues) t.visible = show;
+    for (const e of v.torchEmbers) e.visible = show;
+    if (!show) return;
+    this.torchInv.copy(v.torch.quaternion).invert();
+    const roar = (1 + 0.8 * near) * (held ? 1.15 : 1);
+    const flick = 0.9 + 0.07 * Math.sin(time * 23) + 0.05 * Math.sin(time * 37.3);
+    this.placeFlame(v.torchFlame, 0, 0.03 * roar, 0);
+    v.torchFlame.scale.setScalar(0.3 * roar * flick);
+    for (let k = 0; k < v.torchTongues.length; k++) {
+      const t = v.torchTongues[k];
+      const w = time * (9 + 3 * k) + k * 2.1;
+      const lick = 0.75 + 0.25 * Math.sin(w) + 0.12 * Math.sin(w * 2.7);
+      this.placeFlame(t, 0.018 * Math.sin(w * 0.7 + k), (0.1 + 0.03 * k) * roar * lick, 0.018 * Math.cos(w * 0.6 + k * 1.7));
+      t.scale.set((0.2 - 0.04 * k) * roar, (0.34 - 0.05 * k) * roar * lick, 1);
+    }
+    for (let k = 0; k < v.torchEmbers.length; k++) {
+      const e = v.torchEmbers[k];
+      const age = (time * 0.75 + k / v.torchEmbers.length) % 1;
+      const sway = Math.sin(time * 2.3 + k * 1.9) * 0.05 * age;
+      this.placeFlame(e, sway, 0.08 + age * 0.42 * roar, Math.cos(time * 1.7 + k) * 0.05 * age);
+      e.material.opacity = 0.95 * (1 - age);
+      e.scale.setScalar(0.03 * (1 - 0.6 * age));
+    }
+  }
+
+  /** A flame sprite at the torch's crown plus a world-space lift (torch-space units). */
+  private placeFlame(sprite: Sprite, x: number, y: number, z: number): void {
+    this.flameAt.set(x, y, z).applyQuaternion(this.torchInv);
+    sprite.position.set(this.flameAt.x, TORCH_CROWN + this.flameAt.y, this.flameAt.z);
   }
 
   // --------------------------------------------------------------- sounds ---
@@ -831,9 +951,8 @@ export class CaveSystem extends createSystem({}) {
     const lit = game.beaconLit.peek();
     const held = this.torchHand !== null;
     const near = held ? this.torchNear : 0;
-    v.torchFlame.visible = !lit;
-    v.torchFlame.scale.setScalar(0.28 * (1 + 0.9 * near) * (0.92 + 0.08 * Math.sin(time * 23)));
     v.torch.visible = this.torchShown || lit;
+    this.updateTorchFlame(time, held, near, lit);
     // It flares up when it appears, then glows and sends light up the chimney.
     const flare = this.torchRevealAt < 0 ? 0 : Math.max(0, 1 - (performance.now() / 1000 - this.torchRevealAt) / 1.6);
     v.torchHalo.visible = !lit && !held;

@@ -141,7 +141,11 @@ export interface Upgrade {
   level?: (s: Stats) => number;
   max?: number;
   /** What sort of thing it is, for the card's ribbon. */
-  kind?: 'weapon' | 'passive' | 'evolution' | 'heal';
+  kind?: 'weapon' | 'passive' | 'evolution' | 'heal' | 'bonus';
+  /** The card's emblem, if not its own id's. */
+  icon?: string;
+  /** The card's ribbon, if not its kind's. */
+  ribbon?: string;
   /** Applies it; returns the line to announce. */
   apply: (s: Stats, heal: (hp: number) => void) => string;
 }
@@ -219,8 +223,50 @@ export const VACUUM: Upgrade = {
   id: 'vacuum',
   name: 'Snow Globe',
   color: '#7fdcff',
+  blurb: 'Every crystal on the field flies to you',
+  kind: 'bonus',
+  icon: 'magnet',
   apply: () => 'SNOW GLOBE! Every crystal comes to you',
 };
+
+/** A bonus that stacks without limit, for when everything else is maxed. */
+const bonus = (
+  id: string,
+  name: string,
+  color: string,
+  icon: string,
+  blurb: string,
+  apply: (s: Stats, heal: (hp: number) => void) => void,
+  line: string,
+): Upgrade => ({
+  id,
+  name,
+  color,
+  icon,
+  blurb,
+  kind: 'bonus',
+  apply: (s, heal) => {
+    apply(s, heal);
+    return `${name}: ${line}`;
+  },
+});
+
+/**
+ * Cards that never run out. Late in a run nearly everything is maxed (six
+ * weapons at level 8 and every passive capped is about a hundred picks),
+ * so these make up the numbers: a choice is always a full hand of cards.
+ */
+const BONUSES: Upgrade[] = [
+  bonus('bonus-might', 'Overpower', '#ff6b6b', 'might', '+15% damage, and it stacks', (s) => (s.might *= 1.15), '+15% damage'),
+  bonus('bonus-haste', 'Frenzy', '#ffd166', 'haste', 'Every weapon fires 10% faster', (s) => (s.haste = Math.max(0.2, s.haste * 0.9)), 'weapons fire faster'),
+  bonus('bonus-area', 'Wide Reach', '#c3a6ff', 'area', '+12% to every blast, blade and bolt', (s) => (s.area = Math.min(4, s.area * 1.12)), 'everything hits wider'),
+  bonus('bonus-hp', 'Thick Furs', '#ff8fab', 'vitality', '+25 health, and healed now', (s, heal) => {
+    s.maxHp += 25;
+    heal(25);
+  }, '+25 health'),
+  bonus('bonus-heal', 'Hot Cocoa', '#ff4d6d', 'heart', 'Heal half your health', (s, heal) => heal(s.maxHp * 0.5), 'healed!'),
+  VACUUM,
+];
 
 /** An upgrade orb: walk into it and choose what it becomes. */
 export const CHOICE: Upgrade = {
@@ -269,7 +315,7 @@ export function rollUpgrade(s: Stats): Upgrade {
 
 /**
  * `count` different upgrades to choose between, drawn from the weighted
- * pool. With almost everything maxed, a heart makes up the numbers.
+ * pool. With almost everything maxed, bonuses make up the numbers.
  */
 export function offerUpgrades(s: Stats, count: number): Upgrade[] {
   const pool = upgradePool(s);
@@ -285,6 +331,29 @@ export function offerUpgrades(s: Stats, count: number): Upgrade[] {
     out.push(pool[k].u);
     pool.splice(k, 1);
   }
-  if (out.length < count) out.push(HEART);
+  const spare = BONUSES.slice();
+  while (out.length < count && spare.length > 0) out.push(spare.splice(Math.floor(Math.random() * spare.length), 1)[0]);
   return out;
 }
+
+/** The end of a run: two more cards to poke, another go or home. */
+export const END_AGAIN: Upgrade = {
+  id: 'end-again',
+  name: 'Run It Back',
+  color: '#ffd166',
+  blurb: 'Another eight minutes in the snow',
+  kind: 'bonus',
+  ribbon: 'NEW RUN',
+  icon: 'blades',
+  apply: () => '',
+};
+export const END_LEAVE: Upgrade = {
+  id: 'end-leave',
+  name: 'Head Home',
+  color: '#7fdcff',
+  blurb: 'Back to the valley and the mountain trail',
+  kind: 'bonus',
+  ribbon: 'THE VALLEY',
+  icon: 'compass',
+  apply: () => '',
+};

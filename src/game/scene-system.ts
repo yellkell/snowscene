@@ -15,6 +15,7 @@ import {
   Fog,
   Group,
   type InstancedMesh,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
   Object3D,
@@ -71,6 +72,14 @@ import {
 const XR_RESOLUTION_SCALE = 1.0;
 /** Half-size of the sun's shadow frustum that follows the player (metres). */
 const SHADOW_EXTENT = 45;
+/**
+ * The shadow frustum only re-centres once you are this far (metres, across
+ * the sun's view) from its centre. Its texel grid is fixed in the world, so a
+ * re-centre changes nothing you can see, and in between it costs nothing.
+ */
+const SHADOW_RECENTRE = 3;
+/** ...or this far along the sun's direction (the frustum is 400 m deep). */
+const SHADOW_RECENTRE_DEPTH = 40;
 
 /** Shared handles to scene pieces other systems need. */
 export const sceneRefs = {
@@ -128,6 +137,13 @@ export class SceneSetupSystem extends createSystem({}) {
   private readonly head = new Vector3();
   private flagFrame = 0;
   private shadowFrame = 0;
+  /** The sun's view axes, the direction they were built for, and the frustum centre in them. */
+  private readonly sunRight = new Vector3();
+  private readonly sunUp = new Vector3();
+  private readonly sunBack = new Vector3();
+  private readonly sunDir = new Vector3();
+  private readonly basis = new Matrix4();
+  private readonly origin = new Vector3();
   private readonly shadowAt = new Vector3(Infinity, 0, 0);
   private baked: TutorialWorld | null = null;
 
@@ -186,7 +202,12 @@ export class SceneSetupSystem extends createSystem({}) {
     cam.near = 1;
     cam.far = 400;
     this.sun.shadow.bias = -0.0004;
-    this.sun.shadow.normalBias = 0.05;
+    // The sun is barely above the horizon, so most lit faces take it at a
+    // grazing angle: a texel and a half of normal offset keeps them free of
+    // acne (the striped crawl you'd otherwise see on the cabin's logs).
+    this.sun.shadow.normalBias = 0.07;
+    this.sun.position.copy(SUN_DIRECTION).multiplyScalar(200);
+    this.sunAxes(SUN_DIRECTION);
     add(this.sun);
     add(this.sun.target);
     sceneRefs.sunLight = this.sun;
@@ -317,37 +338,65 @@ export class SceneSetupSystem extends createSystem({}) {
     this.cloudSea.position.set(this.head.x, currentLevel().cloudDeckY, this.head.z);
     cloudSeaUniforms.uTime.value = time;
 
-    // Keep the shadow frustum on the player, snapped to shadow texels so
-    // shadows don't shimmer as you move.
-    // The sun itself never moves here, so the shadow map only needs redrawing
-    // when the snapped frustum does (at most every other frame), plus a slow
-    // refresh for the few things that move on their own (flag, glider parts).
-    // Height snaps to whole metres: climbing a wall no longer redraws the
-    // whole shadow map every other frame.
+    // Keep the shadow frustum on the player. It is snapped to whole shadow
+    // texels in the sun's own view (snapping world x/z does not line up
+    // with a low sun's texel grid, so every step you took slid every shadow
+    // edge by a fraction of a texel: the crawling flicker on the cabin
+    // front), and it only re-centres every few metres. Between re-centres
+    // the shadow map is only redrawn by the slow refresh for the few things
+    // that move on their own (flag, glider parts).
     const texel = (SHADOW_EXTENT * 2) / this.sun.shadow.mapSize.x;
-    const sx = Math.round(this.head.x / texel) * texel;
-    const sz = Math.round(this.head.z / texel) * texel;
-    const sy = Math.round(this.head.y) - 1;
-    this.sun.target.position.set(sx, sy, sz);
-    this.sun.position.copy(this.sun.target.position).addScaledVector(SUN_DIRECTION, 200);
-    this.sun.target.updateMatrixWorld();
-    const frame = this.shadowFrame++;
+    // The expedition swings the sun round with the time of day.
+    this.sunDir.subVectors(this.sun.position, this.sun.target.position).normalize();
+    if (this.sunDir.distanceToSquared(this.sunBack) > 1e-8) this.sunAxes(this.sunDir);
+    const u = this.head.dot(this.sunRight);
+    const v = this.head.dot(this.sunUp);
+    const w = this.head.dot(this.sunBack);
+    const at = this.shadowAt;
+    let recentred = false;
+    if (
+      Math.abs(u - at.x) > SHADOW_RECENTRE ||
+      Math.abs(v - at.y) > SHADOW_RECENTRE ||
+      Math.abs(w - at.z) > SHADOW_RECENTRE_DEPTH
+    ) {
+      at.set(Math.round(u / texel) * texel, Math.round(v / texel) * texel, Math.round(w));
+      this.sun.target.position
+        .copy(this.sunRight)
+        .multiplyScalar(at.x)
+        .addScaledVector(this.sunUp, at.y)
+        .addScaledVector(this.sunBack, at.z);
+      this.sun.position.copy(this.sun.target.position).addScaledVector(this.sunBack, 200);
+      this.sun.target.updateMatrixWorld();
+      recentred = true;
+    }
+    // Once the bake is in nothing samples the shadow map (it's switched off): only the flag and puffs.
     if (this.bakedFlag) {
       this.puffs.update(dt);
       this.updateFade(dt);
       this.bakedFlag.update(time);
       return;
     }
-    const moved = !this.shadowAt.equals(this.sun.target.position);
-    if ((moved && (frame & 1) === 0) || frame % 8 === 0) {
-      this.shadowAt.copy(this.sun.target.position);
-      this.world.renderer.shadowMap.needsUpdate = true;
-    }
+    // Nothing that moves casts a shadow on the tutorial's cliff (the poles
+    // are leant on the rock), so the climb skips the slow refresh: a whole
+    // shadow pass every eighth frame was a regular hitch while you climbed.
+    const still = game.phase.peek() === Phase.Climbing && currentLevel().id === 'tutorial';
+    const refresh = !still && this.shadowFrame++ % 8 === 0;
+    if (recentred || refresh) this.world.renderer.shadowMap.needsUpdate = true;
 
     // The flag only needs a refresh every other frame (the baked one waves on the GPU, above).
     if ((this.flagFrame++ & 1) === 0) waveFlag(this.flagCloth, time);
     this.puffs.update(dt);
     this.updateFade(dt);
+  }
+
+  /**
+   * The shadow camera's axes for a sun in `dir`, exactly as three builds
+   * them (eye on the sun side looking at the target, world up), so snapping
+   * in them lands the frustum on whole shadow texels.
+   */
+  private sunAxes(dir: Vector3): void {
+    this.basis.lookAt(dir, this.origin, this.sun.shadow.camera.up);
+    this.basis.extractBasis(this.sunRight, this.sunUp, this.sunBack);
   }
 
   private updateFade(dt: number): void {

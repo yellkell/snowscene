@@ -16,13 +16,16 @@ import {
   BufferAttribute,
   BufferGeometry,
   CanvasTexture,
+  ConeGeometry,
   Color,
   DoubleSide,
   DynamicDrawUsage,
+  Euler,
   type Group,
   InstancedMesh,
   Matrix4,
   Mesh,
+  MeshBasicMaterial,
   Object3D,
   OctahedronGeometry,
   PlaneGeometry,
@@ -36,7 +39,8 @@ import {
   CylinderGeometry,
   IcosahedronGeometry,
 } from '@iwsdk/core';
-import { FX_FRAG, FX_VERT, GroundDecals, GroundGlow, InstPool, SUNVIS_VERT, fxMaterial, fxModel, fxTex, unitQuad } from './fx-assets.js';
+import { FX_FRAG, FX_VERT, GroundDecals, GroundGlow, InstPool, SUNVIS_VERT, fx, fxMaterial, fxModel, fxTex, unitQuad } from './fx-assets.js';
+import { drawLettering, fitLettering } from './lettering.js';
 import { RIBBON_VERT, rockMaterial, useModel } from './fire-fx.js';
 import { duneHeight } from './survivors-level.js';
 
@@ -50,6 +54,74 @@ const X_AXIS = new Vector3(1, 0, 0);
 const Z_AXIS = new Vector3(0, 0, 1);
 const spinQ = new Quaternion();
 const tmpC = new Color();
+const tmpE = new Euler(0, 0, 0, 'YXZ');
+const WHITE = new Color(1, 1, 1);
+const GOLD = new Color(1, 0.82, 0.4);
+const prism = new Color();
+
+/**
+ * The way the viewer faces this frame (the system sets it before drawing): glows drawn as flat cards
+ * turned to it always face you.
+ */
+export const billboard = new Quaternion();
+
+export { fx, MIN_GAIN } from './fx-assets.js';
+
+/** Glows this close to your eyes fade out (a volley leaves from your chest). */
+function nearFade(d: number): number {
+  return Math.min(1, Math.max(0, (d - 0.7) / 1.3));
+}
+
+/**
+ * A see-through colour that tints what is behind it (normal blending). The snow is nearly white, so
+ * added light low over it only bleaches it whiter: what hugs the snow tints it in its colour instead.
+ */
+export function tinted(extra: { vertexColors?: boolean; map?: CanvasTexture } = {}): MeshBasicMaterial {
+  return new MeshBasicMaterial({ transparent: true, depthWrite: false, side: DoubleSide, toneMapped: false, fog: false, ...extra });
+}
+
+/** A soft round glow with a bright core (bolt halos, sword-tip glints). */
+let flare: CanvasTexture | null = null;
+function sharedFlare(): CanvasTexture {
+  if (flare) return flare;
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const ctx = c.getContext('2d')!;
+  const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.18, 'rgba(255,255,255,0.75)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.18)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 128, 128);
+  ctx.globalCompositeOperation = 'lighter';
+  for (const [w, h] of [
+    [128, 6],
+    [6, 128],
+  ]) {
+    const sp = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+    sp.addColorStop(0, 'rgba(255,255,255,0.9)');
+    sp.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = sp;
+    ctx.fillRect(64 - w / 2, 64 - h / 2, w, h);
+  }
+  flare = new CanvasTexture(c);
+  flare.colorSpace = SRGBColorSpace;
+  return flare;
+}
+
+/** A flat instanced card pool in see-through colour (halos, glints): faces `billboard`. */
+function cards(cap: number, name: string, parent: Group, order: number): InstancedMesh {
+  const m = new InstancedMesh(new PlaneGeometry(1, 1), tinted({ map: sharedFlare() }), cap);
+  m.instanceMatrix.setUsage(DynamicDrawUsage);
+  m.setColorAt(0, tmpC.set(0xffffff));
+  m.count = 0;
+  m.frustumCulled = false;
+  m.renderOrder = order;
+  m.name = name;
+  parent.add(m);
+  return m;
+}
 
 /** The ground systems effects paint with (one of each, shared). */
 export interface FxGround {
@@ -170,6 +242,8 @@ export class Impacts {
   private readonly spin = new Float32Array(IMPACT_CAP);
   private readonly color = new Uint32Array(IMPACT_CAP);
   private next = 0;
+  /** Hits showing this frame (for the glow budget). */
+  live = 0;
 
   constructor(parent: Group) {
     const mat = fxMaterial({
@@ -180,10 +254,11 @@ export class Impacts {
         ${SUNVIS_VERT}
         attribute vec4 aPos;  // xyz, size
         attribute vec4 aData; // age 0..1, spin, seed, near fade
-        attribute vec4 aCol;  // hit colour
+        attribute vec4 aCol;  // hit colour, glow gain
         varying vec2 vUv;
         varying vec4 vData;
         varying vec3 vCol;
+        varying float vGain;
         varying float vSunVis;
         void main() {
           vec3 f = normalize(cameraPosition - aPos.xyz);
@@ -195,6 +270,7 @@ export class Impacts {
           vUv = position.xy + 0.5;
           vData = aData;
           vCol = aCol.rgb;
+          vGain = aCol.w;
           vSunVis = groundSunVisibility(aPos.xz);
           computeHaze(wp);
           gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
@@ -205,6 +281,7 @@ export class Impacts {
         varying vec2 vUv;
         varying vec4 vData;
         varying vec3 vCol;
+        varying float vGain;
         varying float vSunVis;
         void main() {
           float age = vData.x;
@@ -214,9 +291,10 @@ export class Impacts {
           vec3 dust = (0.5 + 0.6 * s.g) * uOpenSky * uSkyTint * uSkyGain + (0.25 + s.b) * uSunColor * 0.3183 * vSunVis * 1.4;
           vec2 q = vUv - 0.5;
           float r2 = dot(q, q);
-          // The hit itself: a hot flash of its colour, gone in a tenth of a second.
+          // The hit itself: a hot flash in the colour of what made it (only a little white at its
+          // heart: hundreds a second of white flashes hazed the crowd over), gone in a tenth of a second.
           float flash = exp(-r2 * 90.0) * max(0.0, 1.0 - age * 6.0);
-          vec3 emit = (vCol * 7.0 + vec3(3.0)) * flash;
+          vec3 emit = (vCol * 7.0 + vec3(1.0)) * flash * vGain;
           // Ice crystals in the burst catching the light.
           vec2 g = vUv * 9.0 + vData.z * 17.0;
           vec2 cell = floor(g);
@@ -225,7 +303,7 @@ export class Impacts {
             vec2 pt = cell + 0.5 + 0.35 * vec2(hash12(cell + 3.1) - 0.5, hash12(cell + 7.7) - 0.5);
             float d = length(g - pt);
             float tw = 0.5 + 0.5 * sin(uFxTime * 40.0 * h + h * 50.0);
-            emit += (vec3(0.9, 0.95, 1.0) * (1.0 + 4.0 * vSunVis) + vCol) * exp(-d * d * 40.0) * tw * (1.0 - age) * 2.5;
+            emit += (vec3(0.9, 0.95, 1.0) * (1.0 + 4.0 * vSunVis) + vCol) * exp(-d * d * 40.0) * tw * (1.0 - age) * 2.5 * vGain;
           }
           emit *= vData.w;
           vec4 o = hazePremul(emit * uEmit, dust, clamp(a, 0.0, 1.0), vHazeF);
@@ -257,15 +335,16 @@ export class Impacts {
       this.age[i] = Math.min(1, this.age[i] + dt / IMPACT_LIFE);
       const d = Math.hypot(this.x[i] - eye.x, this.y[i] - eye.y, this.z[i] - eye.z);
       // The puff is the flipbook's own growth; never filling your view, dimmed right beside you.
-      const s = Math.min(this.size[i] * 2.2, d * 0.5);
+      const s = Math.min(this.size[i] * 2.2, d * 0.5) * (0.65 + 0.35 * fx.gain);
       const near = Math.min(1, Math.max(0.15, (d - 0.8) / 2.5));
       const k = p.add();
       tmpC.set(this.color[i]);
       p.set('aPos', k, this.x[i], this.y[i], this.z[i], s);
       p.set('aData', k, this.age[i], this.spin[i] + this.age[i] * 0.6, i * 0.37, near);
-      p.set('aCol', k, tmpC.r, tmpC.g, tmpC.b, 0);
+      p.set('aCol', k, tmpC.r, tmpC.g, tmpC.b, fx.gain);
     }
     p.end();
+    this.live = p.mesh.count;
   }
 
   clear(): void {
@@ -307,9 +386,76 @@ function icicleGeometry(): BufferGeometry {
   return g;
 }
 
+/** Clear ice with a cold light at its heart (instance colour): the bolts, the compass stars, the nova's spikes. */
+let iceShared: ShaderMaterial | null = null;
+function iceMaterial(): ShaderMaterial {
+return (iceShared ??= fxMaterial({
+    vertexShader: SOLID_VERT,
+    fragmentShader: /* glsl */ `
+      ${SOLID_FRAG_HEAD}
+      void main() {
+        vec3 n = normalize(vN);
+        vec3 V = normalize(cameraPosition - vW);
+        float c = max(dot(n, V), 0.0);
+        float f = schlick(c, 0.02);
+        vec3 refl = envRadiance(reflect(-V, n), vSunVis, 400.0);
+        // Through the ice: the world behind, bent and stained blue by the depth of ice.
+        vec3 thru = envRadiance(refract(-V, n, 0.76), vSunVis, 30.0) * vec3(0.45, 0.75, 0.95);
+        // Fracture planes inside catching the sun.
+        vec3 cell = floor(vObj * 18.0);
+        float h = hash12(cell.xy + cell.z * 7.3);
+        vec3 fn = normalize(vec3(hash12(cell.xz + 1.3), hash12(cell.yz + 2.1), hash12(cell.xy + 4.7)) - 0.5);
+        float glint = step(0.7, h) * pow(max(dot(fn, normalize(V + uSunDir)), 0.0), 40.0) * vSunVis;
+        vec3 col = mix(thru, refl, f) + uSunColor * glint * 3.0;
+        // A cold light at its heart (the magic in it; what you see of it at night).
+        col += vInst * (0.25 + 0.75 * c * c) * 1.4 * uEmit;
+        col = applyHaze(col, vHazeF);
+        gl_FragColor = vec4(col, 1.0);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }`,
+  }));
+}
+
+/** What a bolt is: an icicle, a Hailstorm icicle, a compass shard, a Starfall star. */
+export const BOLT_ICICLE = 0;
+export const BOLT_HAIL = 1;
+export const BOLT_SHARD = 2;
+export const BOLT_STAR = 3;
+
+/**
+ * A four-pointed star of ice lying flat (it spins about its up axis as it flies): the compass shards, so
+ * they never read as icicles. Faceted (flat normals), cut from the same ice as the icicles.
+ */
+function starGeometry(): BufferGeometry {
+  const pos: number[] = [];
+  const o = new OctahedronGeometry(1, 0).toNonIndexed();
+  const src = o.getAttribute('position');
+  const v = new Vector3();
+  const put = (m: Matrix4) => {
+    for (let i = 0; i < src.count; i++) {
+      v.fromBufferAttribute(src, i).applyMatrix4(m);
+      pos.push(v.x, v.y, v.z);
+    }
+  };
+  const m = new Matrix4();
+  put(m.makeScale(0.3, 0.035, 0.06));
+  put(m.makeScale(0.06, 0.035, 0.3));
+  for (const ang of [Math.PI / 4, -Math.PI / 4]) put(m.makeRotationY(ang).multiply(tmpM2.makeScale(0.04, 0.03, 0.16)));
+  put(m.makeScale(0.07, 0.05, 0.07));
+  o.dispose();
+  const g = new BufferGeometry();
+  g.setAttribute('position', new BufferAttribute(new Float32Array(pos), 3));
+  g.computeVertexNormals();
+  g.setAttribute('uv', new BufferAttribute(new Float32Array((pos.length / 3) * 2), 2));
+  return g;
+}
+
 /** Flying projectiles: icicles at the nearest, compass shards every way. */
 export class Bolts {
   readonly mesh: InstancedMesh;
+  /** The compass shards' stars. */
+  readonly stars: InstancedMesh;
   n = 0;
   readonly x = new Float32Array(BOLT_CAP);
   readonly y = new Float32Array(BOLT_CAP);
@@ -323,37 +469,26 @@ export class Bolts {
   /** Seconds before it can hit again (it passes through what it just hit). */
   readonly cool = new Float32Array(BOLT_CAP);
   readonly color = new Uint32Array(BOLT_CAP);
+  readonly kind = new Uint8Array(BOLT_CAP);
+  /**
+   * The flight down from your chest to the bodies of the crowd: the height it left at, the height it
+   * flies at above the snow once down (its target's body), how far it takes to get down there, how far
+   * it has flown, and how steeply it is diving now (for its pitch).
+   */
+  readonly y0 = new Float32Array(BOLT_CAP);
+  readonly cruise = new Float32Array(BOLT_CAP);
+  readonly drop = new Float32Array(BOLT_CAP);
+  readonly flown = new Float32Array(BOLT_CAP);
+  readonly slope = new Float32Array(BOLT_CAP);
   /** The air it tears through: a wake of disturbed air and snow dust behind each one. */
   readonly trail: InstancedMesh;
+  /** A small see-through spark of its colour round each one (it tints the snow, never bleaches it). */
+  readonly halo: InstancedMesh;
 
   constructor(parent: Group) {
-    const ice = fxMaterial({
-      vertexShader: SOLID_VERT,
-      fragmentShader: /* glsl */ `
-        ${SOLID_FRAG_HEAD}
-        void main() {
-          vec3 n = normalize(vN);
-          vec3 V = normalize(cameraPosition - vW);
-          float c = max(dot(n, V), 0.0);
-          float f = schlick(c, 0.02);
-          vec3 refl = envRadiance(reflect(-V, n), vSunVis, 400.0);
-          // Through the ice: the world behind, bent and stained blue by the depth of ice.
-          vec3 thru = envRadiance(refract(-V, n, 0.76), vSunVis, 30.0) * vec3(0.45, 0.75, 0.95);
-          // Fracture planes inside catching the sun.
-          vec3 cell = floor(vObj * 18.0);
-          float h = hash12(cell.xy + cell.z * 7.3);
-          vec3 fn = normalize(vec3(hash12(cell.xz + 1.3), hash12(cell.yz + 2.1), hash12(cell.xy + 4.7)) - 0.5);
-          float glint = step(0.7, h) * pow(max(dot(fn, normalize(V + uSunDir)), 0.0), 40.0) * vSunVis;
-          vec3 col = mix(thru, refl, f) + uSunColor * glint * 3.0;
-          // A cold light at its heart (the magic in it; what you see of it at night).
-          col += vInst * (0.25 + 0.75 * c * c) * 1.4 * uEmit;
-          col = applyHaze(col, vHazeF);
-          gl_FragColor = vec4(col, 1.0);
-          #include <tonemapping_fragment>
-          #include <colorspace_fragment>
-        }`,
-    });
+    const ice = iceMaterial();
     this.mesh = instanced(icicleGeometry(), ice, BOLT_CAP, 'Bolts', parent);
+    this.stars = instanced(starGeometry(), ice, BOLT_CAP, 'CompassStars', parent);
     const wake = fxMaterial({
       blend: 'premul',
       uniforms: { tMisc: { value: fxTex().misc } },
@@ -384,11 +519,22 @@ export class Bolts {
         }`,
     });
     this.trail = instanced(new PlaneGeometry(1, 1, 1, 4), wake, BOLT_CAP, 'BoltTrails', parent, 5);
+    this.halo = cards(BOLT_CAP, 'BoltHalos', parent, 6);
   }
 
-  fire(x: number, y: number, z: number, dirX: number, dirZ: number, speed: number, dmg: number, radius: number, pierce: number, life: number, color: number): void {
+  /**
+   * Loose a bolt from (x, y, z) along (dirX, dirZ); it dives to fly at `cruise` m above the snow (the
+   * body height of what it is aimed at) within `drop` m.
+   */
+  fire(x: number, y: number, z: number, dirX: number, dirZ: number, speed: number, dmg: number, radius: number, pierce: number, life: number, color: number, kind = BOLT_ICICLE, cruise = 0.35, drop = 2): void {
     if (this.n >= BOLT_CAP) return;
     const i = this.n++;
+    this.kind[i] = kind;
+    this.y0[i] = y;
+    this.cruise[i] = cruise;
+    this.drop[i] = Math.max(0.5, drop);
+    this.flown[i] = 0;
+    this.slope[i] = 0;
     this.x[i] = x;
     this.y[i] = y;
     this.z[i] = z;
@@ -417,29 +563,81 @@ export class Bolts {
     this.pierce[i] = this.pierce[j];
     this.cool[i] = this.cool[j];
     this.color[i] = this.color[j];
+    this.kind[i] = this.kind[j];
+    this.y0[i] = this.y0[j];
+    this.cruise[i] = this.cruise[j];
+    this.drop[i] = this.drop[j];
+    this.flown[i] = this.flown[j];
+    this.slope[i] = this.slope[j];
   }
 
-  draw(): void {
+  /** Bolt i has flown `step` m more: bring it down toward the bodies, over the snow under it. */
+  fly(i: number, step: number, ground: number): void {
+    this.flown[i] += step;
+    const k = Math.min(1, this.flown[i] / this.drop[i]);
+    const e = 1 - (1 - k) * (1 - k);
+    const to = ground + this.cruise[i];
+    const y = this.y0[i] + (to - this.y0[i]) * e;
+    this.slope[i] = step > 1e-6 ? (y - this.y[i]) / step : 0;
+    this.y[i] = y;
+  }
+
+  /**
+   * Icicles fly point first, nosing down as they dive and rolling so their facets catch the light;
+   * compass shards are stars spinning flat. Each trails its wake and wears a small spark of its colour
+   * (both under the glow budget, faded near your eyes). The evolved ones shimmer: a Hailstorm icicle's
+   * spark runs through a prism's colours, a Starfall star's flares gold.
+   */
+  draw(eye: Vector3): void {
+    let ni = 0;
+    let ns = 0;
+    const gain = fx.gain;
     for (let i = 0; i < this.n; i++) {
       tmpP.set(this.x[i], this.y[i], this.z[i]);
+      const kind = this.kind[i];
+      const star = kind === BOLT_SHARD || kind === BOLT_STAR;
+      const evolved = kind === BOLT_HAIL || kind === BOLT_STAR;
       const heading = Math.atan2(this.vx[i], this.vz[i]);
-      tmpQ.setFromAxisAngle(UP, heading);
-      const s = this.radius[i] / 0.35;
-      // A little roll as it flies, so its facets catch the light.
-      tmpQ.multiply(spinQ.setFromAxisAngle(Z_AXIS, this.life[i] * 14));
+      // What it hits grows with Area; what you see only a little (a late build's icicles were metres
+      // across and their glows fogged the view).
+      const hit = this.radius[i] / 0.35;
+      const s = hit <= 1 ? hit : 1 + (hit - 1) * 0.3;
       tmpS.set(s, s, s);
-      this.mesh.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.mesh.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(0.5));
-      // The wake, as long as a few frames of its flight, fading as it dies.
-      tmpQ.setFromAxisAngle(UP, heading);
+      if (star) {
+        tmpQ.setFromAxisAngle(UP, this.life[i] * (evolved ? 16 : 12) + i);
+        this.stars.setMatrixAt(ns, tmpM.compose(tmpP, tmpQ, tmpS));
+        this.stars.setColorAt(ns, tmpC.set(this.color[i]).lerp(evolved ? GOLD : WHITE, evolved ? 0.35 : 0.1).multiplyScalar(0.5));
+        ns++;
+      } else {
+        tmpQ.setFromEuler(tmpE.set(-Math.atan(this.slope[i]), heading, 0, 'YXZ'));
+        tmpQ.multiply(spinQ.setFromAxisAngle(Z_AXIS, this.life[i] * 14));
+        this.mesh.setMatrixAt(ni, tmpM.compose(tmpP, tmpQ, tmpS));
+        this.mesh.setColorAt(ni, tmpC.set(this.color[i]).multiplyScalar(0.5));
+        ni++;
+      }
+      // The wake, as long as a few frames of its flight, trailing back up the way it came down.
+      const fade = Math.min(1, this.life[i] * 4);
+      const near = nearFade(tmpP.distanceTo(eye));
+      tmpQ.setFromEuler(tmpE.set(-Math.atan(this.slope[i]), heading, 0, 'YXZ'));
       const speed = Math.hypot(this.vx[i], this.vz[i]);
-      tmpS.set(0.2 * s, 1, Math.min(2.2, speed * 0.07) * s);
+      tmpS.set(0.2 * s, 1, Math.min(evolved ? 2.8 : 2.2, speed * 0.07) * s);
       this.trail.setMatrixAt(i, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.trail.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(Math.min(1, this.life[i] * 4)));
+      this.trail.setColorAt(i, tmpC.set(this.color[i]).multiplyScalar(fade * near * gain));
+      const tw = Math.sin(this.life[i] * (evolved ? 55 : 40) + i);
+      const g = s * (evolved ? 0.5 + 0.12 * tw : 0.36 + 0.05 * tw) * fade * near * (0.7 + 0.3 * gain);
+      tmpS.set(g, g, g);
+      this.halo.setMatrixAt(i, tmpM.compose(tmpP, billboard, tmpS));
+      tmpC.set(this.color[i]);
+      if (kind === BOLT_HAIL) tmpC.lerp(prism.setHSL((this.life[i] * 1.6 + i * 0.137) % 1, 0.9, 0.62), 0.6);
+      else if (kind === BOLT_STAR) tmpC.lerp(GOLD, 0.45 + 0.25 * tw);
+      this.halo.setColorAt(i, tmpC);
     }
-    this.mesh.count = this.n;
+    (this.halo.material as MeshBasicMaterial).opacity = 0.7;
+    this.mesh.count = ni;
+    this.stars.count = ns;
     this.trail.count = this.n;
-    flush(this.mesh, this.trail);
+    this.halo.count = this.n;
+    flush(this.mesh, this.stars, this.trail, this.halo);
   }
 }
 
@@ -602,6 +800,14 @@ function sweepGeometry(span: number): BufferGeometry {
 export class Blades {
   readonly mesh: InstancedMesh;
   readonly sweep: InstancedMesh;
+  /** A star of light riding each sword's tip. */
+  readonly glint: InstancedMesh;
+  /** A ring on the snow under each circle of swords, in see-through colour: their reach. */
+  private readonly rings: Mesh[] = [];
+  /** The arc each sword sweeps behind it (radians): shorter the more swords there are. */
+  private span = 0.9;
+  private ringsUsed = 0;
+  private turn = 0;
 
   constructor(parent: Group) {
     const placeholder = new BoxGeometry(0.07, 0.02, 1.0).translate(0, 0, 0.5);
@@ -656,13 +862,25 @@ export class Blades {
           gl_FragColor = fxOut(hazePremul(emit * uEmit, steel, a, vHazeF), bgAir());
         }`,
     });
-    this.sweep = instanced(sweepGeometry(0.9), smear, BLADE_CAP, 'BladeSweeps', parent, 5);
+    this.sweep = instanced(sweepGeometry(this.span), smear, BLADE_CAP, 'BladeSweeps', parent, 5);
+    this.glint = cards(BLADE_CAP, 'BladeGlints', parent, 6);
+    const ringGeo = new RingGeometry(0.965, 1, 96).rotateX(-Math.PI / 2);
+    for (let k = 0; k < 2; k++) {
+      const ring = new Mesh(ringGeo, tinted());
+      ring.renderOrder = 4;
+      ring.visible = false;
+      ring.name = 'BladeReach';
+      parent.add(ring);
+      this.rings.push(ring);
+    }
   }
 
   /** No swords out. */
   hide(): void {
     this.mesh.count = 0;
     this.sweep.count = 0;
+    this.glint.count = 0;
+    for (const r of this.rings) r.visible = false;
   }
 
   /**
@@ -673,8 +891,34 @@ export class Blades {
     count = Math.min(count, BLADE_CAP - start);
     // Where the tips reach: the sword runs from 0.35 r out by its length.
     const tip = radius * 0.35 + size * radius * 0.75 * 1.06;
-    tmpC.set(color).multiplyScalar(0.8);
+    this.turn += 0.016;
+    // A dozen swords each sweeping a long arc made a solid ring of light at your hips: the more swords,
+    // the shorter and fainter each one's arc, so at most about half the circle is lit and they read as
+    // slashes.
+    const sweepGain = 0.85 * (0.5 + 0.5 * fx.gain) * Math.min(1, Math.sqrt(4 / Math.max(1, count)));
+    if (start === 0) {
+      // A fresh frame's swords: the rings are laid again, one per circle.
+      for (const r of this.rings) r.visible = false;
+      this.ringsUsed = 0;
+      const span = Math.round(Math.min(0.9, Math.max(0.25, 2.2 / Math.max(1, count))) * 20) / 20;
+      if (span !== this.span) {
+        this.span = span;
+        this.sweep.geometry.dispose();
+        this.sweep.geometry = sweepGeometry(span);
+      }
+    }
+    const ring = this.rings[this.ringsUsed++];
+    if (ring) {
+      ring.visible = true;
+      ring.position.set(x, duneHeight(x, z) + 0.05, z);
+      ring.scale.setScalar(tip);
+      const rm = ring.material as MeshBasicMaterial;
+      rm.color.set(color);
+      rm.opacity = (0.4 + 0.12 * Math.sin(this.turn * 5)) * (0.6 + 0.4 * fx.gain);
+    }
+    (this.glint.material as MeshBasicMaterial).opacity = 0.75 * (0.5 + 0.5 * fx.gain);
     for (let k = 0; k < count; k++) {
+      tmpC.set(color).multiplyScalar(0.8);
       const a = angle + (k / count) * Math.PI * 2;
       const dx = Math.sin(a);
       const dz = Math.cos(a);
@@ -690,11 +934,19 @@ export class Blades {
       tmpP.set(x, y, z);
       tmpS.set(tip * spin, 1, tip);
       this.sweep.setMatrixAt(start + k, tmpM.compose(tmpP, tmpQ, tmpS));
-      this.sweep.setColorAt(start + k, tmpC);
+      this.sweep.setColorAt(start + k, tmpC.multiplyScalar(sweepGain));
+      // The glint at the tip, turning and pulsing as it goes round.
+      tmpP.set(x + dx * tip * 0.97, y, z + dz * tip * 0.97);
+      const g = 0.3 * size * (0.8 + 0.35 * Math.sin(this.turn * 9 + k * 2.1));
+      tmpS.set(g, g, g);
+      tmpQ.copy(billboard).multiply(spinQ.setFromAxisAngle(Z_AXIS, this.turn * 3 + k));
+      this.glint.setMatrixAt(start + k, tmpM.compose(tmpP, tmpQ, tmpS));
+      this.glint.setColorAt(start + k, tmpC.set(color).lerp(WHITE, 0.35));
     }
     this.mesh.count = start + count;
     this.sweep.count = start + count;
-    flush(this.mesh, this.sweep);
+    this.glint.count = start + count;
+    flush(this.mesh, this.sweep, this.glint);
     return start + count;
   }
 }
@@ -702,6 +954,22 @@ export class Blades {
 // -------------------------------------------------------------- novas ---
 
 const NOVA_CAP = 14;
+/** Ice spikes each Frost Nova throws up along its front. */
+const NOVA_SPIKES = 30;
+
+/** A cheap repeatable 0..1 for spike k (its own height, lean and gap). */
+function spikeRnd(k: number): number {
+  const v = Math.sin(k * 12.9898) * 43758.5453;
+  return v - Math.floor(v);
+}
+
+/** An ice spike: a five-sided faceted cone, its base at the origin (flat normals). */
+function spikeGeometry(): BufferGeometry {
+  const g = new ConeGeometry(0.11, 1, 5, 1).translate(0, 0.5, 0).toNonIndexed();
+  g.deleteAttribute('normal');
+  g.computeVertexNormals();
+  return g;
+}
 
 /**
  * Frost blasts: a shock that drives a ring of snow dust out over the field, a wall of kicked-up powder
@@ -717,9 +985,13 @@ export class Novas {
   private readonly y = new Float32Array(NOVA_CAP);
   private readonly z = new Float32Array(NOVA_CAP);
   private readonly col = new Uint32Array(NOVA_CAP);
+  private readonly crown = new Uint8Array(NOVA_CAP);
   private next = 0;
+  /** Spikes of ice bursting up out of the snow along a Frost Nova's front. */
+  private readonly spikes: InstancedMesh;
 
   constructor(parent: Group, private readonly ground?: FxGround) {
+    this.spikes = instanced(spikeGeometry(), iceMaterial(), NOVA_SPIKES * NOVA_CAP, 'NovaSpikes', parent);
     const tex = { tMisc: { value: fxTex().misc } };
     const wallGeo = new CylinderGeometry(1, 1, 1, 64, 4, true).translate(0, 0.5, 0);
     const dust = /* glsl */ `
@@ -741,6 +1013,7 @@ export class Novas {
           varying vec2 vUv;
           varying vec4 vData;
           varying vec3 vCol;
+          varying float vGain;
           varying float vSunVis;
           void main() {
             // The wall leans out as the dust is thrown.
@@ -748,6 +1021,7 @@ export class Novas {
             vUv = vec2(atan(position.z, position.x) / 6.2831853 + 0.5, position.y);
             vData = aData;
             vCol = aCol.rgb;
+            vGain = aCol.w;
             vSunVis = groundSunVisibility(wp.xz);
             computeHaze(wp);
             gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
@@ -758,6 +1032,7 @@ export class Novas {
           varying vec2 vUv;
           varying vec4 vData;
           varying vec3 vCol;
+          varying float vGain;
           varying float vSunVis;
           ${dust}
           void main() {
@@ -770,8 +1045,8 @@ export class Novas {
             // Billowing powder: dense at the foot, ragged at the top.
             float body = pow(1.0 - y, 1.3) * smoothstep(0.0, 0.08, y + 0.05);
             float a = smoothstep(0.3, 0.8, n * 0.8 + n2 * 0.5 - y * 0.45) * body * (1.0 - t) * 1.1;
-            vec3 emit = vCol * pow(1.0 - y, 6.0) * (1.0 - t) * 0.2;
-            vec4 o = hazePremul(emit * uEmit, dustLight(vSunVis), clamp(a, 0.0, 1.0), vHazeF);
+            vec3 emit = vCol * pow(1.0 - y, 6.0) * (1.0 - t) * 0.2 * vGain;
+            vec4 o = hazePremul(emit * uEmit, dustLight(vSunVis), clamp(a * vGain, 0.0, 1.0), vHazeF);
             if (o.a < 0.003) discard;
             gl_FragColor = fxOut(o, bgSnow());
           }`,
@@ -797,12 +1072,14 @@ export class Novas {
           varying vec2 vP;
           varying vec4 vData;
           varying vec3 vCol;
+          varying float vGain;
           varying float vSunVis;
           void main() {
             vec3 wp = aPos.xyz + position * aPos.w + vec3(0.0, 0.06, 0.0);
             vP = position.xz;
             vData = aData;
             vCol = aCol.rgb;
+            vGain = aCol.w;
             vSunVis = groundSunVisibility(wp.xz);
             computeHaze(wp);
             gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
@@ -813,6 +1090,7 @@ export class Novas {
           varying vec2 vP;
           varying vec4 vData;
           varying vec3 vCol;
+          varying float vGain;
           varying float vSunVis;
           ${dust}
           void main() {
@@ -825,7 +1103,8 @@ export class Novas {
             float crest = exp(-pow((d - 0.97) / 0.1, 2.0));
             float scuff = smoothstep(0.62, 0.95, d) * (1.0 - smoothstep(0.95, 1.1, d));
             float a = clamp((crest * 0.6 + scuff * 0.25) * smoothstep(0.2, 0.8, n + 0.1) * (1.0 - t), 0.0, 1.0);
-            vec3 emit = vCol * crest * (1.0 - t) * (1.0 - t) * 0.25;
+            // A crisp crest (the blast's reach); the scuffed band inside it softens under the budget.
+            vec3 emit = vCol * crest * (1.0 - t) * (1.0 - t) * 0.25 * vGain;
             vec4 o = hazePremul(emit * uEmit, dustLight(vSunVis) * 1.05, a, vHazeF);
             if (o.a < 0.003) discard;
             gl_FragColor = fxOut(o, bgSnow());
@@ -839,7 +1118,8 @@ export class Novas {
     );
   }
 
-  burst(x: number, z: number, radius: number, color: number): void {
+  /** A blast from (x, z) out to `radius`; `spikes` throws up the crown of ice (Frost Nova's own). */
+  burst(x: number, z: number, radius: number, color: number, spikes = false): void {
     let k = -1;
     for (let i = 0; i < NOVA_CAP; i++) {
       if (this.t[i] >= 1) {
@@ -857,11 +1137,13 @@ export class Novas {
     this.z[k] = z;
     this.y[k] = duneHeight(x, z);
     this.col[k] = color;
+    this.crown[k] = spikes ? 1 : 0;
   }
 
   tick(dt: number): void {
     this.wall.begin();
     this.front.begin();
+    let spikes = 0;
     for (let k = 0; k < NOVA_CAP; k++) {
       if (this.t[k] >= 1) continue;
       this.t[k] = Math.min(1, this.t[k] + dt / 0.6);
@@ -871,24 +1153,56 @@ export class Novas {
       const r = Math.max(0.05, this.r[k] * e);
       const R = this.r[k];
       tmpC.set(this.col[k]);
-      // The powder stands tallest early and close, settling as it spreads.
-      const h = Math.min(1.6, 0.35 + 0.07 * R) * (0.55 + 0.9 * t) * (1 - 0.5 * t);
+      if (this.crown[k]) spikes = this.placeSpikes(k, t, spikes);
+      // The powder stands tallest early and close, settling as it spreads (kept under the crowd's
+      // knees: a big nova's wall of powder used to haze over the whole horde).
+      const h = Math.min(0.45, 0.22 + 0.025 * R) * (0.55 + 0.9 * t) * (1 - 0.5 * t);
       const i = this.wall.add();
       this.wall.set('aPos', i, this.x[k], this.y[k] - 0.05, this.z[k], r);
       this.wall.set('aData', i, t, R, h, k * 0.31);
-      this.wall.set('aCol', i, tmpC.r, tmpC.g, tmpC.b, 0);
+      this.wall.set('aCol', i, tmpC.r, tmpC.g, tmpC.b, 0.5 + 0.5 * fx.gain);
       const j = this.front.add();
       this.front.set('aPos', j, this.x[k], this.y[k], this.z[k], r);
       this.front.set('aData', j, t, R, 0, k * 0.53);
-      this.front.set('aCol', j, tmpC.r, tmpC.g, tmpC.b, 0);
+      this.front.set('aCol', j, tmpC.r, tmpC.g, tmpC.b, 0.75 + 0.25 * fx.gain);
       // The flash on the snow where it went off, in its colour.
       if (this.ground && t < 0.35) {
         const f = 1 - t / 0.35;
-        this.ground.glow.add(this.x[k], this.z[k], Math.min(8, 1.5 + R * 0.4), tmpC.r, tmpC.g, tmpC.b, 0.4 * f * f, k);
+        this.ground.glow.add(this.x[k], this.z[k], Math.min(8, 1.5 + R * 0.4), tmpC.r, tmpC.g, tmpC.b, 0.4 * f * f * (0.5 + 0.5 * fx.gain), k);
       }
     }
     this.wall.end();
     this.front.end();
+    this.spikes.count = spikes;
+    if (spikes > 0) flush(this.spikes);
+  }
+
+  /**
+   * A crown of ice spikes riding nova k's front: they burst up as it sets off, leaning outward, and sink
+   * back into the snow as it spreads; clear ice lit from within in the blast's colour.
+   */
+  private placeSpikes(k: number, t: number, at: number): number {
+    const R = this.r[k];
+    const e = 1 - Math.pow(1 - t, 3);
+    const grow = Math.min(1, t / 0.12);
+    const sink = Math.pow(1 - t, 1.6);
+    const tall = Math.min(1.4, 0.45 + 0.07 * R);
+    for (let q = 0; q < NOVA_SPIKES; q++) {
+      const r1 = spikeRnd(q + k * 61);
+      const r2 = spikeRnd(q + k * 61 + 37);
+      const a = (q / NOVA_SPIKES) * Math.PI * 2 + (r1 - 0.5) * 0.18;
+      const rr = Math.max(0.05, R * e * (0.9 + 0.1 * r2));
+      const h = tall * (0.55 + 0.45 * r2) * grow * sink;
+      if (h < 0.01) continue;
+      tmpP.set(this.x[k] + Math.sin(a) * rr, this.y[k] - 0.05, this.z[k] + Math.cos(a) * rr);
+      tmpQ.setFromEuler(tmpE.set(0.3 + 0.35 * r1, a, (r2 - 0.5) * 0.4, 'YXZ'));
+      const w = 0.7 + 0.6 * r1;
+      tmpS.set(w, h, w);
+      this.spikes.setMatrixAt(at, tmpM.compose(tmpP, tmpQ, tmpS));
+      this.spikes.setColorAt(at, tmpC.set(this.col[k]).multiplyScalar(0.6));
+      at++;
+    }
+    return at;
   }
 }
 
@@ -916,6 +1230,8 @@ export class Zaps {
   private readonly pts = new Float32Array((ZAP_MAIN + 1) * 3);
   private readonly bpts = new Float32Array((ZAP_BRANCH + 1) * 3);
   private readonly corona = { value: new Color(0.35, 0.55, 1.0) };
+  /** The corona softens under the glow budget; the white-hot spine never does. */
+  private readonly gain = { value: 1 };
   private readonly eye = new Vector3();
   private n = 0;
   private v = 0;
@@ -931,7 +1247,7 @@ export class Zaps {
       fxMaterial({
         blend: 'additive',
         side: DoubleSide,
-        uniforms: { uCorona: this.corona },
+        uniforms: { uCorona: this.corona, uGain: this.gain },
         vertexShader: /* glsl */ `
           ${FX_VERT}
           attribute vec4 aRib; // across -1..1, fade, thickness, branch
@@ -945,13 +1261,14 @@ export class Zaps {
         fragmentShader: /* glsl */ `
           ${FX_FRAG}
           uniform vec3 uCorona;
+          uniform float uGain;
           varying vec4 vRibA;
           void main() {
             float x = vRibA.x;
             float fade = vRibA.y;
             float core = exp(-x * x * 160.0 / vRibA.z);
             float corona = exp(-x * x * 6.0) * 0.8 + exp(-x * x * 30.0) * 0.6;
-            vec3 col = vec3(1.0, 0.97, 1.0) * core * 30.0 + uCorona * corona * 2.2;
+            vec3 col = vec3(1.0, 0.97, 1.0) * core * 30.0 + uCorona * corona * 2.2 * (0.35 + 0.65 * uGain);
             col *= fade * (vRibA.w > 0.5 ? 0.5 : 1.0) * uEmit * (1.0 - vHazeF);
             gl_FragColor = fxOut(vec4(col, 0.0), bgAir());
           }`,
@@ -1047,8 +1364,14 @@ export class Zaps {
     this.rib[v * 4 + 3] = branch;
   }
 
+  /** Bolts showing this frame (for the glow budget). */
+  get live(): number {
+    return this.n;
+  }
+
   tick(dt: number, eye?: Vector3): void {
     if (eye) this.eye.copy(eye);
+    this.gain.value = fx.gain;
     let w = 0;
     this.v = 0;
     const P = this.pts;
@@ -1274,38 +1597,16 @@ export class Gems {
 function labelSprite(text: string, color: string): Sprite {
   const canvas = document.createElement('canvas');
   canvas.width = 512;
-  canvas.height = 128;
+  canvas.height = 160;
   const ctx = canvas.getContext('2d')!;
-  const g = ctx.createLinearGradient(0, 14, 0, 114);
-  g.addColorStop(0, 'rgba(22,28,40,0.86)');
-  g.addColorStop(1, 'rgba(8,11,18,0.86)');
-  ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.roundRect(8, 18, 496, 92, 18);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(220,235,255,0.28)';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.roundRect(26, 38, 8, 52, 4);
-  ctx.fill();
-  ctx.fillStyle = '#f2f6ff';
   ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  let size = 54;
-  ctx.font = `700 ${size}px system-ui, sans-serif`;
-  while (ctx.measureText(text).width > 420 && size > 24) {
-    size -= 4;
-    ctx.font = `700 ${size}px system-ui, sans-serif`;
-  }
-  ctx.shadowColor = color;
-  ctx.shadowBlur = 10;
-  ctx.fillText(text, 270, 66);
+  const name = text.toUpperCase();
+  const size = fitLettering(ctx, name, 430, 76, 28);
+  drawLettering(ctx, name, 256, 80 + size * 0.36, size, color.length === 7 ? color : '#ffd166');
   const texture = new CanvasTexture(canvas);
   texture.colorSpace = SRGBColorSpace;
   const sprite = new Sprite(new SpriteMaterial({ map: texture, transparent: true, depthWrite: false, toneMapped: false }));
-  sprite.scale.set(1.2, 0.3, 1);
+  sprite.scale.set(1.2, 0.375, 1);
   return sprite;
 }
 
