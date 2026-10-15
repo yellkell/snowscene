@@ -90,6 +90,8 @@ const GLOBE_CHROMA = new Color(1.48, 0.917, 0.414);
  * renderer itself stays at exposure 1 (the fire, the torch and the glider parts are graded for that).
  */
 export const CAVE_EXPOSURE = 16;
+/** The renderer's exposure inside the cave (on top of CAVE_EXPOSURE's grade). */
+const CAVE_VIEW_EXPOSURE = 1.3;
 /** The pool's surface in cave space (cave-build.ts POOL_Y; not imported, cave-build imports this file). */
 const POOL_LOCAL_Y = -0.32;
 /** How many lanterns' glints the wet ice and the pool evaluate (the nearest few). */
@@ -960,7 +962,8 @@ export class CaveLook {
     if (i.beacon > 0.01 && this.beaconAt.distanceToSquared(i.head) < 36) {
       B.uFire.value.set(this.beaconAt.x, this.beaconAt.y + 0.3, this.beaconAt.z, 60 * fire);
     }
-    bakedView.exposure = 1;
+    // a third of a stop over the look-dev grade: in the headset the timber in the shadows read too dark
+    bakedView.exposure = CAVE_VIEW_EXPOSURE;
   }
 }
 

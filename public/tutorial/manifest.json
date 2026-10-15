@@ -31,17 +31,17 @@
    "mesh": "wall.glb",
    "albedo": "wall_albedo.webp",
    "light": "wall_light.webp",
-   "sun_max": 0.026466093957424164,
-   "sky_max": 0.8959728479385376,
+   "sun_max": 0.02059181220829487,
+   "sky_max": 0.920606791973114,
    "tris": 45600
   },
   "bands": {
    "mesh": "bands.glb",
    "albedo": "bands_albedo.webp",
    "light": "bands_light.webp",
-   "sun_max": 0.44217047095298767,
-   "sky_max": 0.9892939329147339,
-   "tris": 50708
+   "sun_max": 0.03701072186231613,
+   "sky_max": 0.9176515340805054,
+   "tris": 63222
   },
   "bluff": {
    "mesh": "bluff.glb",
@@ -71,9 +71,9 @@
    "mesh": "props.glb",
    "albedo": "props_albedo.webp",
    "light": "props_light.webp",
-   "sun_max": 0.088616743683815,
-   "sky_max": 0.9293152093887329,
-   "tris": 222227
+   "sun_max": 0.12331335991621017,
+   "sky_max": 0.9437633156776428,
+   "tris": 292382
   },
   "rim": {
    "mesh": "rim.glb",

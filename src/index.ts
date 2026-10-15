@@ -95,6 +95,7 @@ World.create(
       loadTexture,
       lodDebug,
       lodStats,
+      look: world.getSystem(DesktopLookSystem),
     };
     // Debug bridge for tools that can only navigate and read the console: #js=<code> evaluates
     // <code> (with `s` = this handle) and logs the result.

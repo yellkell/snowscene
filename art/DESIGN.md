@@ -147,3 +147,21 @@ layers, draws by family) against the dist server; check stand-ins with `node art
 - **Cave ice.** The triplanar fine-ice fetches are skipped past 12 m, the scallop normals and lantern
   glints where the ice is dry (most of it).
 - **Horde.** LOD budgets 70k / 80k triangles for the near bands; LOD2 counts unchanged (the mass stays).
+
+## 7. Fixes from the first headset play (2026-10-15)
+
+- **Flicker in the cave** was z-fighting: 730 pairs of coplanar faces between pieces (rails overlapping at
+  their joins, handrails flush with posts), and Draco quantising positions to a 2.4 mm grid over the 40 m
+  works, which snapped near-flush faces into one plane. `cavekit.separate_pieces` (run twice in the works and
+  machines bakes) moves every piece out along its normals by 1-6 mm, pieces that share a plane in the same
+  place always on different levels; the cave exports at 20-bit positions. `art/scripts/zfight_scan.py` counts
+  what is left (106 pairs, sub-millimetre, none visible in a 1 mm camera-nudge flicker test).
+- **Snow caps** were metaball sheets at 1.5 cm decimated to 1-2 %: shredded into black gaps and slivers. Now
+  meshed at 3 cm, 500 triangles a rock, and `regions.drop_slivers` strips loose bits after decimation.
+- **Scanned cliff bands either side of the wall** (L1, R1, LE, RE) are open shells. Standing taller than the
+  summit they showed their open tops and backs up there (see-through rock, black slivers by the flag).
+  `tutorial_build.under_summit` lowers each until every part of it behind the face line is under the snow.
+  (Solidifying the scans doesn't work: before decimation the thin shell folds into itself, after it the back
+  skin has nothing in the HIGH to bake from and comes out black.)
+- **The cornice** is worn back to a thin crust where the climb tops out (`build_cornice(exit_x=...)`), so the
+  two lip holds stand clear of the snow.

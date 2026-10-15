@@ -329,7 +329,9 @@ export class SceneSetupSystem extends createSystem({}) {
       const fog = this.world.scene.fog as Fog | null;
       this.baked.look.apply({ storm: weatherHooks.storm, fogFar: fog ? fog.far : 5000, indoors: game.indoors });
       this.baked.sky?.position.copy(this.head);
-      this.baked.update(dt, this.head);
+      // from the launch deck to the landing the forest stays on its stand-ins: no trees popping below you
+      const phase = game.phase.peek();
+      this.baked.update(dt, this.head, phase === Phase.Launch || phase === Phase.Gliding);
       this.world.renderer.toneMapping = AgXToneMapping;
       this.world.renderer.toneMappingExposure = bakedView.exposure;
     }
@@ -373,7 +375,7 @@ export class SceneSetupSystem extends createSystem({}) {
     if (this.bakedFlag) {
       this.puffs.update(dt);
       this.updateFade(dt);
-      this.bakedFlag.update(time);
+      this.bakedFlag.update(time, weatherHooks.windYaw, weatherHooks.windSpeed);
       return;
     }
     // Nothing that moves casts a shadow on the tutorial's cliff (the poles

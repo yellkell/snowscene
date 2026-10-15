@@ -83,6 +83,31 @@ def plant_forest(variants):
     return out
 
 
+def under_summit(inst, x, margin=0.35):
+    """The scans either side of the wall are open shells (only the face toward the bowl). Standing taller
+    than the summit, they showed their open tops and backs from up there: you looked through them, their
+    ragged edges black slivers in the air. Lower one until its top is under the summit snow beside it; from
+    the bowl it still shoulders the wall. Every part of it behind the line of the face (the summit side) is
+    checked against the snow right above it: a wide scan's corner poked up where the summit dips."""
+    bpy.context.view_layer.update()
+    face_y = -LAYOUT['cliff']['faceZ']
+    sink = 0.0
+    for o in inst.instance_collection.all_objects:
+        if o.type != 'MESH':
+            continue
+        mw = inst.matrix_world @ o.matrix_world
+        for i, v in enumerate(o.data.vertices):
+            if i % 5:
+                continue
+            p = mw @ v.co
+            if p.y > face_y + 0.5:
+                sink = max(sink, p.z - (H(p.x, p.y) - margin))
+    if sink > 0:
+        inst.location.z -= sink
+        print('band', inst.name, 'lowered', round(sink, 2), flush=True)
+    bpy.context.view_layer.update()
+
+
 def place_rocks(models):
     """The game's talus and trail boulders as half-buried, snow-capped granite."""
     props = S.coll('PROPS', S.coll('HIGH'))
@@ -118,12 +143,13 @@ def main():
     cc = S.coll('CLIFF', S.coll('HIGH'))
     face, info = CL.build_face(cc, holds=LAYOUT['holds'])
     CL.build_icicles(cc, info)
-    CL.build_cornice(cc, info)
+    lips = [h['p'][0] for h in LAYOUT['holds'] if h.get('lip')]
+    CL.build_cornice(cc, info, exit_x=(min(lips), max(lips)) if lips else None)
     # The wall is the climbable heart of a band of rock across the couloir: scanned cliff faces
     # (re-graded to the same cold granite) shoulder it on both sides and step up the slopes.
     from lib import rocks as RK
     bands = {}
-    for mid in ('mountainside', 'namaqualand_cliff_02', 'namaqualand_cliff_01'):
+    for mid in ('mountainside', 'namaqualand_cliff_01'):
         objs = S.import_model(mid)
         for o in objs:
             for m in o.data.materials:
@@ -136,11 +162,15 @@ def main():
     base = C['CLIFF_BASE_Y']
     for name, mid, dx, dy, dz, sc_, rz in (
             ('L1', 'mountainside', -13.2, 1.2, -2.2, 1.0, 0.12),
-            ('R1', 'namaqualand_cliff_02', 18.0, 1.6, -1.8, 0.95, -0.08),
+            # (namaqualand_cliff_02's thin overhanging flakes, seen from the summit against the sky, read as
+            # black chips hanging in the air: the mountainside scan, turned, stands here instead)
+            ('R1', 'mountainside', 18.0, 1.6, -1.8, 0.9, -0.3),
             ('L2', 'namaqualand_cliff_01', -24.0, 4.5, 1.5, 1.3, 0.3),
             ('R2', 'mountainside', 30.0, 5.0, 2.5, 1.1, -0.35)):
         x = cx + dx
-        S.instance(bands[mid], f'BAND_{name}', (x, fy + dy, max(base + dz, H(x, fy + dy) - 1.5)), rz, sc_, parent_coll=cc)
+        inst = S.instance(bands[mid], f'BAND_{name}', (x, fy + dy, max(base + dz, H(x, fy + dy) - 1.5)), rz, sc_, parent_coll=cc)
+        if name in ('L1', 'R1'):
+            under_summit(inst, x)
     # Buttresses that take the wall's edges into the mountain: without them the face's straight sides
     # stand bare in the snow and it reads as a block. Each overlaps the outer 1.8 m of the face (the holds
     # are in the middle), stands a little proud of it and roots a metre below its foot.
@@ -164,6 +194,7 @@ def main():
     for name, mid, rz, sc_, side in (('LE', 'mountainside', 0.18, 1.45, -1), ('RE', 'mountainside', math.pi - 0.22, 1.4, 1)):
         inst = S.instance(bands[mid], f'BAND_{name}', (f_x0 if side < 0 else f_x1, f_y0, f_z0), rz, sc_, parent_coll=cc)
         fit(inst, x1=f_x0 - 1.2) if side < 0 else fit(inst, x0=f_x1 + 1.2)
+        under_summit(inst, inst.location.x)
     # Crags along the broken skyline outside the lane, set back into the summit snow, and a talus apron of
     # blocks that have come off the band, lying in the snow at its foot (clear of the climb's start).
     rocks_big = [k for k in ('namaqualand_boulder_04', 'namaqualand_boulder_03', 'namaqualand_boulder_06', 'boulder_01') if k in models]

@@ -51,6 +51,9 @@ export const weatherHooks = {
   stormFog: null as Color | null,
   /** Falling-snow colour (display space; null = white). Dimmed at night. */
   snowTint: null as Color | null,
+  /** The wind the snow blows in: heading (radians; it blows toward (cos, sin) in x, z) and speed (m/s). */
+  windYaw: 0,
+  windSpeed: 0,
 };
 const SNOW_WHITE = new Color(1, 1, 1);
 
@@ -230,6 +233,8 @@ export class WeatherSystem extends createSystem({}) {
     forestUniforms.uWind.value = 0.35 + windSpeed * 0.12;
     const wx = Math.cos(windYaw) * windSpeed;
     const wz = Math.sin(windYaw) * windSpeed;
+    weatherHooks.windYaw = windYaw;
+    weatherHooks.windSpeed = windSpeed;
 
     // Falling snow: denser and more wind-driven as the storm builds.
     this.snowOffset.x += wx * dt;

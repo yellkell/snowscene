@@ -1,6 +1,7 @@
 /**
- * The summit flag, for the baked mountain: nylon that streams and flutters in the wind (animated on the
- * GPU, so no per-frame vertex upload) and is lit like everything else that moves (dynamicLight) — the
+ * The summit flag, for the baked mountain: nylon that streams and flutters in the wind the snow blows in
+ * (it turns downwind, flaps harder and faster as the wind rises, hangs down the pole in a lull; animated on
+ * the GPU, so no per-frame vertex upload) and is lit like everything else that moves (dynamicLight) — the
  * low sun glows through it from behind — on an anodised pole with a gilt finial and its halyard.
  */
 
@@ -27,22 +28,28 @@ const FLAG_H = 0.7;
 const VERT = /* glsl */ `
   ${HAZE_VERT}
   uniform float uFlagTime;
+  uniform float uFlagPhase;
+  uniform float uWind;
   varying vec2 vUv;
   varying vec3 vN;
   varying vec3 vW;
-  // the cloth's offset at (x along from the hoist, y up): a wave travelling downwind, growing toward the
-  // fly, a faster flutter at the free end, and a little droop in the lulls
+  // the cloth at (x along from the hoist, y up): waves travelling downwind (their phase is the wind's own
+  // run, so they speed up and slow down with it), growing toward the fly; a flutter at the free end; and
+  // in the lulls it sags: each strip bends down more the further it is from the pole (the hoist stays on it)
   vec3 cloth(vec2 p) {
     float s = p.x / ${FLAG_W.toFixed(2)};
+    float w = uWind;
     float t = uFlagTime;
-    float gust = 0.75 + 0.25 * sin(t * 0.37) * sin(t * 0.23 + 1.0);
-    float ph = p.x * 5.2 - t * 6.5 * gust + p.y * 1.1;
-    float z = pow(s, 1.15) * (0.10 * sin(ph) + 0.035 * sin(2.3 * ph + 1.7 + p.y * 2.6)) * gust;
-    z += pow(s, 3.0) * 0.022 * sin(p.x * 17.0 - t * 19.0 + p.y * 5.0);
-    float droop = 0.06 * s * s * (1.1 - gust);
+    float ph = p.x * (5.6 - 1.6 * w) - uFlagPhase + p.y * 1.1;
+    float amp = 0.07 + 0.16 * w;
+    float z = pow(s, 1.1) * amp * (sin(ph) + 0.35 * sin(2.3 * ph + 1.7 + p.y * 2.6));
+    z += pow(s, 3.0) * (0.01 + 0.04 * w) * sin(p.x * 17.0 - uFlagPhase * 2.6 + p.y * 5.0);
     // the waves take up length: the fly end draws in as they deepen
-    float pull = 0.05 * s * gust;
-    return vec3(p.x * (1.0 - pull), p.y - droop, z);
+    float x = p.x * (1.0 - 0.06 * s * w);
+    // the sag: up to ~55 deg at the fly end in a calm, almost none in a gale; bent, not swung
+    float hang = (0.95 * (1.0 - w) * (1.0 - w) + 0.08 * (1.0 - w)) * smoothstep(0.0, 1.0, s);
+    float ch = cos(hang), sh = sin(hang);
+    return vec3(x * ch, p.y - x * sh + 0.02 * s * w * sin(ph * 0.5 + t), z);
   }
   void main() {
     vUv = uv;
@@ -105,7 +112,8 @@ function tagged(g: BufferGeometry, metal: number): BufferGeometry {
 }
 
 export interface BakedFlag {
-  update(time: number): void;
+  /** `windYaw`: the heading the wind blows toward (x, z = cos, sin); `windSpeed` in m/s. */
+  update(time: number, windYaw: number, windSpeed: number): void;
 }
 
 /**
@@ -125,7 +133,7 @@ export function bakeFlag(group: Group, cloth: Mesh): BakedFlag {
   halyard.position.set(-0.034, 1.55, 0.012);
   group.add(pole, finial, halyard);
 
-  const uniforms = { ...bakedLight, uFlagTime: { value: 0 } };
+  const uniforms = { ...bakedLight, uFlagTime: { value: 0 }, uFlagPhase: { value: 0 }, uWind: { value: 0.3 } };
   const g = new PlaneGeometry(FLAG_W, FLAG_H, 28, 12);
   g.translate(FLAG_W / 2, 0, 0);
   cloth.geometry.dispose();
@@ -140,9 +148,31 @@ export function bakeFlag(group: Group, cloth: Mesh): BakedFlag {
   cloth.position.set(0.03, 2.72, 0);
   // the waves move the cloth beyond its rest bounds
   cloth.frustumCulled = false;
+  let last = -1;
+  let yaw = 0;
+  let wind = 0.3;
+  let started = false;
   return {
-    update(time: number) {
+    update(time: number, windYaw: number, windSpeed: number) {
+      const dt = last < 0 ? 0 : Math.min(0.1, Math.max(0, time - last));
+      last = time;
+      // 0 a calm (it hangs), 1 a gale (it streams level and cracks)
+      const target = Math.min(1, Math.max(0.1, (windSpeed - 0.4) / 8));
+      wind += (target - wind) * Math.min(1, dt * 1.5);
+      // it swings round to stream downwind (the cloth runs along the group's +x): a heavy, damped turn
+      const want = -windYaw;
+      if (!started) {
+        yaw = want;
+        started = true;
+      }
+      let d = want - yaw;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      yaw += d * Math.min(1, dt * 0.8);
+      group.rotation.y = yaw;
       uniforms.uFlagTime.value = time;
+      uniforms.uWind.value = wind;
+      // the waves' run: faster in a stronger wind (integrated, so a change of speed never jumps them)
+      uniforms.uFlagPhase.value += dt * (3.5 + 11 * wind);
     },
   };
 }

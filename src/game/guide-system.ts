@@ -21,6 +21,7 @@ import { packRefs } from './backpack-system.js';
 import { survivors, survivorsControl } from './survivors/survivors-state.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt, yawForward } from './rig.js';
 import { fadeThen, game, PART_COUNT, Phase, requestRestart, setPhase, toast } from './state.js';
+import { equipment, PART_ITEMS } from './equipment.js';
 import { CLIFF_HEIGHT, WALL_S, WALL_Z } from './terrain.js';
 import { startTutorialKit } from './tutorial-kit.js';
 
@@ -178,6 +179,8 @@ export class GuideSystem extends createSystem({}) {
       game.partsFound.subscribe(() => this.refresh()),
       game.beaconLit.subscribe(() => this.refresh()),
       game.barHeld.subscribe(() => this.refresh()),
+      game.packOpen.subscribe(() => this.refresh()),
+      equipment.version.subscribe(() => this.refresh()),
       game.toast.subscribe(() => this.refresh()),
       survivors.active.subscribe(() => this.refresh()),
       survivors.dead.subscribe(() => this.refresh()),
@@ -246,15 +249,24 @@ export class GuideSystem extends createSystem({}) {
               : 'Press E to light the beacon.',
           hint: game.beaconLit.peek() ? '' : 'The basket glows where the flame must go',
         };
-      case Phase.Building:
+      case Phase.Building: {
+        // Walk them through it: open the pack, take a part out, fit it on the frame.
+        const placed = game.partsPlaced.peek();
+        const inHand = [equipment.inHand.left, equipment.inHand.right].some((i) => i !== null && PART_ITEMS.has(i));
+        const next = inHand
+          ? 'Now fit it onto the glider frame'
+          : game.packOpen.peek()
+            ? 'Close your hand on a glider part to take it out'
+            : 'Turn a palm up and look at it to open your backpack';
         return {
           step: 'STEP 5 OF 6',
           title: 'Build your glider',
           body: immersive
-            ? 'Take the glider parts you collected out of your backpack and assemble them here.'
-            : 'Press E to fit a part from your pack.',
-          hint: `${game.partsPlaced.peek()} of 3 fitted`,
+            ? 'Open your backpack (turn a palm up and look at it, or press A / X), pull out the glider parts you found in the cave and fit each one onto the frame.'
+            : 'Press E to take a glider part out of your pack and fit it onto the frame (B opens the pack).',
+          hint: immersive ? `${next} (${placed} of 3 fitted)` : `${placed} of 3 fitted`,
         };
+      }
       case Phase.Launch:
         return {
           step: 'STEP 5 OF 6',
@@ -441,7 +453,9 @@ export class GuideSystem extends createSystem({}) {
     // Snow Survivors: always out of the way (the end of a run offers its
     // choices as cards, like the upgrades).
     if (survivors.active.peek()) return true;
-    if (phase === Phase.Landed) return false;
+    // At the end, and while building the glider (its steps start with opening the pack, so they can't
+    // live in it): floating in front of you.
+    if (phase === Phase.Landed || phase === Phase.Building) return false;
     if (phase !== Phase.Poling) return true;
     // Tutorial trail: float with you for the first third of the slope.
     return game.distanceToCliff.peek() <= (WALL_S * 2) / 3;

@@ -42,8 +42,10 @@ def size_of(o):
 
 
 def rock_budget(o, tris):
+    # a snow cap needs enough triangles to stay one closed sheet over its rock (at 240 they shredded; its
+    # metaball mesh is coarse enough now that 500 keeps it whole)
     cap = 'snowcap' in o.name or o.data.name.startswith('Mesh')
-    return (240 if cap else 480) * min(2.2, max(0.6, size_of(o) / 1.6))
+    return (500 if cap else 480) * min(2.2, max(0.6, size_of(o) / 1.6))
 
 
 def dark_bulbs():
@@ -65,7 +67,7 @@ STAGES = {
     'wall': lambda: RGN.atlas_region('wall', [O['CLIFF_FACE'], O['CLIFF_ICICLES'], O['CORNICE']], OUT, 4096, 2048, SAMPLES,
                                      budget=lambda o, t: 42000 if 'FACE' in o.name else (t if 'ICICLE' in o.name else 3000)),
     'bands': lambda: RGN.atlas_region('bands', [o for o in coll_objs('CLIFF') if o.name.startswith('BAND_')], OUT, 2048, 1024,
-                                      SAMPLES, budget=lambda o, t: rock_budget(o, t) * 1.5 if ('CRAG' in o.name or 'TALUS' in o.name) else 5000,
+                                      SAMPLES, budget=lambda o, t: rock_budget(o, t) * 1.5 if ('CRAG' in o.name or 'TALUS' in o.name) else 6000,
                                       keep_uv=lambda o: ('CRAG' in o.name or 'TALUS' in o.name) and 'snowcap' not in o.name),
     'bluff': lambda: RGN.atlas_region('bluff', [O['BLUFF_FACE'], O['ADIT'], O['ADIT_SIGN_TEXT']], OUT, 4096, 2048, SAMPLES,
                                       budget=lambda o, t: 26000 if 'FACE' in o.name else t),

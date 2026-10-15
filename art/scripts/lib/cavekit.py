@@ -778,3 +778,75 @@ def point_light(name, at, power, color, radius, coll, channel):
     o['power'] = power
     coll.objects.link(o)
     return o
+
+
+def separate_pieces(objs):
+    """Two pieces' faces in one plane flicker in the headset (the depth test flips between them frame to
+    frame): rails overlapping at their joins, a handrail flush with the post it meets, a cleat on a beam.
+    Every piece (loose part) grows by a hair along its vertex normals, one of six levels, 1 to 6 mm; pieces
+    that have faces in a common plane in the same place (the only ones that can fight) always get different
+    levels (a greedy colouring of that graph), so flush faces end at least a millimetre apart, well inside
+    what the depth buffer resolves (zfight_scan.py checks)."""
+    import bmesh
+    from collections import defaultdict
+    LEVELS = [0.001 * (k + 1) for k in range(6)]
+    ANG, PLANE, CELL = 0.01, 0.0006, 1.0
+    parts = []          # list of vertex lists
+    owner = {}          # (object index, vertex index) -> part
+    meshes = []
+    buckets = defaultdict(set)
+    for oi, ob in enumerate(objs):
+        if ob.type != 'MESH':
+            continue
+        bm = bmesh.new()
+        bm.from_mesh(ob.data)
+        bm.normal_update()
+        meshes.append((ob, bm))
+        seen = set()
+        for v0 in bm.verts:
+            if v0.index in seen:
+                continue
+            stack, part = [v0], []
+            seen.add(v0.index)
+            while stack:
+                v = stack.pop()
+                part.append(v)
+                owner[(oi, v.index)] = len(parts)
+                for e in v.link_edges:
+                    w = e.other_vert(v)
+                    if w.index not in seen:
+                        seen.add(w.index)
+                        stack.append(w)
+            parts.append(part)
+        mw = ob.matrix_world
+        nm = mw.to_3x3().inverted().transposed()
+        for f in bm.faces:
+            if f.calc_area() < 1e-8:
+                continue
+            n = (nm @ f.normal).normalized()
+            c = mw @ f.calc_center_median()
+            d = n.dot(c)
+            key = (round(n.x / ANG), round(n.y / ANG), round(n.z / ANG), round(d / PLANE),
+                   int(c.x // CELL), int(c.y // CELL), int(c.z // CELL))
+            buckets[key].add(owner[(oi, f.verts[0].index)])
+    nbr = defaultdict(set)
+    for ps in buckets.values():
+        if len(ps) > 1:
+            for a in ps:
+                nbr[a] |= ps - {a}
+    level = [-1] * len(parts)
+    short = 0
+    for i in sorted(range(len(parts)), key=lambda i: -len(nbr[i])):
+        used = {level[j] for j in nbr[i] if level[j] >= 0}
+        free = [k for k in range(len(LEVELS)) if k not in used]
+        if not free:
+            short += 1
+        level[i] = free[0] if free else i % len(LEVELS)
+    for part, lv in zip(parts, level):
+        h = LEVELS[lv]
+        for v in part:
+            v.co += v.normal * h
+    for ob, bm in meshes:
+        bm.to_mesh(ob.data)
+        bm.free()
+    print('flush faces separated:', len(parts), 'pieces,', sum(1 for i in nbr if nbr[i]), 'in contact;', short, 'ran out of levels', flush=True)

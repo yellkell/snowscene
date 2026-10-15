@@ -232,7 +232,7 @@ def export(low, path, keep_wood=False, local=None):
     low.data.materials.clear()
     if local is not None:
         low.matrix_world = local.inverted() @ low.matrix_world
-    RGN.export_glb([low], path)
+    RGN.export_glb([low], path, pos_bits=20)
 
 
 def lit_bakes(name, low, light_res, high=(), extrusion=0.08, maxdist=0.2, keep=True):
@@ -301,6 +301,10 @@ def works_objects():
 def stage_works():
     objs = works_objects()
     low = realize_join('works', objs)
+    # every piece apart from its neighbours (the lanterns, plates and fittings come in as instances only
+    # here): flush faces of two pieces flicker in the headset
+    K.separate_pieces([low])
+    K.separate_pieces([low])  # again: an offset can land a face on another piece's plane
     tris = sum(len(p.vertices) - 2 for p in low.data.polygons)
     BK.log('works tris', tris)
     atlas_uv(low, margin=0.0005, angle=60)
@@ -426,6 +430,8 @@ def stage_machines(src=None, name='machines', size=2048):
         c.matrix_world = Matrix.Translation((i * 9.0, 400.0, -200.0)) @ Matrix.Rotation(0, 4, 'Z')
         c['src'] = o.name
         copies.append(c)
+    K.separate_pieces(copies)
+    K.separate_pieces(copies)
     atlas_uv(copies, margin=0.001, angle=60)
     ar = res(size)
     alb = bpy.data.images.new(name + '_alb', ar, ar, float_buffer=True)

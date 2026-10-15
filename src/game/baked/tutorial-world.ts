@@ -223,7 +223,8 @@ export interface TutorialWorld {
   /** The lake party's camp in party space (shown when the fire is lit). */
   party: Object3D | null;
   look: TutorialLook;
-  update(dt: number, head: Vector3): void;
+  /** `farOnly`: the forest stays on its stand-ins (the launch and the glide). */
+  update(dt: number, head: Vector3, farOnly?: boolean): void;
 }
 
 export async function loadTutorialWorld(): Promise<TutorialWorld> {
@@ -350,9 +351,9 @@ export async function loadTutorialWorld(): Promise<TutorialWorld> {
     deck,
     party,
     look,
-    update(dt: number, head: Vector3) {
+    update(dt: number, head: Vector3, farOnly = false) {
       bakedLight.uTime.value += dt;
-      forest?.update(dt, head);
+      forest?.update(dt, head, farOnly);
     },
   };
 }

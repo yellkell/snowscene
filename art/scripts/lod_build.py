@@ -140,7 +140,7 @@ def tris(o):
     return sum(len(p.vertices) - 2 for p in o.data.polygons)
 
 
-def export(objs, path, colors):
+def export(objs, path, colors, pos_bits=16):
     bpy.ops.object.select_all(action='DESELECT')
     for o in objs:
         o.select_set(True)
@@ -149,7 +149,7 @@ def export(objs, path, colors):
                               export_texcoords=True, export_normals=True, export_materials='NONE',
                               export_vertex_color='ACTIVE' if colors else 'NONE', export_attributes=False,
                               export_draco_mesh_compression_enable=True, export_draco_mesh_compression_level=7,
-                              export_draco_position_quantization=14, export_draco_normal_quantization=10,
+                              export_draco_position_quantization=pos_bits, export_draco_normal_quantization=10,
                               export_draco_texcoord_quantization=12, export_draco_color_quantization=10,
                               export_yup=True, export_extras=False)
 
@@ -195,7 +195,8 @@ def run(job, cfg):
     if len(groups) > 1:
         bpy.data.objects.remove(o)
     file = f'{name}_lod.glb'
-    export(out, os.path.join(PUB, d, file), colors)
+    # the cave's pieces sit a millimetre apart (cave_bake): a finer grid keeps them apart
+    export(out, os.path.join(PUB, d, file), colors, 20 if d == 'cave' else 16)
     lj = os.path.join(PUB, d, 'lod.json')
     meta = json.load(open(lj)) if os.path.exists(lj) else {}
     meta[name] = {'mesh': file, 'switch': cfg['switch'], 'ratio': cfg['ratio'], 'chunks': len(groups), 'tris': total}

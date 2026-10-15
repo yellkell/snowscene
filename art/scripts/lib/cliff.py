@@ -354,8 +354,11 @@ def ice_material():
     return m
 
 
-def build_cornice(coll, info, width=20.5):
-    """The summit lip: snow blown over the edge into a curled, overhanging cornice with a crisp edge."""
+def build_cornice(coll, info, width=20.5, exit_x=None):
+    """The summit lip: snow blown over the edge into a curled, overhanging cornice with a crisp edge.
+    `exit_x` (x0, x1): where the climb tops out (the lip holds). There the cornice is worn away to a thin
+    crust set back from the edge, so the last holds stand clear of the snow; it builds back up to full
+    over about a metre either side."""
     b = core.Builder('CORNICE', coll, smooth_angle=70)
     mat = SM.new('cornice_snow') if 'cornice_snow' in bpy.data.materials else None
     if mat is None or not mat.node_tree:
@@ -376,6 +379,11 @@ def build_cornice(coll, info, width=20.5):
         sm = lambda e: e * e * (3 - 2 * e)
         taper = 0.12 + 0.88 * sm(min(1.0, u / 0.16)) * sm(min(1.0, (1 - u) / 0.16))
         swell = 1 + 0.35 * math.sin(u * 11.3 + 0.7) * math.sin(u * 3.1 + 2.0)
+        # the climbers' exit: 1 = full cornice, down to 0 over the lip holds
+        worn = 1.0
+        if exit_x is not None:
+            gap = max(exit_x[0] - 0.45 - p.x, p.x - exit_x[1] - 0.45, 0.0)
+            worn = sm(min(1.0, gap / 1.1))
         # sit on the rock as it actually is here: the broken skyline, and the face's relief at the lip
         tl = float(info['topline'](p.x)) if 'topline' in info else top
         if 'X' in info:
@@ -388,7 +396,10 @@ def build_cornice(coll, info, width=20.5):
         for (dz, dy) in prof_base:
             # dz: out from the face (+toward climber), dy: up
             dz2 = (dz * (1 + over) if dz > 0 else dz) * (taper if dz > 0 else 1.0)
-            ring.append(b.bm.verts.new(Vector((p.x, -(fz + d_lip - 0.02 + dz2 * 0.9), tl - 0.08 + dy * (0.9 + over * 0.6) * taper * swell))))
+            # worn: no overhang (the crust stops 0.25 m back from the lip) and a fraction of the depth
+            dz2 = dz2 * worn + (min(dz2, 0.0) - 0.25) * (1 - worn)
+            h = dy * (0.9 + over * 0.6) * taper * swell * (0.25 + 0.75 * worn)
+            ring.append(b.bm.verts.new(Vector((p.x, -(fz + d_lip - 0.02 + dz2 * 0.9), tl - 0.08 * worn + h))))
         rings.append(ring)
     m = len(prof_base)
     for i in range(n):

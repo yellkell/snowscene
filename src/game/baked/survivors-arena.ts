@@ -386,6 +386,7 @@ export class Forest {
   private readonly local = new Vector3();
   private readonly m4 = new Matrix4();
   private timer = 0;
+  private farOnly = false;
 
   constructor(
     man: NonNullable<SurvivorsManifest['trees']>,
@@ -595,13 +596,17 @@ export class Forest {
     }
   }
 
-  /** Swap the trees nearest `head` (world) to real geometry, a few times a second. */
-  update(dt: number, head: Vector3): void {
+  /**
+   * Swap the trees nearest `head` (world) to real geometry, a few times a second; `farOnly` keeps every
+   * tree on its stand-in (flying over them, the swaps read as trees popping).
+   */
+  update(dt: number, head: Vector3, farOnly = false): void {
     this.timer -= dt;
-    if (this.timer > 0) return;
+    if (this.timer > 0 && farOnly === this.farOnly) return;
+    this.farOnly = farOnly;
     this.timer = 0.2;
     this.group.worldToLocal(this.local.copy(head));
-    const r2 = NEAR_RADIUS * NEAR_RADIUS;
+    const r2 = farOnly ? 0 : NEAR_RADIUS * NEAR_RADIUS;
     for (const im of this.near.values()) im.count = 0;
     const n = this.baseScale.length;
     let changed = false;

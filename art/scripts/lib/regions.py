@@ -38,14 +38,16 @@ def stale_lod(path):
         print(f'lod.json: dropped stale {stem} (re-run lod_build.py)', flush=True)
 
 
-def export_glb(objs, path, colors=False):
+def export_glb(objs, path, colors=False, pos_bits=14):
+    """`pos_bits`: Draco's position grid over the whole mesh. 14 bits over the cave's 40 m of timber is a 2.4 mm
+    grid, which snapped pieces held a millimetre apart back into one plane (they flickered): the cave uses 20."""
     stale_lod(path)
     BK.select_only(objs[0], objs[1:])
     bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', use_selection=True, export_apply=True,
                               export_texcoords=True, export_normals=True, export_materials='NONE',
                               export_vertex_color='ACTIVE' if colors else 'NONE', export_attributes=False,
                               export_draco_mesh_compression_enable=True, export_draco_mesh_compression_level=7,
-                              export_draco_position_quantization=14, export_draco_normal_quantization=10,
+                              export_draco_position_quantization=pos_bits, export_draco_normal_quantization=10,
                               export_draco_texcoord_quantization=12, export_draco_color_quantization=10,
                               export_yup=True, export_extras=True)
 
@@ -109,8 +111,51 @@ def realize(objs, dest):
     return out
 
 
+def drop_slivers(me, keep=0.05):
+    """After decimation: drop collapsed faces and loose bits (islands under `keep` of the biggest), which
+    otherwise hang in the air as dark slivers off a snow cap."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.calc_area() < 1e-7], context='FACES')
+    seen, islands = set(), []
+    for f in bm.faces:
+        if f in seen:
+            continue
+        stack, isl = [f], []
+        seen.add(f)
+        while stack:
+            g = stack.pop()
+            isl.append(g)
+            for e in g.edges:
+                for k in e.link_faces:
+                    if k not in seen:
+                        seen.add(k)
+                        stack.append(k)
+        islands.append((sum(g.calc_area() for g in isl), isl))
+    if islands:
+        big = max(a for a, _ in islands)
+        bmesh.ops.delete(bm, geom=[g for a, isl in islands if a < keep * big for g in isl], context='FACES')
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if not v.link_faces], context='VERTS')
+    bm.to_mesh(me)
+    bm.free()
+
+
+def solid_back(me, thickness):
+    """Close an open scan (only the face the camera saw) into a slab: a back skin `thickness` behind its
+    face and the rim between them, so from behind it is rock, not a see-through shell edged with slivers.
+    Done on the decimated piece (solidifying the dense scan first, decimation folded the thin shell into
+    itself)."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.solidify(bm, geom=bm.faces[:], thickness=-thickness)
+    bm.to_mesh(me)
+    bm.free()
+
+
 def atlas_region(name, objs, out, albedo_res, light_res, samples, budget=lambda o, tris: tris, hide=(),
-                 local=None, keep_uv=lambda o: False):
+                 local=None, keep_uv=lambda o: False, solid=lambda o: 0.0):
     """Bake `objs` into one atlas-mapped mesh. `budget(obj, tris)` -> target tris for each piece.
     `hide`: objects/collections to hide from rendering while baking (e.g. the originals).
     `local`: a world matrix whose inverse is applied before export (to export in an instance's space).
@@ -140,6 +185,12 @@ def atlas_region(name, objs, out, albedo_res, light_res, samples, budget=lambda 
         dg.update()
         me = bpy.data.meshes.new_from_object(o.evaluated_get(dg))
         bpy.data.objects.remove(o)
+        if target < tris and ('snowcap' in h.name or h.name.startswith('BAND_')):
+            drop_slivers(me)
+        t = solid(h)
+        if t > 0:
+            # in the piece's own units (its matrix carries the instance's scale)
+            solid_back(me, t / max(1e-6, h.matrix_world.to_scale().x))
         lo = bpy.data.objects.new('L_' + h.name, me)
         lo.matrix_world = h.matrix_world
         stage.objects.link(lo)

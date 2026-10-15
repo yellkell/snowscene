@@ -11,7 +11,7 @@
   "switch": 45,
   "ratio": 0.22,
   "chunks": 49,
-  "tris": 222227
+  "tris": 292382
  },
  "rim": {
   "mesh": "rim_lod.glb",
@@ -25,7 +25,7 @@
   "switch": 90,
   "ratio": 0.4,
   "chunks": 4,
-  "tris": 50593
+  "tris": 63222
  },
  "wall": {
   "mesh": "wall_lod.glb",

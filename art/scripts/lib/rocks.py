@@ -51,7 +51,9 @@ def snow_cap(ob, coll, seed=1, depth=0.12, min_nz=0.42, spacing=0.12, mat=None):
     count = int(min(900, max(6, total / (spacing * spacing))))
     pick = np.random.default_rng(seed).choice(len(cands), size=count, p=areas / total)
     mb = bpy.data.metaballs.new(ob.name + '_cap')
-    mb.resolution = mb.render_resolution = max(0.015, spacing * 0.22)
+    # not finer than the bake keeps: a cap meshed at 1.5 cm came out at tens of thousands of triangles and the
+    # atlas bake's decimation (to a few hundred) shredded it into gaps and loose slivers
+    mb.resolution = mb.render_resolution = max(0.03, spacing * 0.5)
     mb.threshold = 0.9
     for k in pick:
         c, n, _ = cands[k]

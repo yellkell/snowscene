@@ -794,6 +794,7 @@ def main():
     sc.render.engine = 'CYCLES'
     sc.view_settings.view_transform = 'AgX'
     sc.view_settings.exposure = 4.0
+    K.separate_pieces([o for c in (works_c, mach_c) for o in c.all_objects])
     out = os.environ.get('CAVE_BLEND_OUT') or os.path.join(WORK, 'cave.blend')
     bpy.ops.wm.save_as_mainfile(filepath=out, compress=False)
     print('saved', out, flush=True)

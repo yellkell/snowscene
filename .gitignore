@@ -54,3 +54,6 @@ art/work/
 
 # Art review renders (contact sheets, play-throughs, LOD checks): local only
 art/renders/
+
+# Python bytecode
+__pycache__/
