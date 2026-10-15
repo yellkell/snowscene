@@ -1,0 +1,23 @@
+{
+ "debris": {
+  "mesh": "debris_lod.glb",
+  "switch": 10,
+  "ratio": 0.3,
+  "chunks": 13,
+  "tris": 178372
+ },
+ "works": {
+  "mesh": "works_lod.glb",
+  "switch": 14,
+  "ratio": 0.5,
+  "chunks": 8,
+  "tris": 101652
+ },
+ "shell": {
+  "mesh": "shell_lod.glb",
+  "switch": 16,
+  "ratio": 0.45,
+  "chunks": 6,
+  "tris": 100608
+ }
+}

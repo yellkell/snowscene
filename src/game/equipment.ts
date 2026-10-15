@@ -1,8 +1,7 @@
 /**
  * What's in each hand and what's in the backpack. Pure state: the backpack
  * system moves items between pack and hands, and mechanics read it (poles
- * plant only when held, ice axes bite only when held, holds need a free
- * hand).
+ * plant only when held, holds need a free hand).
  */
 
 import { signal } from '@iwsdk/core';
@@ -10,14 +9,6 @@ import type { Handedness } from './hand-input.js';
 
 export const ItemIds = [
   'poles',
-  'axes',
-  'carabiner',
-  'headlamp',
-  'thermos',
-  'warmer',
-  'map',
-  'flare',
-  'glider',
   // The tutorial glider's parts, recovered from the cave.
   'leftWing',
   'rightWing',
@@ -26,18 +17,10 @@ export const ItemIds = [
 export type ItemId = (typeof ItemIds)[number];
 
 /** Items that come as a pair, one per hand. */
-export const PAIRED: ReadonlySet<ItemId> = new Set(['poles', 'axes']);
+export const PAIRED: ReadonlySet<ItemId> = new Set(['poles']);
 
 export const ITEM_LABELS: Record<ItemId, string> = {
   poles: 'Poles',
-  axes: 'Ice axes',
-  carabiner: 'Carabiner',
-  headlamp: 'Headlamp',
-  thermos: 'Thermos',
-  warmer: 'Hand warmer',
-  map: 'Map',
-  flare: 'Flare',
-  glider: 'Glider',
   leftWing: 'Left wing',
   rightWing: 'Right wing',
   controlBar: 'Control bar',
@@ -56,10 +39,6 @@ export const equipment = {
   inHand: { left: null as ItemId | null, right: null as ItemId | null },
   /** How many of each item are in the pack (excluding what's in hand). */
   pack: new Map<ItemId, number>(),
-  /** Headlamp is worn rather than held. */
-  headlampOn: signal(false),
-  /** Clipped to a fixed rope with the carabiner. */
-  clipped: signal(false),
   /** Bumped on any change so UI can refresh. */
   version: signal(0),
   /** Items that stay in your hands: you can't put them in the pack (the tutorial's poles). */
@@ -102,10 +81,6 @@ export function setPack(contents: Partial<Record<ItemId, number>>): void {
 
 export function holding(side: Handedness, item: ItemId): boolean {
   return equipment.inHand[side] === item;
-}
-
-export function handsFree(side: Handedness): boolean {
-  return equipment.inHand[side] === null;
 }
 
 /** Put whatever is in a hand back into the pack. */
@@ -159,13 +134,13 @@ export function clearHands(): void {
   changed();
 }
 
-/** Use up a single item held in a hand (thermos sip, warmer, flare). */
+/** Use up a single item held in a hand (a glider part fitted to the frame). */
 export function consume(side: Handedness): void {
   equipment.inHand[side] = null;
   changed();
 }
 
-/** Force a pair into both hands (tutorial start, respawn). */
+/** Force a pair into both hands (tutorial start, Snow Survivors start). */
 export function equipPair(item: ItemId): void {
   stowAll();
   if (packCount(item) > 0) take(item, 'right');

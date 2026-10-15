@@ -1,12 +1,8 @@
 /**
  * Wall climbing, for any wall the active level provides.
  *
- * Holds mode: reach a glowing hold, close your hand to grab it, then pull:
- * the world is locked to the grabbing hand, so pulling down lifts your body.
- *
- * Axes mode (ice): with ice axes in hand, swing a pick into the ice anywhere
- * on the face. A swing that hits the ice moving fast enough bites and holds
- * like a hold until you open your hand.
+ * Reach a glowing hold, close your hand to grab it, then pull: the world
+ * is locked to the grabbing hand, so pulling down lifts your body.
  *
  * The most recent grab drives movement, so you can go hand over hand. Let go
  * of everything and you slide gently back down. Once your head is over the
@@ -17,9 +13,9 @@
 
 import { createSystem, Entity, Mesh, MeshStandardMaterial, Vector3 } from '@iwsdk/core';
 import { audio } from './audio.js';
-import { clearHands, holding } from './equipment.js';
+import { clearHands } from './equipment.js';
 import { ClimbHold } from './game-components.js';
-import { HANDS, type Handedness } from './hand-input.js';
+import { HANDS, hands, type Handedness } from './hand-input.js';
 import { currentLevel, type ClimbWall } from './level.js';
 import { getHeadWorld, placeHeadAt } from './rig.js';
 import { sceneRefs } from './scene-system.js';
@@ -43,16 +39,31 @@ const MAX_SLIDE = 1.3;
  */
 const SMOOTH_BASE = 10;
 const SMOOTH_PER_SPEED = 80;
-/** Distance from the hand to the pick of a held ice axe. */
-const AXE_REACH = 0.42;
-/** Minimum swing speed toward the ice for a pick to bite (m/s). */
-const AXE_BITE_SPEED = 0.7;
+/**
+ * A tracked hand that jumps further than this in one frame (rig space), and
+ * faster than any real pull, is a tracking glitch (a hand found again after
+ * the cameras lost it): the climb picks up from the new spot instead of
+ * yanking the world.
+ */
+const GLITCH_JUMP = 0.07;
+const GLITCH_SPEED = 4.5;
+/** The world never follows the climbing hand faster than this (m/s). */
+const MAX_PULL_SPEED = 3.2;
+/**
+ * A climbing hand that drops out of tracking (reaching above your head, out
+ * of the cameras' view) keeps its hold this long while you hang still.
+ */
+const LOST_GRACE = 1.2;
+/** A climbing hand opening past this has let go of the pull: the world stops following it. */
+const SLACK_CLOSURE = 0.38;
 
 interface Grab {
-  /** The hold grabbed, or null for an axe placement. */
+  /** The hold grabbed (null while the hand is free). */
   hold: Entity | null;
   active: boolean;
   readonly anchor: Vector3;
+  /** Seconds this grab's hand has been out of tracking (0 = tracked). */
+  lost: number;
 }
 
 type Tween = {
@@ -62,12 +73,6 @@ type Tween = {
   to: Vector3;
   lift: number;
   done: () => void;
-};
-
-/** Hooks other systems can listen to (ice chips, hints). */
-export const climbEvents = {
-  onAxeBite: null as ((at: Vector3) => void) | null,
-  onNeedTool: null as ((tool: 'axes' | 'free-hands') => void) | null,
 };
 
 export class ClimbSystem extends createSystem({
@@ -84,26 +89,19 @@ export class ClimbSystem extends createSystem({
   private readonly delta = new Vector3();
   private readonly holdPos = new Vector3();
   private readonly rel = new Vector3();
-  private readonly pick = new Vector3();
-  private readonly prevHand: Record<Handedness, Vector3> = {
-    left: new Vector3(),
-    right: new Vector3(),
-  };
-  private readonly handVel: Record<Handedness, Vector3> = {
-    left: new Vector3(),
-    right: new Vector3(),
-  };
-  private needToolTimer = 0;
   /** Filtered hand positions in rig space (see SMOOTH_BASE). */
   private readonly smoothLocal: Record<Handedness, Vector3> = { left: new Vector3(), right: new Vector3() };
   private readonly smoothReady: Record<Handedness, boolean> = { left: false, right: false };
+  /** Last raw hand positions in rig space, and whether this frame's was a glitch. */
+  private readonly lastRaw: Record<Handedness, Vector3> = { left: new Vector3(), right: new Vector3() };
+  private readonly glitched: Record<Handedness, boolean> = { left: false, right: false };
   private readonly raw = new Vector3();
   private readonly smoothed = new Vector3();
 
   init(): void {
     this.grabs = {
-      left: { hold: null, active: false, anchor: new Vector3() },
-      right: { hold: null, active: false, anchor: new Vector3() },
+      left: { hold: null, active: false, anchor: new Vector3(), lost: 0 },
+      right: { hold: null, active: false, anchor: new Vector3(), lost: 0 },
     };
     this.cleanupFuncs.push(
       game.phase.subscribe((phase) => {
@@ -134,11 +132,11 @@ export class ClimbSystem extends createSystem({
     for (const grab of [this.grabs.left, this.grabs.right]) {
       grab.hold = null;
       grab.active = false;
+      grab.lost = 0;
     }
     this.active = null;
     this.airTime = 0;
     this.fallSpeed = 0;
-    this.needToolTimer = 0;
   }
 
   /** Distance out from the face (`out`) and offset along the lane (`along`). */
@@ -167,19 +165,12 @@ export class ClimbSystem extends createSystem({
   update(delta: number): void {
     const dt = Math.max(1e-3, Math.min(delta, 0.1));
     const phase = game.phase.peek();
-    for (const hand of HANDS) {
-      const side = hand.handedness;
-      const v = this.handVel[side];
-      this.delta.subVectors(hand.position, this.prevHand[side]).divideScalar(dt);
-      v.lerp(this.delta, 0.5);
-      this.prevHand[side].copy(hand.position);
-    }
     if (phase !== Phase.Climbing || !this.wall) {
       if (phase === Phase.Poling) this.updateHoldGlow(dt, false);
       return;
     }
     this.filterHands(dt);
-    this.updateHoldGlow(dt, this.wall.mode === 'holds');
+    this.updateHoldGlow(dt, true);
 
     if (this.tween) {
       this.runTween(dt);
@@ -195,10 +186,7 @@ export class ClimbSystem extends createSystem({
         rig.position.y += 1.1 * dt;
         this.airTime = 0;
         this.fallSpeed = 0;
-        if (Math.random() < dt * 2.5) {
-          if (this.wall.mode === 'axes') audio.axeBite();
-          else audio.clack();
-        }
+        if (Math.random() < dt * 2.5) audio.clack();
       } else {
         this.airTime += dt;
       }
@@ -233,7 +221,10 @@ export class ClimbSystem extends createSystem({
       }
       this.player.worldToLocal(this.raw.copy(hand.position));
       const s = this.smoothLocal[side];
-      if (!this.smoothReady[side]) {
+      const last = this.lastRaw[side];
+      this.glitched[side] = this.smoothReady[side] && this.raw.distanceTo(last) > Math.max(GLITCH_JUMP, GLITCH_SPEED * dt);
+      last.copy(this.raw);
+      if (!this.smoothReady[side] || this.glitched[side]) {
         s.copy(this.raw);
         this.smoothReady[side] = true;
         continue;
@@ -256,14 +247,20 @@ export class ClimbSystem extends createSystem({
   }
 
   private updateGrabs(dt: number): void {
-    const wall = this.wall!;
     for (const hand of HANDS) {
       const side = hand.handedness;
       const grab = this.grabs[side];
+      if (grab.active && (!hand.tracked || (grab.lost > 0 && !hand.grip))) {
+        // Out of the cameras' view: hang on where you are for a moment (and,
+        // once it is back, give the fist a moment to be seen again).
+        grab.lost += dt;
+        if (grab.lost < LOST_GRACE) continue;
+      }
       if (!hand.grip || !hand.tracked) {
         if (grab.active) {
           grab.active = false;
           grab.hold = null;
+          grab.lost = 0;
           if (this.active === side) {
             const other: Handedness = side === 'left' ? 'right' : 'left';
             this.active = this.grabs[other].active ? other : null;
@@ -273,57 +270,53 @@ export class ClimbSystem extends createSystem({
         }
         continue;
       }
-      if (grab.active) continue;
-
-      if (wall.mode === 'holds') {
-        // Close the hand on a hold, or reach onto one with it already closed.
-        const hold = hand.gripDown
-          ? this.nearestHold(hand.position, GRAB_RADIUS)
-          : this.nearestHold(hand.position, CATCH_RADIUS);
-        if (!hold) continue;
-        grab.hold = hold;
-        grab.active = true;
-        grab.anchor.copy(hand.position);
-        this.snapSmooth(side, hand.position);
-        this.active = side;
-        hold.setValue(ClimbHold, 'glow', 1);
-        audio.clack();
-        this.pulse(side, 0.45, 35);
-        const mesh = hold.object3D as Mesh;
-        sceneRefs.puffs?.emit(mesh.getWorldPosition(this.holdPos), 3, 0.4);
-        continue;
-      }
-
-      // Ice axes: the pick sits above the thumb (grip -Z).
-      if (!holding(side, 'axes')) {
-        this.needToolTimer += dt;
-        if (this.needToolTimer > 4) {
-          climbEvents.onNeedTool?.('axes');
-          this.needToolTimer = -20;
+      if (grab.active) {
+        // Back in view (or found again somewhere else): carry on from here.
+        if (grab.lost > 0 || this.glitched[side]) {
+          grab.lost = 0;
+          grab.anchor.copy(this.smoothHand(side));
         }
         continue;
       }
-      this.pick.set(0, 0, -AXE_REACH).applyQuaternion(hand.quaternion).add(hand.position);
-      const out = this.wallOut(this.pick);
-      const along = this.wallAlong(this.pick);
-      const towardWall = -this.handVel[side].dot(wall.normal);
-      const onFace = Math.abs(along) < wall.laneWidth / 2 + 0.5 && this.pick.y < wall.topY + 0.3;
-      if (onFace && out < 0.12 && out > -0.35 && towardWall > AXE_BITE_SPEED) {
-        grab.hold = null;
-        grab.active = true;
-        grab.anchor.copy(hand.position);
-        this.snapSmooth(side, hand.position);
-        this.active = side;
-        audio.axeBite();
-        this.pulse(side, 0.7, 50);
-        climbEvents.onAxeBite?.(this.pick);
-        sceneRefs.puffs?.emit(this.pick, 5, 0.5);
-      }
+
+      // Close the hand on a hold, or reach onto one with it already closed.
+      const hold = hand.gripDown
+        ? this.nearestHold(hand.position, GRAB_RADIUS)
+        : this.nearestHold(hand.position, CATCH_RADIUS);
+      if (!hold) continue;
+      grab.hold = hold;
+      grab.active = true;
+      grab.anchor.copy(hand.position);
+      this.snapSmooth(side, hand.position);
+      this.active = side;
+      hold.setValue(ClimbHold, 'glow', 1);
+      audio.clack();
+      this.pulse(side, 0.45, 35);
+      const mesh = hold.object3D as Mesh;
+      sceneRefs.puffs?.emit(mesh.getWorldPosition(this.holdPos), 3, 0.4);
     }
 
     if (this.active) {
-      const grab = this.grabs[this.active];
-      this.delta.subVectors(grab.anchor, this.smoothHand(this.active));
+      const side = this.active;
+      const grab = this.grabs[side];
+      if (grab.lost > 0) {
+        // Hanging on a hand the headset can't see: hold still.
+        this.airTime = 0;
+        this.fallSpeed = 0;
+        return;
+      }
+      if (hands[side].closure < SLACK_CLOSURE) {
+        // The hand is opening to let go: stop following it now (not after
+        // the release grace), so the reach that follows doesn't drag the view.
+        grab.anchor.copy(this.smoothHand(side));
+        this.airTime = 0;
+        this.fallSpeed = 0;
+        return;
+      }
+      this.delta.subVectors(grab.anchor, this.smoothHand(side));
+      // Never faster than a real pull: what is left is taken up next frame.
+      const step = MAX_PULL_SPEED * dt;
+      if (this.delta.lengthSq() > step * step) this.delta.setLength(step);
       // Hauling yourself up goes a little further than the pull itself. The
       // hand rides up with the body by that extra too, so move the anchor
       // with it (otherwise the next frame would pull you back down).

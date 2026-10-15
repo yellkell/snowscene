@@ -68,6 +68,7 @@ const KIND_LABEL = {
   passive: 'PASSIVE',
   evolution: 'EVOLUTION',
   heal: 'HEAL',
+  bonus: 'BONUS',
 } as const;
 
 interface Card {
@@ -511,7 +512,7 @@ export class UpgradeMenu {
   private drawHeader(title: string, color: string, sub: string): void {
     const { ctx, texture } = this.headerCanvas;
     const how = this.desktop ? `press 1–${this.count}` : 'poke a card';
-    drawTitle(ctx, HEAD_W, HEAD_H, title, sub ? `${sub} · ${how}` : `Time stopped · ${how}`, color, 104);
+    drawTitle(ctx, HEAD_W, HEAD_H, title, sub ? `${sub} · ${how}` : `Time stopped · ${how}`, color, 112);
     texture.needsUpdate = true;
   }
 
@@ -575,7 +576,7 @@ export class UpgradeMenu {
     ctx.textBaseline = 'middle';
 
     // The ribbon: what sort of thing it is.
-    const label = isNew ? 'NEW WEAPON' : KIND_LABEL[kind];
+    const label = u.ribbon ?? (isNew ? 'NEW WEAPON' : KIND_LABEL[kind]);
     ctx.font = '800 21px system-ui, sans-serif';
     setSpacing(ctx, 4);
     const lw = ctx.measureText(label).width + 48;
@@ -617,7 +618,7 @@ export class UpgradeMenu {
     ctx.lineWidth = 4;
     ctx.strokeStyle = evolution ? gold : shade(col, 0.55);
     ctx.stroke();
-    drawIcon(ctx, evolution ? 'evolution' : u.id, W / 2, ey, 44);
+    drawIcon(ctx, evolution ? 'evolution' : (u.icon ?? u.id), W / 2, ey, 44);
 
     // Its name, as big as fits.
     let size = 44;

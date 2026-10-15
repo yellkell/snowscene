@@ -18,15 +18,13 @@ import {
 } from '@iwsdk/core';
 import { audio } from './audio.js';
 import { packRefs } from './backpack-system.js';
-import { expControl } from './expedition/director/exp-control.js';
-import { SECTION_ORDER, type SectionId, SUMMIT_ELEV } from './expedition/exp-route.js';
-import { SECTION_NAMES } from './expedition/exp-layout.js';
-import { exp } from './expedition/exp-state.js';
-import { chuteState } from './expedition/slide/chute-state.js';
 import { survivors, survivorsControl } from './survivors/survivors-state.js';
-import { currentLevel } from './level.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt, yawForward } from './rig.js';
 import { fadeThen, game, PART_COUNT, Phase, requestRestart, setPhase, toast } from './state.js';
+import { equipment, PART_ITEMS } from './equipment.js';
+import { loadProgress } from './baked/loaders.js';
+import { bakedView } from './baked/light.js';
+import { offerXR } from './xr-offer.js';
 import { CLIFF_HEIGHT, WALL_S, WALL_Z } from './terrain.js';
 import { startTutorialKit } from './tutorial-kit.js';
 
@@ -54,10 +52,13 @@ export class GuideSystem extends createSystem({}) {
   private metricText!: UIKit.Text;
   private xrButton!: UIKit.Component;
   private restartButton!: UIKit.Component;
-  private expeditionButton!: UIKit.Component;
-  private skipButton!: UIKit.Component;
-  private expRestartButton!: UIKit.Component;
-  private tutorialButton!: UIKit.Component;
+  private loadRow!: UIKit.Component;
+  private loadLabel!: UIKit.Text;
+  private loadFill!: UIKit.Component;
+  /** The bar never runs backwards (more loads start as earlier ones finish). */
+  private loadShown = -1;
+  /** The baked world is in: Enter VR is offered. */
+  private worldReady = false;
   private survivorsButton!: UIKit.Component;
   private survivorsAgainButton!: UIKit.Component;
   private survivorsExitButton!: UIKit.Component;
@@ -81,15 +82,12 @@ export class GuideSystem extends createSystem({}) {
     // Score: "By the River" for the ascent, "Night Catch" from the moment
     // the beacon is lit, through the build on top of the rock and the glide.
     const updateMusic = () => {
-      // On the expedition the soundscape system owns the score.
-      if (exp.active.peek()) return;
       if (survivors.active.peek()) {
         audio.setMusic('night');
         return;
       }
       const phase = game.phase.peek();
       const built =
-        exp.summited.peek() ||
         game.beaconLit.peek() ||
         game.partsPlaced.peek() >= PART_COUNT ||
         phase === Phase.Launch ||
@@ -100,7 +98,6 @@ export class GuideSystem extends createSystem({}) {
     this.cleanupFuncs.push(
       game.phase.subscribe(updateMusic),
       game.partsPlaced.subscribe(updateMusic),
-      exp.summited.subscribe(updateMusic),
       game.beaconLit.subscribe(updateMusic),
       survivors.active.subscribe(updateMusic),
     );
@@ -144,35 +141,26 @@ export class GuideSystem extends createSystem({}) {
     this.metricText = panel.requireElementById<UIKit.Text>('guide-metric');
     this.xrButton = panel.requireElementById('xr-button');
     this.restartButton = panel.requireElementById('restart-button');
+    this.loadRow = panel.requireElementById('load-row');
+    this.loadLabel = panel.requireElementById<UIKit.Text>('load-label');
+    this.loadFill = panel.requireElementById('load-fill');
     this.stepText.name = 'guide-step';
     this.titleText.name = 'guide-title';
     this.bodyText.name = 'guide-body';
     this.xrButton.name = 'xr-button';
     this.restartButton.name = 'restart-button';
-    this.expeditionButton = panel.requireElementById('expedition-button');
-    this.skipButton = panel.requireElementById('skip-button');
-    this.expRestartButton = panel.requireElementById('exp-restart-button');
-    this.tutorialButton = panel.requireElementById('tutorial-button');
     this.survivorsButton = panel.requireElementById('survivors-button');
     this.survivorsAgainButton = panel.requireElementById('survivors-again-button');
     this.survivorsExitButton = panel.requireElementById('survivors-exit-button');
     this.survivorsButton.name = 'survivors-button';
     this.survivorsAgainButton.name = 'survivors-again-button';
     this.survivorsExitButton.name = 'survivors-exit-button';
-    this.expeditionButton.name = 'expedition-button';
-    this.skipButton.name = 'skip-button';
-    this.expRestartButton.name = 'exp-restart-button';
-    this.tutorialButton.name = 'tutorial-button';
-    const expButtons: Array<[UIKit.Component, () => void]> = [
+    const modeButtons: Array<[UIKit.Component, () => void]> = [
       [this.survivorsButton, () => survivorsControl.start()],
       [this.survivorsAgainButton, () => survivorsControl.start()],
       [this.survivorsExitButton, () => survivorsControl.exit()],
-      [this.expeditionButton, () => expControl.start()],
-      [this.skipButton, () => expControl.skipAhead()],
-      [this.expRestartButton, () => expControl.restart()],
-      [this.tutorialButton, () => expControl.toTutorial()],
     ];
-    for (const [button, action] of expButtons) {
+    for (const [button, action] of modeButtons) {
       const onClick = () => {
         audio.unlock();
         action();
@@ -204,18 +192,11 @@ export class GuideSystem extends createSystem({}) {
       game.partsFound.subscribe(() => this.refresh()),
       game.beaconLit.subscribe(() => this.refresh()),
       game.barHeld.subscribe(() => this.refresh()),
+      game.packOpen.subscribe(() => this.refresh()),
+      equipment.version.subscribe(() => this.refresh()),
       game.toast.subscribe(() => this.refresh()),
-
-      exp.active.subscribe(() => this.refresh()),
-      exp.section.subscribe(() => this.refresh()),
-      exp.summited.subscribe(() => this.refresh()),
-      chuteState.arrived.subscribe(() => this.refresh()),
-      exp.finished.subscribe(() => this.refresh()),
       survivors.active.subscribe(() => this.refresh()),
       survivors.dead.subscribe(() => this.refresh()),
-      expControl.hint.subscribe(() => this.refresh()),
-      expControl.camp.subscribe(() => this.refresh()),
-      expControl.wall.subscribe(() => this.refresh()),
       this.world.visibilityState.subscribe((state) => {
         if (state !== VisibilityState.NonImmersive) audio.unlock();
         this.anchored = false;
@@ -242,7 +223,6 @@ export class GuideSystem extends createSystem({}) {
   }
 
   private copyFor(phase: Phase, immersive: boolean): Copy {
-    if (exp.active.peek()) return this.expeditionCopy(phase, immersive);
     if (survivors.active.peek()) return this.survivorsCopy(immersive);
     switch (phase) {
       case Phase.Poling:
@@ -282,15 +262,24 @@ export class GuideSystem extends createSystem({}) {
               : 'Press E to light the beacon.',
           hint: game.beaconLit.peek() ? '' : 'The basket glows where the flame must go',
         };
-      case Phase.Building:
+      case Phase.Building: {
+        // Walk them through it: open the pack, take a part out, fit it on the frame.
+        const placed = game.partsPlaced.peek();
+        const inHand = [equipment.inHand.left, equipment.inHand.right].some((i) => i !== null && PART_ITEMS.has(i));
+        const next = inHand
+          ? 'Now fit it onto the glider frame'
+          : game.packOpen.peek()
+            ? 'Close your hand on a glider part to take it out'
+            : 'Turn a palm up and look at it to open your backpack';
         return {
           step: 'STEP 5 OF 6',
           title: 'Build your glider',
           body: immersive
-            ? 'Take the glider parts you collected out of your backpack and assemble them here.'
-            : 'Press E to fit a part from your pack.',
-          hint: `${game.partsPlaced.peek()} of 3 fitted`,
+            ? 'Open your backpack (turn a palm up and look at it, or press A / X), pull out the glider parts you found in the cave and fit each one onto the frame.'
+            : 'Press E to take a glider part out of your pack and fit it onto the frame (B opens the pack).',
+          hint: immersive ? `${next} (${placed} of 3 fitted)` : `${placed} of 3 fitted`,
         };
+      }
       case Phase.Launch:
         return {
           step: 'STEP 5 OF 6',
@@ -310,7 +299,7 @@ export class GuideSystem extends createSystem({}) {
         return {
           step: 'COMPLETE',
           title: 'Thanks for playing!',
-          body: immersive ? 'Well flown. Ready for the real mountain?' : 'Well flown. Press E for the real mountain.',
+          body: 'Well flown. Play again, or try Snow Survivors.',
           hint: '',
         };
     }
@@ -340,94 +329,6 @@ export class GuideSystem extends createSystem({}) {
     };
   }
 
-  /** Short copy for the expedition (the status line comes from the director). */
-  private expeditionCopy(phase: Phase, immersive: boolean): Copy {
-    const section = exp.section.peek();
-    const step = `EXPEDITION · ${SECTION_ORDER.indexOf(section) + 1} OF ${SECTION_ORDER.length}`;
-    const hint = expControl.hint.peek();
-    const toSummit = Math.max(0, Math.round((SUMMIT_ELEV - this.player.position.y) / 10) * 10);
-    const metric =
-      !exp.summited.peek() && (phase === Phase.Poling || phase === Phase.Climbing)
-        ? `${toSummit.toLocaleString('en-GB')} m to the summit`
-        : '';
-    const copy = this.expeditionPhaseCopy(phase, immersive, step, section, hint);
-    copy.metric = metric;
-    return copy;
-  }
-
-  private expeditionPhaseCopy(
-    phase: Phase,
-    immersive: boolean,
-    step: string,
-    section: SectionId,
-    hint: string,
-  ): Copy {
-    switch (phase) {
-      case Phase.Climbing:
-        if (expControl.wall.peek() === 'ice') {
-          return {
-            step,
-            title: 'The Ice Wall',
-            body: immersive ? 'Swing the axes into the ice. Pull down.' : 'Hold W to climb.',
-            hint,
-          };
-        }
-        return {
-          step,
-          title: 'The Rock Band',
-          body: immersive ? 'Grab a glowing hold. Pull down.' : 'Hold W to climb.',
-          hint,
-        };
-      case Phase.Sliding:
-        if (chuteState.arrived.peek()) {
-          return { step: 'THE DESCENT', title: 'Fly home', body: 'Unpack the glider and drop it to launch.', hint };
-        }
-        return {
-          step: 'THE DESCENT',
-          title: 'The Summit Chute',
-          body: immersive ? 'Lean left or right past the barriers.' : 'A / D to lean past the barriers.',
-          hint,
-        };
-      case Phase.Launch:
-        return {
-          step: 'THE DESCENT',
-          title: 'Fly home',
-          body: immersive ? 'Grab the bar. Glide to Base Camp.' : 'Space to launch.',
-          hint: game.barHeld.peek() ? 'Hold on...' : '',
-        };
-      case Phase.Gliding:
-        return {
-          step: 'THE DESCENT',
-          title: 'Fly to Base Camp',
-          body: immersive ? 'Tilt the bar to turn. Pull in to dive.' : 'A / D steer. W dive, S float.',
-          hint: '',
-        };
-      case Phase.Landed:
-        return exp.finished.peek()
-          ? { step: 'EXPEDITION COMPLETE', title: 'Thanks for playing!', body: 'You climbed the mountain.', hint: '' }
-          : { step: 'THE DESCENT', title: 'Touchdown', body: 'Hold on...', hint: '' };
-      case Phase.Poling:
-      default:
-        if (exp.summited.peek()) {
-          return { step: 'THE SUMMIT', title: 'You made it!', body: 'Ride the Summit Chute down, then fly home.', hint };
-        }
-        if (expControl.camp.peek() > 0) {
-          return {
-            step,
-            title: SECTION_NAMES[section],
-            body: immersive ? 'Hold your hands to the fire.' : 'Stand by the fire to warm up.',
-            hint,
-          };
-        }
-        return {
-          step,
-          title: SECTION_NAMES[section],
-          body: immersive ? 'Plant your poles and push.' : 'Hold W to walk. T: watch.',
-          hint,
-        };
-    }
-  }
-
   private refresh(): void {
     if (!this.panel) return;
     const immersive = this.world.visibilityState.peek() !== VisibilityState.NonImmersive;
@@ -447,24 +348,17 @@ export class GuideSystem extends createSystem({}) {
     const metric = copy.metric ?? '';
     this.metricText.setProperties({ text: metric, display: metric ? 'flex' : 'none' });
     this.xrButton.setProperties({
-      display: !immersive && this.world.xrEnabled ? 'flex' : 'none',
+      display: !immersive && this.world.xrEnabled && this.worldReady ? 'flex' : 'none',
     });
-    const expedition = exp.active.peek();
-    const finished = expedition && exp.finished.peek();
-    this.restartButton.setProperties({ display: phase === Phase.Landed && !expedition ? 'flex' : 'none' });
-    this.expeditionButton.setProperties({ display: phase === Phase.Landed && !expedition ? 'flex' : 'none' });
-    this.skipButton.setProperties({
-      display: expedition && phase === Phase.Poling && expControl.camp.peek() >= 0 && !exp.summited.peek() ? 'flex' : 'none',
-    });
-    this.expRestartButton.setProperties({ display: finished ? 'flex' : 'none' });
-    this.tutorialButton.setProperties({ display: finished ? 'flex' : 'none' });
+    this.loadRow.setProperties({ display: this.worldReady ? 'none' : 'flex' });
+    this.restartButton.setProperties({ display: phase === Phase.Landed ? 'flex' : 'none' });
     // Snow Survivors: offered at the trailhead and on the end screen, in VR
     // only (it is played with the poles); once in, a way back to the
     // mountain (in the pack), and another go when you fall.
     const inSurvivors = survivors.active.peek();
-    const atTrailhead = !expedition && !inSurvivors && phase === Phase.Poling && !this.panelInPack();
+    const atTrailhead = !inSurvivors && phase === Phase.Poling && !this.panelInPack();
     this.survivorsButton.setProperties({
-      display: immersive && !inSurvivors && !expedition && (atTrailhead || phase === Phase.Landed) ? 'flex' : 'none',
+      display: immersive && !inSurvivors && (atTrailhead || phase === Phase.Landed) ? 'flex' : 'none',
     });
     this.survivorsAgainButton.setProperties({ display: inSurvivors && survivors.dead.peek() ? 'flex' : 'none' });
     this.survivorsExitButton.setProperties({ display: inSurvivors ? 'flex' : 'none' });
@@ -473,6 +367,7 @@ export class GuideSystem extends createSystem({}) {
   update(delta: number): void {
     this.updateSoundCard(delta);
     if (!this.tryBindPanel()) return;
+    this.updateLoading();
     this.phaseTime += delta;
     const toastNow = game.toast.peek();
     if (toastNow && toastNow.until <= performance.now() / 1000) game.toast.value = null;
@@ -517,11 +412,8 @@ export class GuideSystem extends createSystem({}) {
       this.placeInPack(object);
       return;
     }
-    // While gliding or sliding, show the tips briefly and then get out of the way.
-    object.visible = !(
-      (phase === Phase.Gliding && this.phaseTime > 9) ||
-      (phase === Phase.Sliding && this.phaseTime > 6)
-    );
+    // While gliding, show the tips briefly and then get out of the way.
+    object.visible = !(phase === Phase.Gliding && this.phaseTime > 9);
     if (!object.visible) return;
 
     getHeadWorld(this.world, this.head);
@@ -539,15 +431,6 @@ export class GuideSystem extends createSystem({}) {
       // Float above and in front of the glider kit so it never cuts through.
       distance = 0.95;
       drop = -0.22;
-    } else if (phase === Phase.Climbing && exp.active.peek()) {
-      // Expedition walls face any direction: keep the panel out of the face.
-      const wall = currentLevel().currentWall();
-      const into = wall ? -this.fwd.dot(wall.normal) : 0;
-      if (wall && into > 0.2) {
-        const out = this.toPanel.subVectors(this.head, wall.base).dot(wall.normal);
-        distance = clampRange((out - 0.4) / into, 0.45, REFERENCE_DISTANCE);
-        drop = 0.12;
-      }
     } else if (phase === Phase.Climbing && this.fwd.z < -0.2) {
       // Don't bury the panel inside the rock face.
       const room = (this.head.z - (WALL_Z + 0.4)) / -this.fwd.z;
@@ -581,12 +464,38 @@ export class GuideSystem extends createSystem({}) {
   }
 
   /** In XR, does the panel live in the backpack (shown only while it's open)? */
+  /**
+   * Until the baked world is in, a loading bar stands where Enter VR goes (and the headset's own prompt
+   * isn't offered): entering early showed the plain stand-in world. Then the button comes up and the
+   * headset is offered the session.
+   */
+  private updateLoading(): void {
+    if (this.worldReady) return;
+    const survivorsFirst = new URLSearchParams(window.location.search).has('survivors');
+    const ready = survivorsFirst ? bakedView.survivorsReady : bakedView.tutorialReady;
+    if (ready) {
+      this.worldReady = true;
+      offerXR(this.world);
+      this.refresh();
+      return;
+    }
+    const p = loadProgress.started ? loadProgress.done / loadProgress.started : 0;
+    // short of done until the world says it's ready (the last loads start late)
+    const pct = Math.floor(Math.min(0.96, p * 0.96) * 100);
+    if (pct <= this.loadShown) return;
+    this.loadShown = pct;
+    this.loadFill.setProperties({ width: `${pct}%` });
+    this.loadLabel.setProperties({ text: `${survivorsFirst ? 'Loading Snow Survivors' : 'Loading the mountain'}... ${pct}%` });
+  }
+
   private panelInPack(): boolean {
     const phase = game.phase.peek();
-    // Snow Survivors: out of the way while you fight, in front when you fall.
-    if (survivors.active.peek()) return !survivors.dead.peek();
-    if (phase === Phase.Landed) return false;
-    if (exp.active.peek()) return true;
+    // Snow Survivors: always out of the way (the end of a run offers its
+    // choices as cards, like the upgrades).
+    if (survivors.active.peek()) return true;
+    // At the end, and while building the glider (its steps start with opening the pack, so they can't
+    // live in it): floating in front of you.
+    if (phase === Phase.Landed || phase === Phase.Building) return false;
     if (phase !== Phase.Poling) return true;
     // Tutorial trail: float with you for the first third of the slope.
     return game.distanceToCliff.peek() <= (WALL_S * 2) / 3;

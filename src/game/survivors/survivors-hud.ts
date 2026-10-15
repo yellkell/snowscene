@@ -3,10 +3,11 @@
  * than panels floating in front of you:
  *
  * - Low on health, the edge of your view pulses red; a bite flashes it.
- * - Announcements (upgrades, combos, stampedes, bosses) are TITLE CARDS
- *   (title-card.ts): spaced capitals with a glow in the message's colour on
- *   a dark ribbon, a few metres ahead and high over the horde's heads where
- *   nothing hides them. They settle in, drift round to stay where you look,
+ * - Announcements (upgrades, combos, stampedes, bosses) are TITLES
+ *   (title-card.ts) in the run's lettering: chunky capitals outlined in the
+ *   cards' night blue and glowing in the message's colour, no panel behind
+ *   them, a few metres ahead and high over the horde's heads where nothing
+ *   hides them. They settle in, drift round to stay where you look,
  *   then lift away and fade. A headline can carry a smaller line under it.
  *   Big news (a boss, an evolution, the clock) cuts in; smaller news waits
  *   its turn.

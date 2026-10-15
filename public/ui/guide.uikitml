@@ -1,11 +1,12 @@
 <!--
   Guide panel for the mountain experience. Text is swapped at runtime by
   GuideSystem (src/game/guide-system.ts) as the player moves between phases.
+  The loading bar (load-row) stands where Enter VR goes until the baked world
+  is in; GuideSystem fills it and then swaps in the button.
   Panel, Divider, Button, ButtonIcon and ButtonLabel come from the bundled
-  Horizon kit; Mountain, MountainSnow, RectangleGoggles, RotateCcw,
-  SkipForward, Undo2 and Swords are Lucide icons. The Snow Survivors buttons
-  are wired in GuideSystem (src/game/survivors/survivors-state.ts). The expedition buttons are wired
-  in GuideSystem too (src/game/expedition/director/exp-control.ts).
+  Horizon kit; Mountain, RectangleGoggles, RotateCcw and Swords are Lucide
+  icons. The Snow Survivors buttons are wired in GuideSystem
+  (src/game/survivors/survivors-state.ts).
 -->
 <style>
   .panel-root {
@@ -111,6 +112,35 @@
   .button-label {
     transform-translate-y: 1px;
   }
+
+  .load {
+    flex-direction: column;
+    gap: 7px;
+    margin-left: 26px;
+    margin-right: 26px;
+    margin-top: 4px;
+    margin-bottom: 22px;
+  }
+
+  .load-label {
+    color: #2d3540;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .load-track {
+    width: 100%;
+    height: 12px;
+    border-radius: 6px;
+    background-color: #d6dee8;
+  }
+
+  .load-fill {
+    width: 0%;
+    height: 12px;
+    border-radius: 6px;
+    background-color: #2f6fb5;
+  }
 </style>
 <Panel class="panel-root">
   <div class="header">
@@ -125,7 +155,13 @@
     <span id="guide-metric" class="metric" style="display: none">79 m to the summit</span>
     <span id="guide-hint" class="hint"></span>
   </div>
-  <Button id="xr-button" class="button">
+  <div id="load-row" class="load">
+    <span id="load-label" class="load-label">Loading the mountain... 0%</span>
+    <div class="load-track">
+      <div id="load-fill" class="load-fill"></div>
+    </div>
+  </div>
+  <Button id="xr-button" class="button" style="display: none">
     <ButtonIcon>
       <RectangleGoggles></RectangleGoggles>
     </ButtonIcon>
@@ -136,30 +172,6 @@
       <RotateCcw></RotateCcw>
     </ButtonIcon>
     <ButtonLabel class="button-label">Play again</ButtonLabel>
-  </Button>
-  <Button id="expedition-button" class="button" style="display: none">
-    <ButtonIcon>
-      <MountainSnow></MountainSnow>
-    </ButtonIcon>
-    <ButtonLabel class="button-label">Start the Expedition</ButtonLabel>
-  </Button>
-  <Button id="skip-button" class="button" style="display: none">
-    <ButtonIcon>
-      <SkipForward></SkipForward>
-    </ButtonIcon>
-    <ButtonLabel class="button-label">Skip to the next camp</ButtonLabel>
-  </Button>
-  <Button id="exp-restart-button" class="button" style="display: none">
-    <ButtonIcon>
-      <RotateCcw></RotateCcw>
-    </ButtonIcon>
-    <ButtonLabel class="button-label">Restart expedition</ButtonLabel>
-  </Button>
-  <Button id="tutorial-button" class="button" style="display: none">
-    <ButtonIcon>
-      <Undo2></Undo2>
-    </ButtonIcon>
-    <ButtonLabel class="button-label">Back to the tutorial</ButtonLabel>
   </Button>
   <Button id="survivors-button" class="button" style="display: none">
     <ButtonIcon>

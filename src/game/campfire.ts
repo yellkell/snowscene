@@ -40,7 +40,13 @@ import {
   CircleGeometry,
   MeshBasicMaterial,
 } from '@iwsdk/core';
+import { gear } from './baked/dynamic.js';
+import { standIn } from './baked/lod.js';
+import { bakedLight } from './baked/light.js';
 import { audio } from './audio.js';
+import { Flames } from './survivors/fire-fx.js';
+import { fxFrame } from './survivors/fx-assets.js';
+import { survivors } from './survivors/survivors-state.js';
 import { landUniforms } from './land-material.js';
 import { getHeadWorld } from './rig.js';
 import { sceneRefs } from './scene-system.js';
@@ -369,7 +375,7 @@ function buildCampEdge(approachYaw: number): Group {
   benchMesh.castShadow = true;
   benchMesh.receiveShadow = true;
   camp.add(benchMesh);
-  // Expedition tents around the edge, leaving the approach side open (one draw).
+  // The party's tents around the edge, leaving the approach side open (one draw).
   const fabrics = [0xd8452b, 0xe8b13a, 0x2f6fb5, 0x3f9a5a, 0xb53f8f];
   const tents = new GeometryBuilder();
   for (let i = 0; i < 5; i++) {
@@ -394,7 +400,8 @@ function buildFestoonLights(): Group {
   const bulbsPerSpan = 14;
   const bulbs = new InstancedMesh(
     new IcosahedronGeometry(0.09, 1),
-    new MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 2.2 }),
+    // glowing glass: unlit, so the per-bulb colour comes through (over 1: they read as lit against dusk)
+    new MeshBasicMaterial({ color: new Color(3.2, 3.2, 3.2) }),
     poles * bulbsPerSpan,
   );
   const palette = [
@@ -453,10 +460,51 @@ interface Dancer {
   baseYaw: number;
   arms: Mesh[];
   baseY: number;
+  /** Baked figures: the animated body and arms, and the one-draw stand-in shown past FIGURE_LOD_M. */
+  near?: Object3D;
+  far?: Mesh;
 }
 
-/** A simple partygoer in a winter jacket and beanie. */
-function buildDancer(look: FigureLook): { root: Group; arms: Mesh[] } {
+/** Past this a partygoer is a few pixels tall: one simplified draw instead of three (lod_build.py). */
+const FIGURE_LOD_M = 45;
+const figureStandIns = new Map<BufferGeometry, Promise<BufferGeometry | null>>();
+
+/** The baked partygoers (art/scripts/figure_bake.py): six mountaineers, arms in shoulder-pivot space. */
+const BAKED_FIGURES = 6;
+const BAKED_ARM_PIVOT = new Vector3(0.235, 1.42, 0);
+
+/** A partygoer: a baked mountaineer if the gear has loaded, else the procedural stand-in. */
+function buildDancer(look: FigureLook, index: number): { root: Group; arms: Mesh[]; near?: Object3D; far?: Mesh } {
+  const k = index % BAKED_FIGURES;
+  const body = gear(`figure${k}_body`);
+  const larm = gear(`figure${k}_larm`);
+  const rarm = gear(`figure${k}_rarm`);
+  if (body && larm && rarm) {
+    const root = new Group();
+    const near = new Group();
+    near.add(new Mesh(body.geometry, body.material));
+    const arms: Mesh[] = [];
+    for (const [side, g] of [[-1, larm], [1, rarm]] as const) {
+      const arm = new Mesh(g.geometry, g.material);
+      arm.position.set(side * BAKED_ARM_PIVOT.x, BAKED_ARM_PIVOT.y, BAKED_ARM_PIVOT.z);
+      arms.push(arm);
+      near.add(arm);
+    }
+    root.add(near);
+    const stand = gear(`figure${k}_far`);
+    const far = stand ? new Mesh(stand.geometry, stand.material) : undefined;
+    if (far && stand) {
+      far.visible = false;
+      root.add(far);
+      // simplified for the distance it's seen from (one per figure, shared by its dancers)
+      let lo = figureStandIns.get(stand.geometry);
+      if (!lo) figureStandIns.set(stand.geometry, (lo = standIn(stand.geometry, FIGURE_LOD_M, 0.1)));
+      void lo.then((g) => {
+        if (g) far.geometry = g;
+      });
+    }
+    return { root, arms, near, far };
+  }
   const root = new Group();
   // Body, head and hat in one draw; only the arms move on their own.
   const fig = new GeometryBuilder();
@@ -502,6 +550,7 @@ export class Bonfire {
   private dancers: Dancer[] = [];
   private readonly flameHeight: number;
   private flames!: Group;
+  private fire!: Flames;
   private embers!: Group;
   /** Seconds since ignite() (Infinity = fully lit). */
   private igniteAge = Infinity;
@@ -528,22 +577,22 @@ export class Bonfire {
       for (let i = 0; i < count; i++) {
         const ang = approach + 0.6 + (i / (count - 1)) * (Math.PI * 2 - 1.2);
         const r = 6.2 + (((i * 37) % 10) / 10) * 1.8;
-        const { root, arms } = buildDancer(figureLook(i));
+        const { root, arms, near, far } = buildDancer(figureLook(i), i);
         root.position.set(Math.cos(ang) * r, 0, Math.sin(ang) * r);
         const baseYaw = Math.atan2(-Math.cos(ang), -Math.sin(ang));
         root.rotation.y = baseYaw;
         root.name = `Partygoer${i}`;
         place(root);
-        this.dancers.push({ root, arms, phase: i * 1.7, speed: 2.4 + (i % 4) * 0.35, baseYaw, baseY: this.position.y });
+        this.dancers.push({ root, arms, phase: i * 1.7, speed: 2.4 + (i % 4) * 0.35, baseYaw, baseY: this.position.y, near, far });
       }
     }
 
+    // Real fire (the Mantaflow flipbook from the survivors FX bake): a ring of fires over the logs,
+    // drawn by one instanced pool in world space.
     const flames = new Group();
     flames.name = 'Flames';
-    const sheets = new Mesh(flameSheets(scale > 0.6 ? 6 : 4, 7.5 * scale, this.flameHeight, position.x), flameMaterial());
-    sheets.position.y = 0.1 * scale;
-    flames.add(sheets);
-    place(flames);
+    this.fire = new Flames(flames);
+    this.objects.push(flames);
     this.flames = flames;
     this.embers = buildEmbers(scale);
     place(this.embers);
@@ -643,10 +692,19 @@ export class Bonfire {
   update(dt: number, time: number, viewer: Vector3, flicker: number): number {
     if (!this.visible) return 0;
     const scale = this.options.scale;
-    if (this.igniteAge < IGNITE_SECONDS) {
-      this.igniteAge += dt;
-      this.flames.scale.setScalar(0.08 + 0.92 * this.blaze);
+    if (this.igniteAge < IGNITE_SECONDS) this.igniteAge += dt;
+    // the fire: a heart over the stack and tongues round it, growing with the blaze
+    const blaze = this.blaze;
+    const p = this.position;
+    const fire = this.fire;
+    fire.begin();
+    fire.add(p.x, p.y + 0.15 * scale, p.z, this.flameHeight * 0.85, 0.3, blaze, time);
+    const ring = scale > 0.6 ? 6 : 3;
+    for (let k = 0; k < ring; k++) {
+      const a = (k / ring) * Math.PI * 2 + 0.4;
+      fire.add(p.x + Math.cos(a) * 1.0 * scale, p.y + 0.1 * scale, p.z + Math.sin(a) * 1.0 * scale, this.flameHeight * 0.55, 1.7 + k * 2.3, blaze * (0.75 + 0.25 * flicker), time);
     }
+    fire.end();
     if (this.light) this.light.intensity = 3500 * scale * scale * flicker;
     // The ember bed breathes with the flames.
     const bed = this.embers.children[0] as Mesh;
@@ -654,8 +712,14 @@ export class Bonfire {
     this.sparks.update(dt);
     this.smoke.update(dt);
 
-    // Dancers bob, sway and throw their arms up.
+    // Dancers bob, sway and throw their arms up (from afar, just bob and sway: their stand-ins are one piece).
+    const dist = viewer.distanceTo(this.position);
+    const distant = dist > FIGURE_LOD_M;
     for (const d of this.dancers) {
+      if (d.far && d.near) {
+        d.far.visible = distant;
+        d.near.visible = !distant;
+      }
       const t = time * d.speed + d.phase;
       d.root.position.y = d.baseY + Math.abs(Math.sin(t)) * 0.12;
       d.root.rotation.y = d.baseYaw + Math.sin(t * 0.5) * 0.35;
@@ -665,7 +729,6 @@ export class Bonfire {
       d.arms[1].rotation.z = 0.3 + raise * 2.4 + Math.sin(t * 2 + 1) * 0.2;
     }
 
-    const dist = viewer.distanceTo(this.position);
     const beacon = Math.min(1, Math.max(0, (dist - 30 * scale) / (70 * scale)));
     (this.glow.material as SpriteMaterial).opacity = beacon * (0.8 + 0.2 * flicker) * this.blaze;
     this.glow.scale.setScalar((12 + beacon * 18) * scale * (0.9 + 0.1 * flicker));
@@ -675,6 +738,9 @@ export class Bonfire {
 
 /** Every fire in the world; the campfire system animates them all. */
 export const fires: Bonfire[] = [];
+
+/** Bonfire intensity in the baked light's units: at 6 m it rivals the evening sky on open snow. */
+const FIRE_INTENSITY = 14;
 
 export class CampfireSystem extends createSystem({}) {
   private readonly head = new Vector3();
@@ -687,6 +753,7 @@ export class CampfireSystem extends createSystem({}) {
     // PointLight costs every lit pixel on the headset.
     this.party = new Bonfire(FIRE_POS, { scale: 1, party: true, light: false });
     this.addFire(this.party, sceneRefs.tutorialRoot ?? undefined);
+    sceneRefs.party = this.party;
     this.party.setVisible(false);
     landUniforms.uFireGlow.value.set(FIRE_POS.x, FIRE_POS.y, FIRE_POS.z, 0);
     const updateParty = () => {
@@ -719,12 +786,16 @@ export class CampfireSystem extends createSystem({}) {
   update(delta: number, time: number): void {
     const dt = Math.min(delta, 0.1);
     flameUniforms.uTime.value = time;
+    if (!survivors.active.peek()) fxFrame(this.world.renderer.toneMappingExposure, time);
     const flicker =
       0.8 + 0.2 * Math.sin(time * 13.1) * Math.sin(time * 7.3 + 1.7) + 0.08 * Math.sin(time * 31);
     getHeadWorld(this.world, this.head);
     let level = 0;
     for (const fire of fires) level = Math.max(level, fire.update(dt, time, this.head, flicker));
     landUniforms.uFireGlow.value.w = this.party.visible ? 2.2 * flicker * this.party.blaze : 0;
+    // the baked world's firelight (baked/light.ts fireLight): the heart of the flames, about 1.6 m up
+    const lit = this.party.visible && !survivors.active.peek();
+    bakedLight.uFire.value.set(FIRE_POS.x, FIRE_POS.y + 1.6, FIRE_POS.z, lit ? FIRE_INTENSITY * flicker * this.party.blaze : 0);
     // Crackle and roar from the nearest fire.
     audio.setFire(level);
     if (level > 0.02 && Math.random() < dt * 14 * level) audio.crackle(level);

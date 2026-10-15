@@ -1,21 +1,27 @@
 /**
- * Snow Survivors' horde, drawn: every enemy on the field in three draw
- * calls, and the shards they burst into.
+ * Snow Survivors' horde, drawn: every enemy on the field in 7 kinds x 3
+ * levels of detail = 21 instanced draws at most, and the shards they burst
+ * into.
  *
- * Ported from Factory Fight's swarm (yellkell/factoryfight,
- * src/systems/swarm.ts): the same faceted bodies (the mite, the beetle and
- * the hulk) built out of flat triangles with a glow per corner, drawn
- * instanced, one draw call per kind, and animated entirely on the GPU from
- * a few numbers per enemy (where it stands, which way it faces, how far it
- * has walked, a hit flash, how far out of the snow it has climbed, whether
- * it is biting). The CPU's whole job per frame is one pass copying columns.
+ * The creatures are modelled in Blender (art/scripts/creatures.py): an
+ * ice-crusted arachnid, an armoured frost beetle, a rock-and-ice titan, an
+ * ember-sac bloater, a stilt-legged lunger, a beetle carrying glowing egg sacs
+ * and one crusted in citrine. Each has three LODs (public/survivors/creatures/
+ * creatures.glb) sampling one shared 2048 atlas (albedo + gloss; object-space
+ * normal, AO and emission) baked from the Cycles HIGH models, and is lit like
+ * everything else in the baked scene (baked/light.ts): the low sun, the sky,
+ * the snow's bounce, aerial haze, AgX.
  *
- * Changes for the snowfield: the bodies are scaled up to person-sized
- * monsters, and instead of Factory Fight's black-and-neon they are shaded
- * like the rest of the mountain: dark fur and shell lit in the game's cel
- * bands by the same low evening sun, blue sky in the shade, frost, horn or
- * ember along the edges where Factory Fight had neon, and the scene's fog
- * by distance.
+ * Animation is still entirely on the GPU, after Factory Fight's swarm
+ * (yellkell/factoryfight, src/systems/swarm.ts): every vertex hangs off one
+ * rigid part (body, leg, head, jaw, arm, core) that turns about its pivot,
+ * driven by a few numbers per enemy (where it stands, which way it faces, how
+ * far it has walked, a hit flash, frost or fire, how far out of the snow it
+ * has climbed, whether it is biting). The CPU's whole job per frame is one
+ * pass copying columns, choosing each enemy's level of detail as it goes.
+ *
+ * Until the bake has loaded (or if it is missing) the horde draws as the old
+ * procedural faceted bodies below, under the same light.
  */
 
 import {
@@ -25,20 +31,28 @@ import {
   DynamicDrawUsage,
   Float32BufferAttribute,
   type Fog,
+  FrontSide,
   type Group,
+  ImageBitmapLoader,
   InstancedBufferAttribute,
   InstancedBufferGeometry,
+  LinearFilter,
+  LinearMipmapLinearFilter,
+  Matrix3,
   Mesh,
+  NoColorSpace,
+  SRGBColorSpace,
   ShaderMaterial,
+  type Side,
+  Texture,
   Vector3,
   Vector4,
 } from '@iwsdk/core';
+import { BAKED_GLSL, HAZE_VERT, bakedLight } from '../baked/light.js';
+import { assetUrl, loadCompressed, loadGLTF, loadJSON } from '../baked/loaders.js';
 import { CAP, type Horde, KINDS, LUNGER } from './horde.js';
+import { SOURCE_COLORS } from './weapon-colors.js';
 import { duneHeight } from './survivors-level.js';
-
-/** Where the key light comes from: the valley's low sun, lifted a little so
- *  backs and heads catch it rather than only the sides. */
-const KEY_LIGHT = new Vector3(-0.72, 0.065, 0.68).normalize().add(new Vector3(0, 0.9, 0)).normalize();
 
 /* ── the builder ────────────────────────────────────────────────────────── */
 
@@ -600,21 +614,80 @@ function glitterBody(): Body {
 
 /* ── the shader ─────────────────────────────────────────────────────────── */
 
+/**
+ * The scene's light for things that move (baked/light.ts): sun, sky and snow
+ * bounce as dynamicLight() gives them, plus what dynamicLight leaves out, the
+ * specular: the low sun's highlight on wax and ice, and the sky (or the snow
+ * below) mirrored at grazing angles, which is what makes chitin read as
+ * chitin rather than painted clay.
+ */
+const SPECULAR_GLSL = /* glsl */ `
+vec3 specular(vec3 n, vec3 V, float gloss, float ao, float sunVis) {
+  float r = mix(0.72, 0.13, gloss);
+  float a2 = r * r * r * r;
+  vec3 H = normalize(uSunDir + V);
+  float nh = max(dot(n, H), 0.0);
+  float nl = max(dot(n, uSunDir), 0.0);
+  float vh = max(dot(V, H), 0.0);
+  float dd = nh * nh * (a2 - 1.0) + 1.0;
+  float D = a2 / (3.14159 * dd * dd);
+  float F = 0.04 + 0.96 * pow(1.0 - vh, 5.0);
+  vec3 col = uSunColor * min(D * F * 0.25 * nl / max(vh * vh, 0.2), 40.0) * sunVis;
+  vec3 R = reflect(-V, n);
+  vec3 sky = uSkyGain * mix(uHazeColor, uOpenSky * uSkyTint * 1.15, smoothstep(0.0, 0.55, R.y));
+  vec3 snow = uSnowAlbedo * (uOpenSun * uSunColor + uOpenSky * uSkyTint * uSkyGain);
+  vec3 env = mix(sky, snow, smoothstep(0.0, -0.3, R.y));
+  float nv = max(dot(n, V), 0.0);
+  float Fe = 0.04 + 0.96 * pow(1.0 - nv, 5.0) * (1.0 - r) * (1.0 - r);
+  return col + env * Fe * mix(0.35, 1.0, gloss) * ao;
+}
+// Cheap 3D value noise (for rime and embers that cling to the body as it walks).
+float vnoise(vec3 p) {
+  vec3 i = floor(p);
+  vec3 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float k = 17.31;
+  float a = mix(hash12(i.xy + i.z * k), hash12(i.xy + vec2(1.0, 0.0) + i.z * k), f.x);
+  float b = mix(hash12(i.xy + vec2(0.0, 1.0) + i.z * k), hash12(i.xy + vec2(1.0) + i.z * k), f.x);
+  float c = mix(hash12(i.xy + (i.z + 1.0) * k), hash12(i.xy + vec2(1.0, 0.0) + (i.z + 1.0) * k), f.x);
+  float d = mix(hash12(i.xy + vec2(0.0, 1.0) + (i.z + 1.0) * k), hash12(i.xy + vec2(1.0) + (i.z + 1.0) * k), f.x);
+  return mix(mix(a, b, f.y), mix(c, d, f.y), f.z);
+}
+`;
+
+/** BAKED_GLSL for a vertex shader that also includes HAZE_VERT (which declares uHaze itself). */
+const VERT_LIGHT = BAKED_GLSL.replace('uniform vec2 uHaze;', '');
+
+/**
+ * The horde's vertex shader: every enemy animated from a few numbers. Each
+ * vertex hangs off one rigid part (aRig.x: body, leg, head, jaw, arm, core)
+ * that turns about its own pivot; the same turns are carried to the fragment
+ * shader as a quaternion (vQ) so the baked object-space normals turn with the
+ * legs, jaws and heading.
+ */
 const SWARM_VERT = /* glsl */ `
-attribute float aGlow;
 attribute vec2 aRig;    // part, beat (which half of the gait)
 attribute vec3 aPivot;  // where the part turns
+attribute float aGlow;  // atlas: how much its glow breathes; fallback: corner glow
 attribute vec4 iPose;   // x, z, heading, radius
-attribute vec4 iAnim;   // stride, flash, chilled/frozen, rise
+attribute vec4 iAnim;   // stride, flash, frost (+) / fire (-), rise
 attribute vec3 iAct;    // height off the floor, flailing (0..1), biting (0..1)
-uniform float uTime;
+uniform float uClock;
 uniform vec4 uGait;     // cadence, leg swing, foot lift, body bob
 uniform vec4 uMove;     // roll, jaw snap, arm swing, thrash rate
 uniform vec3 uNeck;     // where the head nods
-varying float vGlow;
+uniform vec3 uFlashPal[${SOURCE_COLORS.length}];
 varying vec3 vW;
-varying float vFlash;
-varying float vBurn;
+varying vec4 vQ;
+varying vec4 vFx;       // flash, frost/fire, glow breath, fallback glow
+varying float vSunVis;
+#ifdef ATLAS
+varying vec2 vUv;
+varying vec3 vObj;
+#endif
+${HAZE_VERT}
+${VERT_LIGHT}
+varying vec3 vFlashCol;
 
 vec3 turnY(vec3 p, vec3 o, float a) {
   vec2 r = p.xz - o.xz;
@@ -628,9 +701,14 @@ vec3 turnX(vec3 p, vec3 o, float a) {
   float s = sin(a);
   return vec3(p.x, o.y + r.x * c - r.y * s, o.z + r.x * s + r.y * c);
 }
+// turnY(a) is a rotation of -a about +y; turnX(a) one of +a about +x.
+vec4 qY(float a) { return vec4(0.0, sin(a * 0.5), 0.0, cos(a * 0.5)); }
+vec4 qX(float a) { return vec4(sin(a * 0.5), 0.0, 0.0, cos(a * 0.5)); }
+vec4 qMul(vec4 a, vec4 b) { return vec4(a.w * b.xyz + b.w * a.xyz + cross(a.xyz, b.xyz), a.w * b.w - dot(a.xyz, b.xyz)); }
 
 void main() {
   vec3 p = position;
+  vec4 q = vec4(0.0, 0.0, 0.0, 1.0);
   float part = aRig.x;
   float beat = aRig.y * 3.14159;
   float seed = fract(sin(iPose.x * 12.9898 + iPose.y * 78.233) * 43758.5453) * 6.2832;
@@ -640,37 +718,40 @@ void main() {
   // a kind's cadence per body-radius: a mite skitters, a hulk plods.
   float ph = iAnim.x * uGait.x / max(iPose.w, 0.01);
   // In your fist or in the air, everything thrashes.
-  ph = mix(ph, uTime * uMove.w + seed, fl);
+  ph = mix(ph, uClock * uMove.w + seed, fl);
   // Chewing a tower: the feet scrabble where they stand.
-  ph += bite * sin(uTime * 13.0 + seed) * 0.5;
+  ph += bite * sin(uClock * 13.0 + seed) * 0.5;
   float lp = ph + beat;
-  float glow = aGlow;
+  float breath = 0.75 + 0.25 * sin(uClock * mix(3.0, 9.0, max(bite, fl)) + seed);
+  float breathes = part == 5.0 ? 1.0 : 0.0;
   if (part == 1.0 || part == 4.0) {
     // A leg (or a hulk's arm) swings about its hip and lifts on the way
     // forward, the farther from the hip the higher.
     float reach = clamp(length(p.xz - aPivot.xz) / 1.2, 0.0, 1.0);
     float sw = sin(lp) * (part == 4.0 ? uMove.z : uGait.y);
     p = turnY(p, aPivot, sw);
+    q = qY(-sw);
     p.y += pow(max(0.0, cos(lp)), 0.7) * uGait.z * reach;
     if (part == 4.0) {
       // Biting, a hulk raises both fists and brings them down.
-      float slam = pow(0.5 + 0.5 * sin(uTime * 5.0 + seed + beat * 0.4), 3.0);
-      p = turnX(p, aPivot, -bite * slam * 1.1 - fl * 0.5 * (0.5 + 0.5 * sin(uTime * 9.0 + beat)));
+      float slam = pow(0.5 + 0.5 * sin(uClock * 5.0 + seed + beat * 0.4), 3.0);
+      float ang = -bite * slam * 1.1 - fl * 0.5 * (0.5 + 0.5 * sin(uClock * 9.0 + beat));
+      p = turnX(p, aPivot, ang);
+      q = qMul(qX(ang), q);
     }
   } else {
     if (part == 3.0) {
       // Jaws: idly working as it walks; snapping when it bites.
-      float open = mix(0.3 + 0.3 * sin(ph * 0.5 + seed + uTime * 3.0), 0.5 + 0.5 * sin(uTime * 24.0 + seed), max(bite, fl));
-      p = turnY(p, aPivot, open * uMove.y * (aPivot.x < 0.0 ? 1.0 : -1.0));
+      float open = mix(0.3 + 0.3 * sin(ph * 0.5 + seed + uClock * 3.0), 0.5 + 0.5 * sin(uClock * 24.0 + seed), max(bite, fl));
+      float o = open * uMove.y * (aPivot.x < 0.0 ? 1.0 : -1.0);
+      p = turnY(p, aPivot, o);
+      q = qY(-o);
     }
     if (part == 2.0 || part == 3.0) {
       // Heads nod into a bite.
-      float nod = bite * (sin(uTime * 26.0 + seed) * 0.14 - 0.12) + sin(ph * 0.5) * 0.04;
+      float nod = bite * (sin(uClock * 26.0 + seed) * 0.14 - 0.12) + sin(ph * 0.5) * 0.04;
       p = turnX(p, uNeck, nod);
-    }
-    if (part == 5.0) {
-      // The core breathes, and races when it is in a fight.
-      glow *= 0.75 + 0.25 * sin(uTime * mix(3.0, 9.0, max(bite, fl)) + seed);
+      q = qMul(qX(nod), q);
     }
     // The body rides the legs: up and down with each step, and a roll
     // from side to side on the heavy ones.
@@ -687,64 +768,130 @@ void main() {
   w.z += iPose.y;
   vec4 wp = modelMatrix * vec4(w, 1.0);
   vW = wp.xyz;
-  vGlow = glow;
-  vFlash = iAnim.y;
-  vBurn = iAnim.z;
+  vQ = qMul(qY(h), q);
+#ifdef ATLAS
+  vUv = uv;
+  vObj = position;
+  breathes = max(breathes, aGlow * 0.5);
+#endif
+  // The flash carries what hit it: (palette index) * 2 + strength.
+  float src = floor(iAnim.y * 0.5 + 0.001);
+  vFlashCol = uFlashPal[int(min(src, ${(SOURCE_COLORS.length - 1).toFixed(1)}))];
+  vFx = vec4(iAnim.y - src * 2.0, iAnim.z, mix(1.0, breath, breathes), aGlow * (part == 5.0 ? breath : 1.0));
+  vec3 inst = (modelMatrix * vec4(iPose.x, iAct.x, iPose.y, 1.0)).xyz;
+  vSunVis = groundSunVisibility(inst.xz);
+  computeHaze(wp.xyz);
   gl_Position = projectionMatrix * viewMatrix * wp;
 }
 `;
 
+/**
+ * The horde's fragment shader. With ATLAS: albedo + gloss, object-space
+ * normal (octahedral), AO and emission from the shared creature atlas baked
+ * in Blender (art/scripts/creatures.py), lit by the scene's light. Without:
+ * the procedural fallback bodies, flat facets in the kind's colours.
+ *
+ * Frost is rime: it grows from the surfaces facing the sky and the crevices
+ * first and, frozen solid, glazes the creature in clear ice. Fire chars the
+ * shell and lights embers in its cracks. A hit is a brief pale flare at the
+ * silhouette, not a white-out.
+ */
 const SWARM_FRAG = /* glsl */ `
-uniform vec3 uFogColor;
-uniform float uFogNear;
-uniform float uFogFar;
+${BAKED_GLSL}
+${SPECULAR_GLSL}
 uniform vec3 uAccent;
 uniform vec3 uBody;
-uniform vec3 uKey;
-uniform float uTime;
-varying float vGlow;
+uniform float uEmit;
+uniform float uClock;
+uniform mat3 uRoot;   // the horde group's rotation (modelMatrix is vertex-only)
+varying float vHazeF;
 varying vec3 vW;
-varying float vFlash;
-varying float vBurn;
+varying vec4 vQ;
+varying vec4 vFx;
+varying float vSunVis;
+#ifdef ATLAS
+uniform sampler2D tAlbedo;
+uniform sampler2D tData;
+varying vec2 vUv;
+varying vec3 vObj;
+#endif
+
+vec3 qrot(vec4 q, vec3 v) { return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v); }
+vec3 octDecode(vec2 e) {
+  e = e * 2.0 - 1.0;
+  vec3 n = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+  float t = max(-n.z, 0.0);
+  n.x += n.x >= 0.0 ? -t : t;
+  n.y += n.y >= 0.0 ? -t : t;
+  return normalize(n);
+}
+varying vec3 vFlashCol;
 
 void main() {
-  // Each facet's own normal, from how the surface moves across the
-  // screen: flat-shaded whatever the legs did to it.
+  vec3 V = normalize(cameraPosition - vW);
+#ifdef ATLAS
+  vec4 A = texture2D(tAlbedo, vUv);
+  vec4 D = texture2D(tData, vUv);
+  vec3 alb = A.rgb;
+  float gloss = A.a;
+  float ao = D.b;
+  vec3 n = normalize(uRoot * qrot(vQ, octDecode(D.rg)));
+  vec3 E = uAccent * (D.a * uEmit * vFx.z);
+  vec3 rp = vObj;
+#else
   vec3 n = normalize(cross(dFdx(vW), dFdy(vW)));
-  vec3 v = normalize(cameraPosition - vW);
-  if (dot(n, v) < 0.0) n = -n;
-  float facing = clamp(dot(n, v), 0.0, 1.0);
-  // The game's cel look: warm sun in soft bands (lit, half-lit, shade),
-  // blue sky filling the shade, and a cool rim on the silhouette.
-  float key = clamp(dot(n, uKey), 0.0, 1.0);
-  float ramp = 0.58 * smoothstep(0.0, 0.1, key) + 0.42 * smoothstep(0.32, 0.52, key);
-  float sky = 0.5 + 0.5 * n.y;
-  vec3 light = vec3(0.42, 0.5, 0.72) * (0.6 + 0.4 * sky) + vec3(1.15, 0.98, 0.78) * ramp;
-  vec3 shell = uBody * light + vec3(0.45, 0.55, 0.8) * pow(1.0 - facing, 3.0) * 0.18;
-  // A corner's glow fades across its facets; past the curve's knee the
-  // facet takes the kind's accent (frost, horn, ember), lit like the rest.
-  float g = clamp(vGlow, 0.0, 1.0);
-  float lit = smoothstep(0.86, 1.0, g);
-  vec3 col = mix(shell, uAccent * (0.5 + 0.45 * ramp + 0.15 * sky), lit);
-  // Past 1: eyes, knees, tips and the core keep a small warm glow.
-  col = mix(col, vec3(1.0, 0.84, 0.5), clamp((vGlow - 1.0) * 0.5, 0.0, 0.7));
-  // Chilled, it frosts over; frozen solid, it is a block of blue ice
-  // with a glint on the facets facing the light.
-  vec3 ice = vec3(0.62, 0.84, 1.0) * (0.75 + 0.35 * ramp) + vec3(0.6) * pow(key, 6.0);
-  col = mix(col, ice, max(vBurn, 0.0) * 0.85);
-  // Burning: charred dark, ember licking up it in bands that flicker.
-  float fire = max(-vBurn, 0.0);
-  if (fire > 0.0) {
-    float lick = 0.5 + 0.5 * sin(vW.y * 9.0 - uTime * 14.0 + vW.x * 3.0 + vW.z * 2.0);
-    vec3 ember = mix(vec3(1.0, 0.25, 0.04), vec3(1.0, 0.75, 0.25), lick);
-    col = mix(col * 0.55, ember * (1.2 + 0.6 * lick), fire * (0.35 + 0.4 * lick));
+  if (dot(n, V) < 0.0) n = -n;
+  float g = clamp(vFx.w, 0.0, 1.0);
+  vec3 alb = mix(uBody * 0.35, uAccent * 0.6, smoothstep(0.86, 1.0, g));
+  float gloss = 0.35;
+  float ao = 1.0;
+  vec3 E = mix(uAccent, vec3(1.0, 0.84, 0.5), 0.5) * clamp(vFx.w - 1.0, 0.0, 1.0) * 2.0;
+  vec3 rp = vW * 0.5;
+#endif
+  float fx = vFx.y;
+#ifndef CHEAP
+  if (fx > 0.0) {
+    // Rime: up-facing surfaces and crevices first, feathered by noise; frozen
+    // solid, a glaze of clear ice over everything.
+    float nz = vnoise(rp * 9.0) * 0.6 + vnoise(rp * 23.0) * 0.4;
+    float cover = 0.45 * (n.y * 0.5 + 0.5) + 0.35 * (1.0 - ao) + 0.55 * nz;
+    float grow = min(fx, 0.3) * 1.1;
+    float rime = smoothstep(1.15 - grow, 1.3 - grow, cover);
+    float solid = smoothstep(0.9, 1.0, fx);
+    alb = mix(alb, vec3(0.78, 0.84, 0.92), rime);
+    // frozen solid: deep glacier blue under the glaze, so a frozen crowd still stands out on the snow
+    alb = mix(alb, vec3(0.1, 0.24, 0.55), solid * (1.0 - rime) * 0.85);
+    gloss = mix(mix(gloss, 0.12, rime), 0.95, solid * (1.0 - rime));
+    E *= 1.0 - 0.7 * max(rime, solid);
+  } else if (fx < 0.0) {
+    // Burning: the shell chars and embers glow in its cracks, flickering.
+    float b = -fx;
+    float flick = vnoise(rp * 7.0 + vec3(0.0, -uClock * 1.9, uClock * 0.7));
+    // thin seams (ridges of noise) and the deepest crevices (baked AO)
+    float seam = smoothstep(0.93, 0.99, 1.0 - abs(vnoise(rp * 9.0) * 2.0 - 1.0));
+    float crack = clamp(seam * smoothstep(0.35, 0.7, flick) + smoothstep(0.72, 0.92, 1.0 - ao) * 0.7, 0.0, 1.0);
+    alb *= mix(1.0, 0.3, b);
+    gloss *= 1.0 - 0.7 * b;
+    E += vec3(1.0, 0.28, 0.04) * crack * b * (0.6 + 1.6 * flick);
   }
-  // A hit flashes it pale (only partly, so a boss under constant fire
-  // keeps its colours).
-  col = mix(col, vec3(1.0, 0.95, 0.9), vFlash * 0.45);
-  // The scene's fog, by distance.
-  col = mix(col, uFogColor, smoothstep(uFogNear, uFogFar, length(vW - cameraPosition)));
+#else
+  if (fx > 0.0) {
+    alb = mix(alb, vec3(0.78, 0.84, 0.92), fx * 0.8);
+    gloss = mix(gloss, 0.5, fx);
+  } else if (fx < 0.0) {
+    alb *= mix(1.0, 0.3, -fx);
+    E += vec3(1.0, 0.3, 0.05) * (1.0 - ao) * -fx * 2.0;
+  }
+#endif
+  vec3 col = alb * (dynamicLight(n, ao, vSunVis) + fireLight(vW, n));
+  col += specular(n, V, gloss, ao, vSunVis);
+  col += E;
+  // A hit flares in the colour of what hit it: a little over the body, strongest at the silhouette.
+  float nv = clamp(dot(n, V), 0.0, 1.0);
+  col += mix(vec3(1.0, 0.92, 0.82), vFlashCol, 0.7) * vFx.x * (0.08 + 0.8 * (1.0 - nv) * (1.0 - nv));
+  col = applyHaze(col, vHazeF);
   gl_FragColor = vec4(col, 1.0);
+  #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }
 `;
@@ -763,42 +910,55 @@ const GAITS: Array<{ body: () => Body; neck: V3; gait: Vector4; move: Vector4 }>
   { body: glitterBody, neck: GLITTER_NECK, gait: new Vector4(2.8, 0.42, 0.34, 0.07), move: new Vector4(0.03, 0.35, 0, 30) },
 ];
 
-/** One kind's mesh: its own body, its own instance columns. */
+/** Shader materials share the scene's light uniforms by reference. */
+function litMaterial(uniforms: Record<string, { value: unknown }>, defines: Record<string, string>, side: Side = FrontSide): ShaderMaterial {
+  const m = new ShaderMaterial({ uniforms: { ...uniforms }, vertexShader: SWARM_VERT, fragmentShader: SWARM_FRAG, defines, side, fog: false });
+  for (const [k, v] of Object.entries(bakedLight)) m.uniforms[k] = v as { value: unknown };
+  return m;
+}
+
+/** Levels of detail per kind, nearest first. */
+const LODS = 3;
+
+/** One kind at one level of detail: its body and its own instance columns. */
 class Brood {
   readonly mesh: Mesh;
-  readonly geo: InstancedBufferGeometry;
+  geo: InstancedBufferGeometry;
   readonly pose = new InstancedBufferAttribute(new Float32Array(CAP * 4), 4).setUsage(DynamicDrawUsage);
   readonly anim = new InstancedBufferAttribute(new Float32Array(CAP * 4), 4).setUsage(DynamicDrawUsage);
   readonly act = new InstancedBufferAttribute(new Float32Array(CAP * 3), 3).setUsage(DynamicDrawUsage);
+  /** Triangles per enemy drawn by this brood. */
+  tris = 0;
 
-  constructor(parent: Group, kind: number, time: { value: number }, fog: FogUniforms) {
-    const spec = GAITS[kind];
-    this.geo = spec.body().geometry();
-    this.geo.setAttribute('iPose', this.pose);
-    this.geo.setAttribute('iAnim', this.anim);
-    this.geo.setAttribute('iAct', this.act);
-    this.geo.instanceCount = 0;
-    const mat = new ShaderMaterial({
-      vertexShader: SWARM_VERT,
-      fragmentShader: SWARM_FRAG,
-      side: DoubleSide,
-      uniforms: {
-        uAccent: { value: new Color(KINDS[kind].accent) },
-        uBody: { value: new Color(KINDS[kind].body) },
-        uKey: { value: KEY_LIGHT },
-        uGait: { value: spec.gait },
-        uMove: { value: spec.move },
-        uNeck: { value: new Vector3(...spec.neck) },
-        uTime: time,
-        uFogColor: fog.color,
-        uFogNear: fog.near,
-        uFogFar: fog.far,
-      },
-    });
+  constructor(parent: Group, kind: number, lod: number, body: BufferGeometry, mat: ShaderMaterial) {
+    this.geo = this.instanced(body);
     this.mesh = new Mesh(this.geo, mat);
     this.mesh.frustumCulled = false;
-    this.mesh.name = `swarm-${KINDS[kind].name}`;
+    this.mesh.renderOrder = lod;
+    this.mesh.name = `swarm-${KINDS[kind].name}-lod${lod}`;
     parent.add(this.mesh);
+  }
+
+  private instanced(body: BufferGeometry): InstancedBufferGeometry {
+    const g = new InstancedBufferGeometry();
+    g.setIndex(body.index);
+    for (const [name, at] of Object.entries(body.attributes)) g.setAttribute(name, at);
+    g.setAttribute('iPose', this.pose);
+    g.setAttribute('iAnim', this.anim);
+    g.setAttribute('iAct', this.act);
+    g.instanceCount = 0;
+    this.tris = (body.index ? body.index.count : body.getAttribute('position').count) / 3;
+    return g;
+  }
+
+  /** Swap in a new body (the baked LOD replacing the procedural fallback). */
+  setBody(body: BufferGeometry, mat: ShaderMaterial): void {
+    const old = this.geo;
+    this.geo = this.instanced(body);
+    this.geo.instanceCount = old.instanceCount;
+    this.mesh.geometry = this.geo;
+    this.mesh.material = mat;
+    old.dispose();
   }
 
   /** Hand this frame's first `n` crawlers to the GPU. */
@@ -814,6 +974,49 @@ class Brood {
   }
 }
 
+/* ── the baked creatures ────────────────────────────────────────────────── */
+
+const CREATURE_DIR = 'survivors/creatures/';
+
+interface CreatureManifest {
+  glb: string;
+  albedo: string;
+  data: string;
+  emit_max: number;
+  kinds: Record<string, { radius: number; neck: [number, number, number]; lods: { tris: number; verts: number }[] }>;
+}
+
+/** An atlas page, decoded off the main thread and never premultiplied (its alpha is data, not coverage). */
+async function atlasTexture(path: string, color: boolean): Promise<Texture> {
+  // the KTX2 twin when there is one (art/scripts/ktx2.mjs): a fifth of the GPU memory; stored unflipped
+  // with its alpha as data, exactly as this page is sampled
+  const packed = await loadCompressed(path, color, 4);
+  if (packed) return packed;
+  const loader = new ImageBitmapLoader().setOptions({ imageOrientation: 'from-image', premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+  const bitmap = (await loader.loadAsync(assetUrl(path))) as ImageBitmap;
+  const t = new Texture(bitmap);
+  t.flipY = false;
+  t.colorSpace = color ? SRGBColorSpace : NoColorSpace;
+  t.minFilter = LinearMipmapLinearFilter;
+  t.magFilter = LinearFilter;
+  t.generateMipmaps = true;
+  t.anisotropy = 4;
+  t.needsUpdate = true;
+  return t;
+}
+
+/** A glTF LOD as the swarm's attributes (GLTFLoader lower-cases custom names: _RIG -> _rig). */
+function lodBody(src: BufferGeometry): BufferGeometry {
+  const g = new BufferGeometry();
+  g.setIndex(src.index);
+  g.setAttribute('position', src.getAttribute('position'));
+  g.setAttribute('uv', src.getAttribute('uv'));
+  g.setAttribute('aRig', src.getAttribute('_rig'));
+  g.setAttribute('aPivot', src.getAttribute('_pivot'));
+  g.setAttribute('aGlow', src.getAttribute('_glow'));
+  return g;
+}
+
 /* ── the shards ─────────────────────────────────────────────────────────── */
 
 const SHARD_CAP = 3000;
@@ -821,10 +1024,15 @@ const SHARD_CAP = 3000;
 const SHARD_VERT = /* glsl */ `
 attribute vec4 iPos;   // x, y, z, size
 attribute vec4 iRot;   // axis, angle
-attribute vec3 iCol;
+attribute vec3 iCol;   // tint
+attribute vec2 iInfo;  // kind (0 ice, 1 shell), heat
 varying vec3 vCol;
 varying vec3 vN;
-varying vec3 vV;
+varying vec3 vW;
+varying vec2 vInfo;
+varying float vSunVis;
+${HAZE_VERT}
+${VERT_LIGHT}
 vec3 rot(vec3 v, vec3 k, float a) {
   float c = cos(a);
   float s = sin(a);
@@ -833,54 +1041,81 @@ vec3 rot(vec3 v, vec3 k, float a) {
 void main() {
   vec3 k = normalize(iRot.xyz + vec3(1e-4));
   vec3 p = rot(position, k, iRot.w) * iPos.w + iPos.xyz;
-  vec4 mv = modelViewMatrix * vec4(p, 1.0);
-  vN = normalize(normalMatrix * rot(normal, k, iRot.w));
-  vV = -mv.xyz;
+  vec4 wp = modelMatrix * vec4(p, 1.0);
+  vN = normalize(mat3(modelMatrix) * rot(normal, k, iRot.w));
+  vW = wp.xyz;
   vCol = iCol;
-  gl_Position = projectionMatrix * mv;
+  vInfo = iInfo;
+  vSunVis = groundSunVisibility(wp.xz);
+  computeHaze(wp.xyz);
+  gl_Position = projectionMatrix * viewMatrix * wp;
 }
 `;
 
 const SHARD_FRAG = /* glsl */ `
+${BAKED_GLSL}
+${SPECULAR_GLSL}
+varying float vHazeF;
 varying vec3 vCol;
 varying vec3 vN;
-varying vec3 vV;
+varying vec3 vW;
+varying vec2 vInfo;
+varying float vSunVis;
 void main() {
-  float f = abs(dot(normalize(vN), normalize(vV)));
-  vec3 col = vCol * (0.35 + 0.65 * f) + vCol * pow(1.0 - f, 2.0) * 0.8;
+  vec3 n = normalize(vN);
+  vec3 V = normalize(cameraPosition - vW);
+  bool shell = vInfo.x > 0.5;
+  // Ice splinters tinted by what burst (clear, catching the sky), or chips of dark shell.
+  vec3 alb = shell ? vCol * 0.05 + 0.012 : mix(vec3(0.42, 0.55, 0.66), vCol, 0.3);
+  float gloss = shell ? 0.55 : 0.92;
+  vec3 col = alb * (dynamicLight(n, 1.0, vSunVis) + fireLight(vW, n)) + specular(n, V, gloss, 1.0, vSunVis);
+  // Still hot (or still charged) as they fly; cooling as they settle.
+  col += vCol * (vInfo.y * vInfo.y) * (shell ? 0.4 : 1.6);
+  col = applyHaze(col, vHazeF);
   gl_FragColor = vec4(col, 1.0);
+  #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }
 `;
 
-/** A tetrahedron, flat-shaded, unit size. */
+/** A splinter: an irregular, elongated, flat-faceted chunk, unit size. */
 function shardGeometry(): BufferGeometry {
   const v = [
-    [0, 1, 0],
-    [0.94, -0.33, 0],
-    [-0.47, -0.33, 0.82],
-    [-0.47, -0.33, -0.82],
+    [0.05, 1.0, 0.02],
+    [0.55, 0.05, 0.12],
+    [-0.12, 0.1, 0.5],
+    [-0.5, -0.05, -0.08],
+    [0.1, -0.02, -0.45],
+    [-0.04, -0.85, 0.05],
   ];
   const faces = [
-    [0, 1, 2],
-    [0, 2, 3],
-    [0, 3, 1],
-    [1, 3, 2],
+    [0, 2, 1],
+    [0, 3, 2],
+    [0, 4, 3],
+    [0, 1, 4],
+    [5, 1, 2],
+    [5, 2, 3],
+    [5, 3, 4],
+    [5, 4, 1],
   ];
   const pos: number[] = [];
   const nor: number[] = [];
   const a = new Vector3();
   const b = new Vector3();
   const c = new Vector3();
+  const e1 = new Vector3();
+  const e2 = new Vector3();
   for (const f of faces) {
     a.fromArray(v[f[0]]);
     b.fromArray(v[f[1]]);
     c.fromArray(v[f[2]]);
-    const n = b.clone().sub(a).cross(c.clone().sub(a)).normalize();
-    for (const p of [a, b, c]) {
-      pos.push(p.x, p.y, p.z);
-      nor.push(n.x, n.y, n.z);
-    }
+    const n = e1.subVectors(b, a).cross(e2.subVectors(c, a)).normalize();
+    // keep every face wound outward
+    if (n.dot(a) < 0) {
+      n.negate();
+      for (const p of [a, c, b]) pos.push(p.x, p.y, p.z);
+    } else for (const p of [a, b, c]) pos.push(p.x, p.y, p.z);
+    for (let k = 0; k < 3; k++) nor.push(n.x, n.y, n.z);
   }
   const g = new BufferGeometry();
   g.setAttribute('position', new Float32BufferAttribute(pos, 3));
@@ -894,6 +1129,7 @@ export class Shards {
   private readonly iPos: InstancedBufferAttribute;
   private readonly iRot: InstancedBufferAttribute;
   private readonly iCol: InstancedBufferAttribute;
+  private readonly iInfo: InstancedBufferAttribute;
   private readonly p = new Float32Array(SHARD_CAP * 3);
   private readonly v = new Float32Array(SHARD_CAP * 3);
   private readonly axis = new Float32Array(SHARD_CAP * 3);
@@ -903,6 +1139,7 @@ export class Shards {
   private readonly maxLife = new Float32Array(SHARD_CAP);
   private readonly size = new Float32Array(SHARD_CAP);
   private readonly col = new Float32Array(SHARD_CAP * 3);
+  private readonly shell = new Uint8Array(SHARD_CAP);
   private next = 0;
   private readonly tmp = new Color();
   /** Shards in the air or on the floor right now. */
@@ -916,11 +1153,15 @@ export class Shards {
     this.iPos = new InstancedBufferAttribute(new Float32Array(SHARD_CAP * 4), 4).setUsage(DynamicDrawUsage);
     this.iRot = new InstancedBufferAttribute(new Float32Array(SHARD_CAP * 4), 4).setUsage(DynamicDrawUsage);
     this.iCol = new InstancedBufferAttribute(new Float32Array(SHARD_CAP * 3), 3).setUsage(DynamicDrawUsage);
+    this.iInfo = new InstancedBufferAttribute(new Float32Array(SHARD_CAP * 2), 2).setUsage(DynamicDrawUsage);
     this.geo.setAttribute('iPos', this.iPos);
     this.geo.setAttribute('iRot', this.iRot);
     this.geo.setAttribute('iCol', this.iCol);
+    this.geo.setAttribute('iInfo', this.iInfo);
     this.geo.instanceCount = 0;
-    this.mesh = new Mesh(this.geo, new ShaderMaterial({ vertexShader: SHARD_VERT, fragmentShader: SHARD_FRAG, side: DoubleSide }));
+    const mat = new ShaderMaterial({ vertexShader: SHARD_VERT, fragmentShader: SHARD_FRAG, side: FrontSide, fog: false });
+    for (const [k, val] of Object.entries(bakedLight)) mat.uniforms[k] = val as { value: unknown };
+    this.mesh = new Mesh(this.geo, mat);
     this.mesh.frustumCulled = false;
     this.mesh.name = 'shards';
     parent.add(this.mesh);
@@ -928,7 +1169,8 @@ export class Shards {
 
   /** Burst `n` shards out of (x, y, z): `speed` outward, `up` upward. */
   burst(x: number, y: number, z: number, n: number, hex: number, size: number, speed: number, up: number): void {
-    this.tmp.set(hex);
+    // the burst colour is sRGB; the shader lights in linear
+    this.tmp.setHex(hex);
     for (let k = 0; k < n; k++) {
       const i = this.next;
       this.next = (this.next + 1) % SHARD_CAP;
@@ -947,12 +1189,11 @@ export class Shards {
       this.spin[i] = (Math.random() - 0.5) * 30;
       this.life[i] = this.maxLife[i] = 0.5 + Math.random() * 0.5;
       this.size[i] = size * (0.5 + Math.random() * 0.8);
-      // Most shards are its accent colour; some are its dark shell.
-      const dark = Math.random() < 0.3;
-      const f = dark ? 0.12 : 1;
-      this.col[i * 3] = this.tmp.r * f;
-      this.col[i * 3 + 1] = this.tmp.g * f;
-      this.col[i * 3 + 2] = this.tmp.b * f;
+      // Most are splinters of ice tinted by what burst; some are its dark shell.
+      this.shell[i] = Math.random() < 0.3 ? 1 : 0;
+      this.col[i * 3] = this.tmp.r;
+      this.col[i * 3 + 1] = this.tmp.g;
+      this.col[i * 3 + 2] = this.tmp.b;
     }
   }
 
@@ -960,6 +1201,7 @@ export class Shards {
     const P = this.iPos.array as Float32Array;
     const R = this.iRot.array as Float32Array;
     const C = this.iCol.array as Float32Array;
+    const I = this.iInfo.array as Float32Array;
     let n = 0;
     for (let i = 0; i < SHARD_CAP; i++) {
       if (this.life[i] <= 0) continue;
@@ -994,13 +1236,15 @@ export class Shards {
       C[n * 3] = this.col[o];
       C[n * 3 + 1] = this.col[o + 1];
       C[n * 3 + 2] = this.col[o + 2];
+      I[n * 2] = this.shell[i];
+      I[n * 2 + 1] = this.life[i] / this.maxLife[i];
       n++;
     }
     this.live = n;
     this.geo.instanceCount = n;
     this.mesh.visible = n > 0;
     if (n > 0) {
-      for (const at of [this.iPos, this.iRot, this.iCol]) {
+      for (const at of [this.iPos, this.iRot, this.iCol, this.iInfo]) {
         at.clearUpdateRanges();
         at.addUpdateRange(0, n * at.itemSize);
         at.needsUpdate = true;
@@ -1009,50 +1253,171 @@ export class Shards {
   }
 }
 
-
 /* ── the horde, every frame ─────────────────────────────────────────────── */
 
-interface FogUniforms {
-  color: { value: Color };
-  near: { value: number };
-  far: { value: number };
-}
+/** The weapons' colours, for the hit flash (shared by every kind). */
+const FLASH_PALETTE = { value: SOURCE_COLORS.map((c) => new Color(c)) };
+
+/**
+ * Distance LOD with fixed budgets. Each enemy is measured in its own body
+ * radii from the head (so a boss is "near" from farther off) and routed to
+ * LOD0 / LOD1 / LOD2 by two cut-offs. The cut-offs come from last frame's
+ * histogram of that measure, weighted by what each enemy would cost in
+ * triangles, so the nearest ones fill each band's triangle budget; the
+ * budgets (and per-band counts) are also enforced as the pass runs, so the
+ * horde can never draw more than B0 + B1 + 3000 x LOD2.
+ */
+// sized for Quest 3 (with the ground, props and forest the late horde stays under ~450k triangles)
+const BUDGET0 = 70_000;
+const BUDGET1 = 80_000;
+const COUNT0 = 150;
+const COUNT1 = 900;
+/** Beyond these (body radii) a band is wasted detail whatever the budget. */
+const FAR0 = 60;
+const FAR1 = 220;
+/** Histogram of sqrt(radii) in 1/8 steps. */
+const BINS = 128;
 
 export class SwarmMesh {
-  /** One per kind, in KINDS order. */
-  private readonly broods: Brood[];
-  private readonly time = { value: 0 };
-  private readonly fog: FogUniforms = { color: { value: new Color() }, near: { value: 1e5 }, far: { value: 2e5 } };
-  private readonly P: Float32Array[];
-  private readonly A: Float32Array[];
-  private readonly R: Float32Array[];
-  private readonly count = new Int32Array(KINDS.length);
+  /** KINDS.length x LODS, kind-major. */
+  private readonly broods: Brood[] = [];
+  private readonly clock = { value: 0 };
+  private readonly root = { value: new Matrix3() };
+  private readonly P: Float32Array[] = [];
+  private readonly A: Float32Array[] = [];
+  private readonly R: Float32Array[] = [];
+  private readonly count = new Int32Array(KINDS.length * LODS);
+  /** Triangles per enemy per (kind, lod). */
+  private readonly tris = new Float32Array(KINDS.length * LODS);
+  private readonly hist0 = new Float32Array(BINS);
+  private readonly hist1 = new Float32Array(BINS);
+  private cut0 = 12;
+  private cut1 = 60;
+  private readonly local = new Vector3();
+  /** Per kind: the uniforms its materials share (gait, neck, accent...). */
+  private readonly kindUniforms: Record<string, { value: unknown }>[] = [];
+  /** Triangles drawn last frame (for the HUD / profiling). */
+  drawnTris = 0;
 
-  constructor(parent: Group) {
-    this.broods = KINDS.map((_, k) => new Brood(parent, k, this.time, this.fog));
-    this.P = this.broods.map((b) => b.pose.array as Float32Array);
-    this.A = this.broods.map((b) => b.anim.array as Float32Array);
-    this.R = this.broods.map((b) => b.act.array as Float32Array);
+  constructor(private readonly parent: Group) {
+    KINDS.forEach((kind, k) => {
+      const spec = GAITS[k];
+      const uniforms = {
+        uAccent: { value: new Color(kind.accent) },
+        uBody: { value: new Color(kind.body) },
+        uGait: { value: spec.gait },
+        uMove: { value: spec.move },
+        uNeck: { value: new Vector3(...spec.neck) },
+        uEmit: { value: 8 },
+        uClock: this.clock,
+        uFlashPal: FLASH_PALETTE,
+        uRoot: this.root,
+      };
+      const body = spec.body().geometry();
+      const fallback = litMaterial(uniforms, {}, DoubleSide);
+      this.kindUniforms.push(uniforms);
+      for (let l = 0; l < LODS; l++) {
+        const b = new Brood(parent, k, l, body, fallback);
+        this.broods.push(b);
+        this.P.push(b.pose.array as Float32Array);
+        this.A.push(b.anim.array as Float32Array);
+        this.R.push(b.act.array as Float32Array);
+        this.tris[k * LODS + l] = b.tris;
+      }
+    });
+    this.load().catch((e) => console.warn('Snow Survivors: creature bake not loaded, keeping the procedural horde', e));
   }
 
-  /** Copy the horde into the instance buffers: one pass, each enemy into its kind's columns. */
-  update(h: Horde, clock: number, fog: Fog | null): void {
-    const { P, A, R, count } = this;
+  /** Swap the procedural bodies for the Blender-baked creatures as soon as they arrive. */
+  private async load(): Promise<void> {
+    const man = await loadJSON<CreatureManifest>(`${CREATURE_DIR}manifest.json`);
+    const [gltf, albedo, data] = await Promise.all([
+      loadGLTF(CREATURE_DIR + man.glb),
+      atlasTexture(CREATURE_DIR + man.albedo, true),
+      atlasTexture(CREATURE_DIR + man.data, false),
+    ]);
+    const meshes = new Map<string, BufferGeometry>();
+    gltf.scene.traverse((o) => {
+      const m = o as Mesh;
+      if (m.isMesh) meshes.set(m.name, m.geometry as BufferGeometry);
+    });
+    KINDS.forEach((kind, k) => {
+      const info = man.kinds[kind.name];
+      if (!info) return;
+      const base = this.kindUniforms[k];
+      (base.uNeck.value as Vector3).fromArray(info.neck);
+      base.uEmit.value = man.emit_max;
+      const atlas = { ...base, tAlbedo: { value: albedo }, tData: { value: data } };
+      for (let l = 0; l < LODS; l++) {
+        const src = meshes.get(`${kind.name}_lod${l}`);
+        if (!src) continue;
+        const mat = litMaterial(atlas, l === LODS - 1 ? { ATLAS: '', CHEAP: '' } : { ATLAS: '' });
+        const b = this.broods[k * LODS + l];
+        b.setBody(lodBody(src), mat);
+        this.tris[k * LODS + l] = b.tris;
+      }
+    });
+  }
+
+  /**
+   * Copy the horde into the instance buffers: one pass, each enemy into its
+   * kind's columns at the level of detail its distance from `head` (world)
+   * and the triangle budgets allow.
+   */
+  update(h: Horde, clock: number, _fog?: Fog | null, head?: Vector3): void {
+    const { P, A, R, count, tris, hist0, hist1 } = this;
     count.fill(0);
+    hist0.fill(0);
+    hist1.fill(0);
+    let hx = 0;
+    let hz = 0;
+    if (head) {
+      this.parent.worldToLocal(this.local.copy(head));
+      hx = this.local.x;
+      hz = this.local.z;
+    }
+    const cut0 = head ? this.cut0 : -1;
+    const cut1 = head ? this.cut1 : -1;
+    let used0 = 0;
+    let used1 = 0;
+    let n0 = 0;
+    let n1 = 0;
+    let drawn = 0;
     for (let i = 0; i < h.n; i++) {
       if (h.dead[i]) continue;
       const k = h.kind[i];
-      const n = count[k]++;
+      const size = KINDS[k].radius * h.scale[i];
+      const dx = h.x[i] - hx;
+      const dz = h.z[i] - hz;
+      const m = Math.sqrt(dx * dx + dz * dz) / size;
+      const b = Math.min(BINS - 1, Math.floor(Math.sqrt(m) * 8));
+      const t0 = tris[k * LODS];
+      const t1 = tris[k * LODS + 1];
+      hist0[b] += t0;
+      hist1[b] += t1;
+      let lod = 2;
+      if (m < cut0 && n0 < COUNT0 && used0 + t0 <= BUDGET0) {
+        lod = 0;
+        used0 += t0;
+        n0++;
+      } else if (m < cut1 && n1 < COUNT1 && used1 + t1 <= BUDGET1) {
+        lod = 1;
+        used1 += t1;
+        n1++;
+      }
+      const slot = k * LODS + lod;
+      drawn += tris[slot];
+      const n = count[slot]++;
       const o = n * 4;
-      const pose = P[k];
-      const anim = A[k];
-      const act = R[k];
+      const pose = P[slot];
+      const anim = A[slot];
+      const act = R[slot];
       pose[o] = h.x[i];
       pose[o + 1] = h.z[i];
       pose[o + 2] = h.heading[i];
-      pose[o + 3] = KINDS[k].radius * h.scale[i];
+      pose[o + 3] = size;
       anim[o] = h.stride[i];
-      anim[o + 1] = h.flash[i] > 0 ? Math.min(1, h.flash[i] / 0.1) : 0;
+      anim[o + 1] = (h.flash[i] > 0 ? Math.min(1, h.flash[i] / 0.1) : 0) + h.hitBy[i] * 2;
       // Frost as positive, fire as negative (burning, it glows ember).
       anim[o + 2] = h.ice[i] > 0 ? 1 : h.burn[i] > 0 ? -Math.min(1, 0.5 + h.burn[i] * 0.25) : h.chill[i] > 0 ? 0.3 : 0;
       anim[o + 3] = h.rise[i];
@@ -1062,13 +1427,25 @@ export class SwarmMesh {
       act[q + 1] = h.kT[i] > 0 || (k === LUNGER && h.state[i] === 1) ? 1 : 0;
       act[q + 2] = h.bite[i];
     }
-    for (let k = 0; k < this.broods.length; k++) this.broods[k].flush(count[k]);
-    this.time.value = clock;
-    if (fog) {
-      this.fog.color.value.copy(fog.color);
-      this.fog.near.value = fog.near;
-      this.fog.far.value = fog.far;
+    for (let s = 0; s < this.broods.length; s++) this.broods[s].flush(count[s]);
+    this.drawnTris = drawn;
+    this.clock.value = clock;
+    this.root.value.setFromMatrix4(this.parent.matrixWorld);
+    // Next frame's cut-offs: fill each band's budget from the nearest out.
+    let acc = 0;
+    let bin = 0;
+    for (; bin < BINS; bin++) {
+      if (acc + hist0[bin] > BUDGET0 * 0.95) break;
+      acc += hist0[bin];
     }
+    this.cut0 = Math.min(FAR0, (bin / 8) * (bin / 8));
+    bin = Math.min(bin, Math.floor(Math.sqrt(FAR0) * 8));
+    acc = 0;
+    for (; bin < BINS; bin++) {
+      if (acc + hist1[bin] > BUDGET1 * 0.95) break;
+      acc += hist1[bin];
+    }
+    this.cut1 = Math.min(FAR1, (bin / 8) * (bin / 8));
   }
 
   setVisible(visible: boolean): void {

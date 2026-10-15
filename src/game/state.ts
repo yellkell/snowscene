@@ -15,8 +15,6 @@ export const Phase = {
   Cave: 'Cave',
   /** At the top of the works: light the signal beacon. */
   Beacon: 'Beacon',
-  /** Expedition only: down the summit chute, leaning past the barriers. */
-  Sliding: 'Sliding',
   /** Assemble the hang glider kit on the beacon deck on top of the cave's bluff. */
   Building: 'Building',
   /** Glider is assembled; grab the control bar with both hands to launch. */
@@ -67,10 +65,6 @@ export const game = {
   flyingGlider: null as Object3D | null,
   /** Runs once the screen is fully faded out, then the fade lifts. */
   pendingFadeAction: null as (() => void) | null,
-  /** Body warmth, 1 = toasty, 0 = hypothermic (expedition only drains it). */
-  warmth: signal(1),
-  /** Sips left in the thermos (refilled at camps). */
-  thermosSips: 4,
   /** A short message shown on the guide panel for a few seconds. */
   toast: signal<{ text: string; until: number } | null>(null),
   /** The backpack is open (palm up). */
@@ -87,11 +81,6 @@ export function requestRecentre(): void {
 /** Show a brief message on the guide panel. */
 export function toast(text: string, seconds = 3.5): void {
   game.toast.value = { text, until: performance.now() / 1000 + seconds };
-}
-
-export function addWarmth(amount: number): void {
-  const w = Math.max(0, Math.min(1, game.warmth.peek() + amount));
-  if (w !== game.warmth.peek()) game.warmth.value = w;
 }
 
 /** Fade to white, run `action` while hidden, then fade back in. */

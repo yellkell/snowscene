@@ -88,6 +88,8 @@ export class Horde {
   readonly stride = new Float32Array(CAP);
   /** Hit flash (s left); chilled (slowed, frosted) and frozen solid (s left). */
   readonly flash = new Float32Array(CAP);
+  /** Which of your weapons hit it last (its flash and its shatter take that weapon's colour). */
+  readonly hitBy = new Uint8Array(CAP);
   readonly chill = new Float32Array(CAP);
   readonly ice = new Float32Array(CAP);
   /** Climbing out of the snow, 0 → 1. */
@@ -141,6 +143,7 @@ export class Horde {
     this.veer[i] = (Math.random() - 0.5) * 0.7;
     this.stride[i] = Math.random() * 10;
     this.flash[i] = 0;
+    this.hitBy[i] = 0;
     this.chill[i] = 0;
     this.ice[i] = 0;
     this.rise[i] = 0;
@@ -181,6 +184,7 @@ export class Horde {
     this.veer[to] = this.veer[from];
     this.stride[to] = this.stride[from];
     this.flash[to] = this.flash[from];
+    this.hitBy[to] = this.hitBy[from];
     this.chill[to] = this.chill[from];
     this.ice[to] = this.ice[from];
     this.rise[to] = this.rise[from];

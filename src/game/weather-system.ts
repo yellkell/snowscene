@@ -23,13 +23,14 @@ import {
 import { audio } from './audio.js';
 import { mistHooks } from './glide-mist.js';
 import { landUniforms } from './land-material.js';
-import { fogCullables } from './fog-cull.js';
+import { fogCullables, lodDebug } from './fog-cull.js';
 import { forestUniforms } from './trees.js';
 import { currentLevel, type FogRange } from './level.js';
 import { getHeadWorld } from './rig.js';
 import { sceneRefs } from './scene-system.js';
 import { cloudSeaUniforms, skyUniforms } from './sky.js';
 import { game, Phase } from './state.js';
+import { BAKED_GLSL, bakedLight, bakedView } from './baked/light.js';
 import { mulberry32, RANGES_INNER_RADIUS, smoothstep, TUTORIAL_CENTER_X, TUTORIAL_CENTER_Z, valueNoise } from './terrain.js';
 import { FOG_COLOR } from './world-builders.js';
 
@@ -40,8 +41,8 @@ const SUN_BASE = 3.2;
 
 /**
  * Live weather values for other systems, and optional fog colours that
- * replace the tutorial's (the expedition sky retints them by time of day;
- * null keeps FOG_COLOR / STORM_FOG).
+ * replace the tutorial's (nothing sets them at present; null keeps
+ * FOG_COLOR / STORM_FOG).
  */
 export const weatherHooks = {
   /** Current (smoothed) storm level 0..1. */
@@ -50,6 +51,9 @@ export const weatherHooks = {
   stormFog: null as Color | null,
   /** Falling-snow colour (display space; null = white). Dimmed at night. */
   snowTint: null as Color | null,
+  /** The wind the snow blows in: heading (radians; it blows toward (cos, sin) in x, z) and speed (m/s). */
+  windYaw: 0,
+  windSpeed: 0,
 };
 const SNOW_WHITE = new Color(1, 1, 1);
 
@@ -77,6 +81,7 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
   geometry.setAttribute('aSeed', new Float32BufferAttribute(seeds, 1));
   const material = new ShaderMaterial({
     uniforms: {
+      ...bakedLight,
       uTime: { value: 0 },
       uCenter: { value: new Vector3() },
       uBox: { value: opts.box.clone() },
@@ -87,6 +92,8 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
       uIntensity: { value: 1 },
       uOpacity: { value: 1 },
       uTint: { value: new Color(1, 1, 1) },
+      // Baked levels light the flakes like everything else (see baked/light.ts).
+      uBaked: { value: 0 },
     },
     vertexShader: /* glsl */ `
       uniform float uTime;
@@ -102,6 +109,7 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
       varying float vAlpha;
       varying vec2 vDir;
       varying float vStretch;
+      varying vec3 vView;
       void main() {
         float speedVar = 0.75 + aSeed * 0.5;
         vec3 p = position * uBox + uOffset * speedVar;
@@ -110,6 +118,7 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
         p = mod(p - uCenter + 0.5 * uBox, uBox) + uCenter - 0.5 * uBox;
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mv;
+        vView = normalize((modelMatrix * vec4(p, 1.0)).xyz - cameraPosition);
         // Motion streak: where this flake will be a moment from now, on screen.
         vec4 ahead = projectionMatrix * (modelViewMatrix * vec4(p + uVelocity * speedVar * 0.045, 1.0));
         vec2 d = ahead.xy / ahead.w - gl_Position.xy / gl_Position.w;
@@ -125,9 +134,12 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
     `,
     fragmentShader: /* glsl */ `
       uniform vec3 uTint;
+      uniform float uBaked;
+      ${BAKED_GLSL}
       varying float vAlpha;
       varying vec2 vDir;
       varying float vStretch;
+      varying vec3 vView;
       void main() {
         vec2 pc = gl_PointCoord - 0.5;
         // Elliptical flake stretched along its screen-space motion.
@@ -135,7 +147,25 @@ function buildSnowLayer(opts: SnowLayerOptions): Points {
         float across = dot(pc, vec2(-vDir.y, vDir.x)) * vStretch;
         float a = smoothstep(0.5, 0.1, length(vec2(along, across))) * vAlpha;
         if (a < 0.02) discard;
-        gl_FragColor = vec4(uTint, a);
+        vec3 c = uTint;
+        if (uBaked > 0.5) {
+          // A flake is a tiny translucent crystal: lit all round by the sky, and glowing when it sits
+          // between you and the low sun (strong forward scattering).
+          // It sees the whole sky, not the half a level surface does, plus the bright snow below
+          // bouncing it back up, and it passes on some of the bright air behind it. (Lit like the ground,
+          // flakes came out at half the sky's brightness: black specks against the whiteout.)
+          float fwd = max(dot(vView, uSunDir), 0.0);
+          float phase = 0.35 + 6.0 * pow(fwd, 12.0) + 1.2 * pow(fwd, 3.0);
+          vec3 sky = uOpenSky * uSkyTint * uSkyGain;
+          vec3 below = uSnowAlbedo * (sky + uSunColor * uOpenSun);
+          c = uSnowAlbedo * (sky * 1.15 + below * 0.85 + uSunColor * uOpenSun * phase) + uHazeColor * 0.3;
+          c = applyHaze(c, 0.0);
+        }
+        gl_FragColor = vec4(c, a);
+        if (uBaked > 0.5) {
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }
       }
     `,
     transparent: true,
@@ -203,6 +233,8 @@ export class WeatherSystem extends createSystem({}) {
     forestUniforms.uWind.value = 0.35 + windSpeed * 0.12;
     const wx = Math.cos(windYaw) * windSpeed;
     const wz = Math.sin(windYaw) * windSpeed;
+    weatherHooks.windYaw = windYaw;
+    weatherHooks.windSpeed = windSpeed;
 
     // Falling snow: denser and more wind-driven as the storm builds.
     this.snowOffset.x += wx * dt;
@@ -219,6 +251,7 @@ export class WeatherSystem extends createSystem({}) {
     snow.uIntensity.value = (0.18 + storm * 0.82) * outdoors;
     this.snow.visible = snow.uIntensity.value > 0.01;
     (snow.uTint.value as Color).copy(weatherHooks.snowTint ?? SNOW_WHITE);
+    snow.uBaked.value = bakedView.active ? 1 : 0;
 
     // Spindrift: snow blown along the ground in strong wind.
     this.driftOffset.x += wx * 1.8 * dt;
@@ -233,6 +266,7 @@ export class WeatherSystem extends createSystem({}) {
     // Invisible spindrift still rasterises every flake: skip the draw.
     this.drift.visible = drift.uOpacity.value > 0.01;
     (drift.uTint.value as Color).copy(weatherHooks.snowTint ?? SNOW_WHITE);
+    drift.uBaked.value = bakedView.active ? 1 : 0;
 
     // Visibility closes in during the storm; in clear air only the far
     // ranges pick up aerial haze.
@@ -274,10 +308,16 @@ export class WeatherSystem extends createSystem({}) {
       level.id === 'tutorial' &&
       (phase === Phase.Building || phase === Phase.Launch || phase === Phase.Gliding || phase === Phase.Landed);
     for (const item of fogCullables) {
-      const d = item.center.distanceTo(this.head) - item.radius;
-      item.object.visible = d < Math.min(far + 10, item.maxDistance ?? Infinity);
+      let c = item.center;
+      if (item.local) {
+        const parent = item.object.parent;
+        c = item.local.world.copy(c);
+        if (parent) c.applyMatrix4(parent.matrixWorld);
+      }
+      const d = c.distanceTo(this.head) - item.radius;
+      item.object.visible = d < Math.min(far * (item.fogScale ?? 1) + 10, item.maxDistance ?? Infinity) && (item.enabled?.() ?? true);
       if (item.lod && item.object.visible) {
-        const distant = lowTrees || d > item.lod.distance;
+        const distant = lodDebug.force ? lodDebug.force === 2 : (lowTrees && !item.ownLod) || d > item.lod.distance;
         item.lod.far.visible = distant;
         for (const o of item.lod.near) o.visible = !distant;
       }

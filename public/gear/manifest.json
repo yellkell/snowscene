@@ -1,0 +1,188 @@
+{
+ "pole": {
+  "mesh": "pole.glb",
+  "albedo": "pole_albedo.webp",
+  "orm": "pole_orm.webp",
+  "tris": 1728
+ },
+ "glider_left": {
+  "mesh": "glider_left.glb",
+  "albedo": "glider_left_albedo.webp",
+  "orm": "glider_left_orm.webp",
+  "tris": 2016
+ },
+ "glider_right": {
+  "mesh": "glider_right.glb",
+  "albedo": "glider_right_albedo.webp",
+  "orm": "glider_right_orm.webp",
+  "tris": 2016
+ },
+ "glider_keel": {
+  "mesh": "glider_keel.glb",
+  "albedo": "glider_keel_albedo.webp",
+  "orm": "glider_keel_orm.webp",
+  "tris": 344
+ },
+ "glider_bar": {
+  "mesh": "glider_bar.glb",
+  "albedo": "glider_bar_albedo.webp",
+  "orm": "glider_bar_orm.webp",
+  "tris": 372
+ },
+ "bench": {
+  "mesh": "bench.glb",
+  "albedo": "bench_albedo.webp",
+  "orm": "bench_orm.webp",
+  "tris": 4640
+ },
+ "pack": {
+  "mesh": "pack.glb",
+  "albedo": "pack_albedo.webp",
+  "orm": "pack_orm.webp",
+  "tris": 1516
+ },
+ "figure0_body": {
+  "mesh": "figure0_body.glb",
+  "albedo": "fig0_albedo.webp",
+  "orm": "fig0_orm.webp",
+  "tris": 4225
+ },
+ "figure0_larm": {
+  "mesh": "figure0_larm.glb",
+  "albedo": "fig0_albedo.webp",
+  "orm": "fig0_orm.webp",
+  "tris": 810
+ },
+ "figure0_rarm": {
+  "mesh": "figure0_rarm.glb",
+  "albedo": "fig0_albedo.webp",
+  "orm": "fig0_orm.webp",
+  "tris": 808
+ },
+ "figure1_body": {
+  "mesh": "figure1_body.glb",
+  "albedo": "fig1_albedo.webp",
+  "orm": "fig1_orm.webp",
+  "tris": 3504
+ },
+ "figure1_larm": {
+  "mesh": "figure1_larm.glb",
+  "albedo": "fig1_albedo.webp",
+  "orm": "fig1_orm.webp",
+  "tris": 834
+ },
+ "figure1_rarm": {
+  "mesh": "figure1_rarm.glb",
+  "albedo": "fig1_albedo.webp",
+  "orm": "fig1_orm.webp",
+  "tris": 834
+ },
+ "figure2_body": {
+  "mesh": "figure2_body.glb",
+  "albedo": "fig2_albedo.webp",
+  "orm": "fig2_orm.webp",
+  "tris": 3796
+ },
+ "figure2_larm": {
+  "mesh": "figure2_larm.glb",
+  "albedo": "fig2_albedo.webp",
+  "orm": "fig2_orm.webp",
+  "tris": 832
+ },
+ "figure2_rarm": {
+  "mesh": "figure2_rarm.glb",
+  "albedo": "fig2_albedo.webp",
+  "orm": "fig2_orm.webp",
+  "tris": 830
+ },
+ "figure3_body": {
+  "mesh": "figure3_body.glb",
+  "albedo": "fig3_albedo.webp",
+  "orm": "fig3_orm.webp",
+  "tris": 4234
+ },
+ "figure3_larm": {
+  "mesh": "figure3_larm.glb",
+  "albedo": "fig3_albedo.webp",
+  "orm": "fig3_orm.webp",
+  "tris": 806
+ },
+ "figure3_rarm": {
+  "mesh": "figure3_rarm.glb",
+  "albedo": "fig3_albedo.webp",
+  "orm": "fig3_orm.webp",
+  "tris": 804
+ },
+ "figure4_body": {
+  "mesh": "figure4_body.glb",
+  "albedo": "fig4_albedo.webp",
+  "orm": "fig4_orm.webp",
+  "tris": 4204
+ },
+ "figure4_larm": {
+  "mesh": "figure4_larm.glb",
+  "albedo": "fig4_albedo.webp",
+  "orm": "fig4_orm.webp",
+  "tris": 740
+ },
+ "figure4_rarm": {
+  "mesh": "figure4_rarm.glb",
+  "albedo": "fig4_albedo.webp",
+  "orm": "fig4_orm.webp",
+  "tris": 740
+ },
+ "figure5_body": {
+  "mesh": "figure5_body.glb",
+  "albedo": "fig5_albedo.webp",
+  "orm": "fig5_orm.webp",
+  "tris": 3602
+ },
+ "figure5_larm": {
+  "mesh": "figure5_larm.glb",
+  "albedo": "fig5_albedo.webp",
+  "orm": "fig5_orm.webp",
+  "tris": 866
+ },
+ "figure5_rarm": {
+  "mesh": "figure5_rarm.glb",
+  "albedo": "fig5_albedo.webp",
+  "orm": "fig5_orm.webp",
+  "tris": 864
+ },
+ "figure0_far": {
+  "mesh": "figure0_far.glb",
+  "albedo": "fig0_albedo.webp",
+  "orm": "fig0_orm.webp",
+  "tris": 5843
+ },
+ "figure1_far": {
+  "mesh": "figure1_far.glb",
+  "albedo": "fig1_albedo.webp",
+  "orm": "fig1_orm.webp",
+  "tris": 5172
+ },
+ "figure2_far": {
+  "mesh": "figure2_far.glb",
+  "albedo": "fig2_albedo.webp",
+  "orm": "fig2_orm.webp",
+  "tris": 5458
+ },
+ "figure3_far": {
+  "mesh": "figure3_far.glb",
+  "albedo": "fig3_albedo.webp",
+  "orm": "fig3_orm.webp",
+  "tris": 5844
+ },
+ "figure4_far": {
+  "mesh": "figure4_far.glb",
+  "albedo": "fig4_albedo.webp",
+  "orm": "fig4_orm.webp",
+  "tris": 5684
+ },
+ "figure5_far": {
+  "mesh": "figure5_far.glb",
+  "albedo": "fig5_albedo.webp",
+  "orm": "fig5_orm.webp",
+  "tris": 5332
+ }
+}

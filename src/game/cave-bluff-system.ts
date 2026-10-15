@@ -24,6 +24,7 @@ export class CaveBluffSystem extends createSystem({}) {
     const parent = sceneRefs.tutorialRoot ?? undefined;
     const bluff = buildBluffWorld();
     this.deck = bluff.deck;
+    sceneRefs.bluff = bluff;
     this.world.createTransformEntity(bluff.root, { parent, persistent: true });
 
     this.beacon = new Bonfire(BEACON_TOP, { scale: 0.32, party: false, light: false });

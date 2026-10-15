@@ -20,11 +20,15 @@ shadowed snow and granite, a snow-laden spruce forest and a horizon of
    their own clock. Step onto a deck when its signal lamps are green; amber
    lamps go out one per beat before it leaves, and red means it is moving.
    No room to walk? Reach over the green deck and close your hand to be
-   carried onto it. Take the left wing, right wing and control bar from their
-   racks on the way up (they pulse; reach in with a closed hand to take one
-   and it goes into your backpack; a deck leaving a rack waits until you have).
-4. **Light the beacon.** At the top of the chimney, take the torch off its
-   hook and hold it to the brazier. The beacon on top of the bluff tells the
+   carried onto it. Take the left wing and right wing from their racks on
+   the way up (they pulse; reach in with a closed hand, or just touch one, and
+   it goes into your backpack; a deck leaving a rack waits until you have).
+   The control bar, the last part, hangs from a gallows right across the
+   edge you step off its deck by: you can't leave without walking into it.
+4. **Light the beacon.** Once all three parts are found, the ribboned signal
+   torch flares up on its post at the top of the chimney. Take it (it sits in
+   your fist like a real torch, its flame always burning upward) and hold
+   its head to the brazier. The beacon on top of the bluff tells the
    party on the lake that you are on your way.
 5. **Build a glider.** You come up out of the chimney onto the beacon deck
    on top of the bluff. Open your pack, take out each part you recovered and
@@ -33,6 +37,13 @@ shadowed snow and granite, a snow-laden spruce forest and a horizon of
 6. **Glide home.** Close both hands on the control bar to launch. Tilt the bar
    like a steering wheel to turn; pull it in to dive, push it out to float.
    Land in the valley. Thanks for playing!
+
+**Snow Survivors.** A horde-survival arena, offered by the guide panel at
+the trailhead and again after you land. Hold out for 8 minutes: pole about
+(W on desktop) while your weapons fire by themselves, level up and pick an
+upgrade (poke a card, or 1-4 on desktop), and go fast to ram straight
+through the horde. "Back to the mountain" (in the pack) returns you to the
+trail.
 
 Music: "By the River" accompanies the ascent and crossfades into "Night
 Catch" when the beacon is lit (`public/audio/`).
@@ -49,17 +60,17 @@ approach assist lines you up to land at the edge of the party.
 | --------------- | ----------------------------- | -------------------------- |
 | Hand tracking   | Fist (a firm pinch also works) | Hands on the bar           |
 | Controllers     | Squeeze or trigger            | Bar, or thumbstick         |
-| Desktop browser | W to pole/climb/step across, E to take or fit parts and light the beacon, A/D to lean on the expedition's chute, Space to launch | A/D steer, W dive, S float |
+| Desktop browser | W to pole/climb/step across, E to take or fit parts and light the beacon, Space to launch | A/D steer, W dive, S float |
 
 Drag the mouse to look around on desktop.
 
 Lost your bearings, or drifted towards the edge of your room? Open the
 backpack (either palm up, or A / X on a controller: a wooden tackle-box tray
 rises in front of you, your gear in its felt-lined slots and your notes on its
-open lid) and poke the brass **recentre** button standing off its left rim
+open lid; opened with a palm, it folds away as soon as you turn that hand
+back over) and poke the brass **recentre** button standing off its left rim
 with an index finger (R on desktop). In the cave it puts you back on
-the middle of the deck you're standing on; on the expedition's chute it
-makes where you stand the middle lane; on the trail it turns you up the trail; at the
+the middle of the deck you're standing on; on the trail it turns you up the trail; at the
 workbench it stands you back at the bench; after landing it faces you to the
 fire.
 
@@ -94,14 +105,13 @@ and press **Enter VR**.
   machines, `cave-system.ts` the moving frame of reference, parts and beacon
 - `src/game/cave-bluff.ts`, `cave-bluff-system.ts`: the bluff with the cave
   mouth, and the beacon deck on top where the glider is built and launched
-- `src/game/expedition/slide/`: the Summit Chute, a DOWN-style lane slide
-  from the expedition's summit down the mountain's flank to a deck above the
-  ice cliff, where you unpack the glider (`chute-path.ts` is the profile,
-  barriers and speeds, `chute-system.ts` the ride)
 - `src/game/glider-build-system.ts`: kit assembly on the beacon deck
 - `src/game/glide-system.ts`: launch, flight and landing
 - `src/game/weather-system.ts`: blizzard snowfall, spindrift, fog and wind
 - `src/game/campfire.ts`: the bonfire party on the lake
 - `src/game/guide-system.ts`: guide panel (`public/ui/guide.uikitml`)
+- `src/game/survivors/`: Snow Survivors (`survivors-system.ts` runs the
+  arena, `horde.ts` the enemies, `upgrades.ts` and `upgrade-menu.ts` the
+  level-up cards)
 - Tuning constants (pole gain, grab radii, glide speeds) sit at the top of
   each system file.

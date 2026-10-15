@@ -11,7 +11,7 @@
   "world": {
     "xr": {
       "mode": "vr",
-      "offer": "always",
+      "offer": "none",
       "features": {
         "handTracking": true
       }

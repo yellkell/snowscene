@@ -40,31 +40,36 @@
  * Started from the guide panel ("Snow Survivors") or with ?survivors.
  */
 
-import { createSystem, type Fog, Group, Vector3 } from '@iwsdk/core';
+import { Color, createSystem, type Fog, Group, Vector3 } from '@iwsdk/core';
 import { audio } from '../audio.js';
 import { equipPair, setPack } from '../equipment.js';
-import { exp } from '../expedition/exp-state.js';
 import { HANDS, type Handedness } from '../hand-input.js';
 import { level } from '../level.js';
 import { poleMeshes, poleTuning } from '../pole-system.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt } from '../rig.js';
-import { sceneRefs } from '../scene-system.js';
+import { sceneRefs, setBakedLook } from '../scene-system.js';
+import { bakedView } from '../baked/light.js';
 import { fadeThen, game, Phase, requestRestart, setPhase, toast } from '../state.js';
 import { WALL_Z } from '../terrain.js';
 import { startTutorialKit } from '../tutorial-kit.js';
 import { tutorialLevel } from '../tutorial-level.js';
 import { POLE_TIP_DISTANCE } from '../world-builders.js';
 import { BLOATER, BRUTE, CAP, GHOUL, GLITTER, Horde, KINDS, LUNGER, SPLITTER, TITAN } from './horde.js';
-import { Blades, Bolts, Chests, Gems, Hurls, Impacts, Novas, Orbs, Zaps } from './survivors-fx.js';
+import { billboard, Blades, BOLT_HAIL, BOLT_ICICLE, BOLT_SHARD, BOLT_STAR, Bolts, Chests, fx, type FxGround, Gems, Hurls, Impacts, MIN_GAIN, Novas, Orbs, Zaps } from './survivors-fx.js';
+import { SOURCE_COLORS, SRC, SRC_KEEP } from './weapon-colors.js';
 import { Breath, Comets, Embers, Flames, Rockets } from './fire-fx.js';
+import { GroundDecals, GroundGlow, fxFrame } from './fx-assets.js';
 import { SurvivorsHud } from './survivors-hud.js';
 import { ARENA_X, ARENA_Z, duneHeight, survivorsLevel, survivorsView } from './survivors-level.js';
 import { survivors, survivorsControl } from './survivors-state.js';
-import { buildSurvivorsWorld } from './survivors-world.js';
+import { buildSurvivorsWorld, type SurvivorsWorld } from './survivors-world.js';
 import { Shards, SwarmMesh } from './swarm-mesh.js';
 import { UpgradeMenu } from './upgrade-menu.js';
+import { loadDisplayFont } from './lettering.js';
 import {
   CHOICE,
+  END_AGAIN,
+  END_LEAVE,
   EVOLUTIONS,
   type Evolution,
   type EvolutionId,
@@ -81,19 +86,56 @@ import {
   type WeaponId,
 } from './upgrades.js';
 
+/** An enemy's body is this much of its radius up off the snow (its middle). */
+const BODY = 0.6;
+/** Bolts that fly every way skim at the height of a typical body in the crowd... */
+const CROWD_BODY = 0.3;
+/** ...and none flies higher than this over the snow once down (it would skim over the small ones). */
+const MAX_CRUISE = 0.45;
+/** Seconds the result of a run stands before its two cards come up. */
+const END_WAIT = 2.6;
 /** A bloater's burst: how far it reaches, and how close it hurts you. */
 const BURST_RADIUS = 3.4;
 const BURST_HURTS = 2.1;
 /** Kill flares shown per frame, at most. */
 const KILL_FLARES = 6;
+/** Icicles shattering into shards per frame, at most. */
+const SHATTERS = 8;
+/** Bolts' hit flashes per frame, at most (late in a run hundreds hit a second). */
+const BOLT_FLARES = 12;
+/** Links of a chain of lightning that flash where they strike. */
+const LIGHTNING_FLARES = 5;
+/**
+ * The small hit flashes (bolts, blades, lightning, kills) share an allowance
+ * of this many a second, banking up to FLARE_BURST: counted per frame they
+ * ran to hundreds a second on a headset and hazed the crowd over.
+ */
+const FLARE_RATE = 60;
+const FLARE_BURST = 12;
+/**
+ * The glow budget: about this much added light (see fxLoad) is as much as
+ * the view takes before the glows start to soften.
+ */
+const GLOW_BUDGET = 150;
 /** A crystal streak pays out a chord every this many. */
 const STREAK_CHORD = 20;
 /** Patches of burning snow the ember trail can keep alight at once. */
 const TRAIL_CAP = 90;
+/** Comet craters charred into the snow at once, and how long one lasts (s). */
+const CRATER_CAP = 16;
+const CRATER_LIFE = 6;
+/**
+ * The trail's tongues of flame grow with the patch only so far (a late
+ * Wildfire patch is metres across: its flames were taller than a house);
+ * a wider patch gets more tongues across it instead.
+ */
+const FLAME_TALL = 1.5;
 /** Fire Breath comes from this far out in front of you, and this far below your eyes. */
 const BREATH_OUT = 0.75;
 const BREATH_DOWN = 0.55;
 const FIREWORK_COLORS = [0xff4fd8, 0x4fd2ff, 0xffd84f, 0x7dff6a, 0xff6a4f, 0xb36bff];
+/** A firework's after-crackle. */
+const GLITTER_GOLD = 0xffd36a;
 
 /** Enemies come up out of the snow this far from you... */
 const SPAWN_NEAR = 24;
@@ -134,6 +176,7 @@ const BOSS_WARNING = 8;
 export class SurvivorsSystem extends createSystem({}) {
   private built = false;
   private root!: Group;
+  private arena!: SurvivorsWorld;
   private horde = new Horde();
   private swarm!: SwarmMesh;
   private shards!: Shards;
@@ -151,6 +194,10 @@ export class SurvivorsSystem extends createSystem({}) {
   private breath!: Breath;
   private rockets!: Rockets;
   private comets!: Comets;
+  /** Fire's light on the snow, and what is printed into it (scorches, shadows). */
+  private fxGround!: FxGround;
+  /** Where the ember trail last scorched the snow. */
+  private readonly lastScorch = new Vector3(1e9, 0, 1e9);
   private hitFlares = 0;
   /** Fire Breath: seconds of roar left, and to its next bite. */
   private breathT = 0;
@@ -161,6 +208,12 @@ export class SurvivorsSystem extends createSystem({}) {
   private readonly patchZ = new Float32Array(TRAIL_CAP);
   private readonly patchR = new Float32Array(TRAIL_CAP);
   private readonly patchLife = new Float32Array(TRAIL_CAP);
+  /** Comet craters charred into the snow: where, how wide, seconds left. */
+  private readonly craterX = new Float32Array(CRATER_CAP);
+  private readonly craterZ = new Float32Array(CRATER_CAP);
+  private readonly craterR = new Float32Array(CRATER_CAP);
+  private readonly craterLife = new Float32Array(CRATER_CAP);
+  private craterNext = 0;
   private readonly patchFull = new Float32Array(TRAIL_CAP);
   private patchNext = 0;
   private patchTick = 0;
@@ -226,6 +279,14 @@ export class SurvivorsSystem extends createSystem({}) {
   private nextGlitter = 50;
   private glitterTrail = 0;
   private killFlares = 0;
+  private shatters = 0;
+  private boltFlares = 0;
+  /** Small hit flashes this frame may still show (see FLARE_RATE). */
+  private flares = FLARE_BURST;
+  /** Which weapon is dealing the blows right now (see weapon-colors.ts). */
+  private src: number = SRC.none;
+  private readonly tintA = new Color();
+  private readonly tintB = new Color();
   private gemHaptic = 0;
   private growlT = 0;
   private nextOrb = 8;
@@ -273,8 +334,13 @@ export class SurvivorsSystem extends createSystem({}) {
   private readonly pokeCd = { left: 0, right: 0 };
   private readonly tipAt = new Vector3();
   private readonly tipVel = new Vector3();
+  /** Seconds until the end-of-run cards come up (0: up, or not yet over), and their line. */
+  private endWait = 0;
+  private endLine = '';
 
   init(): void {
+    // The run's lettering face: loaded now so it is ready long before a run.
+    void loadDisplayFont();
     survivorsControl.start = () => this.start();
     survivorsControl.exit = () => this.exit();
     if (new URLSearchParams(window.location.search).has('survivors')) {
@@ -290,23 +356,26 @@ export class SurvivorsSystem extends createSystem({}) {
     this.built = true;
     this.root = new Group();
     this.root.name = 'SnowSurvivors';
-    this.root.add(buildSurvivorsWorld());
+    this.arena = buildSurvivorsWorld((o) => this.root.add(o));
+    this.root.add(this.arena.group);
     this.swarm = new SwarmMesh(this.root);
     this.shards = new Shards(this.root);
+    const ground: FxGround = { glow: new GroundGlow(this.root), decals: new GroundDecals(this.root) };
+    this.fxGround = ground;
     this.bolts = new Bolts(this.root);
     this.blades = new Blades(this.root);
-    this.novas = new Novas(this.root);
-    this.zaps = new Zaps(this.root);
+    this.novas = new Novas(this.root, ground);
+    this.zaps = new Zaps(this.root, ground);
     this.gems = new Gems(this.root);
-    this.orbs = new Orbs(this.root);
-    this.chests = new Chests(this.root);
-    this.hurls = new Hurls(this.root);
+    this.orbs = new Orbs(this.root, ground);
+    this.chests = new Chests(this.root, ground);
+    this.hurls = new Hurls(this.root, ground);
     this.impacts = new Impacts(this.root);
     this.embers = new Embers(this.root);
     this.flames = new Flames(this.root);
-    this.breath = new Breath(this.root);
+    this.breath = new Breath(this.root, ground.glow);
     this.rockets = new Rockets(this.root);
-    this.comets = new Comets(this.root);
+    this.comets = new Comets(this.root, ground.glow);
     this.root.visible = false;
     this.world.createTransformEntity(this.root, { persistent: true });
     this.world.createTransformEntity(this.hud.root, { persistent: true });
@@ -318,12 +387,13 @@ export class SurvivorsSystem extends createSystem({}) {
   // ---------------------------------------------------------- the run ---
 
   private start(): void {
-    if (this.busy || exp.active.peek()) return;
+    if (this.busy) return;
     this.busy = true;
     fadeThen(() => {
       this.build();
       const tutorial = sceneRefs.tutorialRoot?.object3D;
       if (tutorial) tutorial.visible = false;
+      setBakedLook(this.world.renderer, true);
       requestRestart();
       level.value = survivorsLevel;
       survivors.active.value = true;
@@ -340,6 +410,7 @@ export class SurvivorsSystem extends createSystem({}) {
       setPhase(Phase.Poling);
       audio.setMusic('night');
       toast('Snow Survivors! Hold out for 8 minutes. Your weapons fire by themselves; walk over what they drop.', 6);
+      this.hud.announce('SURVIVE 8 MINUTES', '#ffd166', 4, 2, 'Your weapons fire by themselves');
       this.pendingHint = this.world.renderer.xr.isPresenting
         ? { text: 'Your stats are on your pole handles', color: '#c9e8ff' }
         : { text: 'Your stats are in the bottom corners', color: '#c9e8ff' };
@@ -363,6 +434,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.resetTuning();
       const tutorial = sceneRefs.tutorialRoot?.object3D;
       if (tutorial) tutorial.visible = true;
+      setBakedLook(this.world.renderer, false);
       level.value = tutorialLevel;
       const rig = this.player;
       rig.rotation.set(0, 0, 0);
@@ -388,6 +460,8 @@ export class SurvivorsSystem extends createSystem({}) {
     this.time = 0;
     this.kills = 0;
     this.dead = false;
+    this.endWait = 0;
+    fx.gain = 1;
     this.warning = 0;
     this.lastSecond = -1;
     this.menu.close();
@@ -431,6 +505,8 @@ export class SurvivorsSystem extends createSystem({}) {
     this.rockets.clear();
     this.comets.clear();
     this.patchLife.fill(0);
+    this.fxGround.decals.clear();
+    this.craterLife.fill(0);
     this.pops.length = 0;
     this.breathT = 0;
     this.breathAlpha = 0;
@@ -471,6 +547,12 @@ export class SurvivorsSystem extends createSystem({}) {
     const dt = Math.min(delta, 0.05);
     getHeadWorld(this.world, this.head);
     const yaw = getHeadYaw(this.world);
+    // Glows are flat cards turned to the eye.
+    (this.world.renderer.xr.isPresenting ? this.player.head : this.world.camera).getWorldQuaternion(billboard);
+    this.shatters = 0;
+    this.boltFlares = 0;
+    this.flares = Math.min(FLARE_BURST, this.flares + FLARE_RATE * dt);
+    this.src = SRC.none;
     survivorsView.yaw = yaw;
     const px = this.head.x;
     const pz = this.head.z;
@@ -479,6 +561,8 @@ export class SurvivorsSystem extends createSystem({}) {
     const mvz = pz - this.lastHead.z;
     if (mvx * mvx + mvz * mvz > 1e-6) this.moveDir.set(mvx, 0, mvz).normalize();
     this.lastHead.copy(this.head);
+    this.arena.update(dt, this.head, bakedView.forceProgress >= 0 ? bakedView.forceProgress : Math.min(1, this.time / RUN_SECONDS));
+    this.world.renderer.toneMappingExposure = bakedView.exposure;
 
     // An upgrade choice stops time: the horde, their bolts and boulders,
     // the crystals and every effect freeze where they are (only the cards
@@ -534,13 +618,17 @@ export class SurvivorsSystem extends createSystem({}) {
     } else if (this.dead) {
       this.blades.hide();
       this.breathT = 0;
+      this.updateEnd(dt);
     }
 
-    this.swarm.update(this.horde, clock, this.scene.fog as Fog | null);
+    this.swarm.update(this.horde, clock, this.scene.fog as Fog | null, this.head);
     this.shards.tick(simDt);
-    this.bolts.draw();
+    fxFrame(bakedView.exposure, clock);
+    this.fxGround.glow.begin();
+    this.updateGlowBudget(dt);
+    this.bolts.draw(this.head);
     this.novas.tick(simDt);
-    this.zaps.tick(simDt);
+    this.zaps.tick(simDt, this.head);
     this.impacts.tick(simDt, this.head);
     this.embers.setViewHeight(this.world.renderer.xr.isPresenting ? 1800 : this.world.renderer.domElement.height);
     this.embers.tick(simDt, clock);
@@ -552,6 +640,8 @@ export class SurvivorsSystem extends createSystem({}) {
     this.hurls.draw(clock);
     this.orbs.tick(simDt, clock);
     this.chests.tick(simDt, clock);
+    this.fxGround.glow.end();
+    this.fxGround.decals.update(simDt);
     void time;
     this.killSounds = Math.max(0, this.killSounds - dt * 14);
     this.fireSounds = 0;
@@ -693,7 +783,7 @@ export class SurvivorsSystem extends createSystem({}) {
       if (h.kind[i] !== GLITTER || h.dead[i]) continue;
       h.timer[i] -= dt;
       const r = h.radius(i);
-      if (trail) this.impacts.spawn(h.x[i] + (Math.random() - 0.5) * r, r * (0.8 + Math.random()), h.z[i] + (Math.random() - 0.5) * r, 0xffd166, 0.35);
+      if (trail) this.impacts.spawn(h.x[i] + (Math.random() - 0.5) * r, duneHeight(h.x[i], h.z[i]) + r * (0.8 + Math.random()), h.z[i] + (Math.random() - 0.5) * r, 0xffd166, 0.35);
       if (h.timer[i] > 0) continue;
       h.dead[i] = 1;
       this.shards.burst(h.x[i], 0.3, h.z[i], 30, 0xe8e2d0, 0.1, 2, 2.5);
@@ -987,6 +1077,7 @@ export class SurvivorsSystem extends createSystem({}) {
     const boss = h.carrier[i] === 2;
     h.hp[i] -= dmg * this.speedMul;
     h.flash[i] = 0.1;
+    if (this.src !== SRC_KEEP) h.hitBy[i] = this.src;
     if (chill > 0) h.chill[i] = Math.max(h.chill[i], chill);
     if (ice > 0) h.ice[i] = Math.max(h.ice[i], boss ? ice * 0.3 : ice);
     if (knock > 0) {
@@ -1021,12 +1112,16 @@ export class SurvivorsSystem extends createSystem({}) {
       this.bossDown(x, z, r);
       return;
     }
-    // A few shards each: with a hundred kills a second, more would bury the view.
-    this.shards.burst(x, r * 0.6, z, kind === TITAN ? 22 : kind === GHOUL ? 2 : 4, k.accent, r * 0.16, 1.5 + r, 1.5 + r * 0.8);
+    // A few shards each: with a hundred kills a second, more would bury the
+    // view. They fly in the colour of the weapon that made the kill, so you
+    // can see what is doing the killing where.
+    const shatter = this.killTint(k.accent, h.hitBy[i]);
+    const by = this.bodyY(i);
+    this.shards.burst(x, by, z, kind === TITAN ? 22 : kind === GHOUL ? 2 : 4, shatter, r * 0.16, 1.5 + r, 1.5 + r * 0.8);
     // A pop of light where it went (a few a frame).
-    if (this.killFlares < KILL_FLARES) {
+    if (this.killFlares < KILL_FLARES && this.spendFlare()) {
       this.killFlares++;
-      this.impacts.spawn(x, r * 0.7, z, k.accent, 0.5 + r * 0.6);
+      this.impacts.spawn(x, by, z, shatter, 0.5 + r * 0.6);
     }
     if (kind === GLITTER) {
       this.glitterDown(x, z, r);
@@ -1047,7 +1142,7 @@ export class SurvivorsSystem extends createSystem({}) {
         h.kvz[j] = Math.sin(a) * 4.5;
         h.kT[j] = 0.3;
       }
-      this.shards.burst(x, r * 0.8, z, 16, k.accent, 0.08, 3, 3);
+      this.shards.burst(x, by, z, 16, k.accent, 0.08, 3, 3);
     }
     this.gems.drop(x, z, k.xp * frenzy);
     if (kind === TITAN) {
@@ -1115,6 +1210,7 @@ export class SurvivorsSystem extends createSystem({}) {
    * is announced and slows time for a moment.
    */
   private burstBloaters(dt: number, px: number, pz: number): void {
+    this.src = SRC.none;
     this.chainT += dt;
     if (this.chainT > 0.6 && this.chain > 0) {
       if (this.chain >= 4) {
@@ -1132,8 +1228,9 @@ export class SurvivorsSystem extends createSystem({}) {
       this.chain++;
       this.chainT = 0;
       this.novas.burst(x, z, BURST_RADIUS, 0xff8a3d);
-      this.impacts.spawn(x, 0.9, z, 0xffb054, 2.6);
-      this.shards.burst(x, 0.9, z, 26, 0xff8a3d, 0.12, 5, 5);
+      const by = duneHeight(x, z) + 0.6;
+      this.impacts.spawn(x, by, z, 0xffb054, 2.6);
+      this.shards.burst(x, by, z, 26, 0xff8a3d, 0.12, 5, 5);
       if (this.chain <= 8 || this.chain % 3 === 0) audio.boom(Math.min(1.2, 0.7 + this.chain * 0.05));
       const n = this.horde.gather(x, z, BURST_RADIUS, this.near);
       for (let j = 0; j < n; j++) {
@@ -1218,7 +1315,83 @@ export class SurvivorsSystem extends createSystem({}) {
     audio.fanfare();
     const mm = Math.floor(this.time / 60);
     const ss = Math.floor(this.time % 60).toString().padStart(2, '0');
-    this.hud.announce('YOU FELL', '#ff6b6b', 30, 9, `at ${mm}:${ss} with ${this.kills.toLocaleString()} kills`);
+    this.endLine = `at ${mm}:${ss} with ${this.kills.toLocaleString()} kills`;
+    this.hud.announce('YOU FELL', '#ff6b6b', END_WAIT + 0.4, 9, this.endLine);
+    this.endWait = END_WAIT;
+  }
+
+  /**
+   * After the run: the result stands a moment, then two cards come up,
+   * just like an upgrade choice: poke one for another go or to head home
+   * (1 or 2 on a desktop).
+   */
+  private updateEnd(dt: number): void {
+    if (this.endWait > 0) {
+      this.endWait -= dt;
+      if (this.endWait > 0) return;
+      const won = survivors.won.peek();
+      const presenting = this.world.renderer.xr.isPresenting;
+      this.hud.clearSign();
+      this.menu.open(won ? 'YOU SURVIVED!' : 'YOU FELL', won ? '#ffe066' : '#ff6b6b', [END_AGAIN, END_LEAVE], this.stats, this.head, getHeadYaw(this.world), presenting, this.endLine);
+      audio.cards();
+    }
+    if (!this.menu.active) return;
+    this.tips.length = 0;
+    for (const hand of HANDS) if (hand.tracked) this.tips.push(hand.indexTip);
+    let key = -1;
+    const kb = this.input.keyboard;
+    for (let k = 0; k < 2; k++) if (kb.getKeyDown(DIGITS[k])) key = k;
+    const picked = this.menu.update(dt, this.tips, key);
+    if (!picked) return;
+    audio.pick();
+    for (const hand of HANDS) this.pulse(hand.handedness, 0.9, 90);
+    if (picked.id === END_AGAIN.id) this.start();
+    else this.exit();
+  }
+
+  /** Height of enemy i's body (its middle, `k` of its radius up) over the snow under it. */
+  private bodyY(i: number, k = BODY): number {
+    const h = this.horde;
+    return duneHeight(h.x[i], h.z[i]) + h.radius(i) * k;
+  }
+
+  /** The point on enemy i's body that something coming from along (dx, dz) strikes (into `out`). */
+  private onBody(i: number, dx: number, dz: number, out: Vector3): Vector3 {
+    const h = this.horde;
+    const d = Math.hypot(dx, dz) || 1;
+    const r = h.radius(i) * 0.7;
+    return out.set(h.x[i] - (dx / d) * r, this.bodyY(i), h.z[i] - (dz / d) * r);
+  }
+
+  /** Take one small hit flash from the allowance, if there is one left. */
+  private spendFlare(): boolean {
+    if (this.flares < 1) return false;
+    this.flares -= 1;
+    return true;
+  }
+
+  /** An enemy's accent, swung most of the way to the colour of the weapon that killed it. */
+  private killTint(accent: number, src: number): number {
+    if (src === SRC.none) return accent;
+    return this.tintA.set(accent).lerp(this.tintB.set(SOURCE_COLORS[src]), 0.7).getHex();
+  }
+
+  /**
+   * How much added light is on screen (glows, trails, sweeps, flashes,
+   * sparks), and the glow gain that keeps it under budget: eased down
+   * quickly as the view fills, back up slowly as it clears.
+   */
+  private updateGlowBudget(dt: number): void {
+    const load =
+      this.bolts.n * 1.1 +
+      this.impacts.live * 1.6 +
+      this.blades.mesh.count * 3 +
+      this.zaps.live * 2.5 +
+      this.flames.live * 0.2 +
+      this.embers.live * 0.04 +
+      this.rockets.n * 2;
+    const want = load > GLOW_BUDGET ? Math.max(MIN_GAIN, Math.sqrt(GLOW_BUDGET / load)) : 1;
+    fx.gain += (want - fx.gain) * Math.min(1, dt * (want < fx.gain ? 4 : 1.2));
   }
 
   private heal(amount: number): void {
@@ -1343,13 +1516,15 @@ export class SurvivorsSystem extends createSystem({}) {
       if (burst < 220 && Math.hypot(h.x[i] - px, h.z[i] - pz) < 30) {
         burst++;
         const r = h.radius(i);
-        this.shards.burst(h.x[i], r * 0.6, h.z[i], 3, KINDS[h.kind[i]].accent, r * 0.16, 2.5, 3);
+        this.shards.burst(h.x[i], this.bodyY(i), h.z[i], 3, KINDS[h.kind[i]].accent, r * 0.16, 2.5, 3);
       }
     }
     h.sweep();
     for (let k = 1; k <= 4; k++) this.novas.burst(px, pz, 6 * k, k % 2 ? 0xffe066 : 0x7fdcff);
     this.shards.burst(px, this.head.y + 1.5, pz, 120, 0xffe066, 0.08, 6, 7);
-    this.hud.announce('YOU SURVIVED!', '#ffe066', 30, 9, `${this.kills.toLocaleString()} kills · level ${this.lvl} · best combo ${this.bestCombo.toLocaleString()}`);
+    this.endLine = `${this.kills.toLocaleString()} kills · level ${this.lvl} · best combo ${this.bestCombo.toLocaleString()}`;
+    this.hud.announce('YOU SURVIVED!', '#ffe066', END_WAIT + 0.4, 9, this.endLine);
+    this.endWait = END_WAIT;
     audio.victory();
     for (const hand of HANDS) this.pulse(hand.handedness, 1, 500);
   }
@@ -1466,6 +1641,7 @@ export class SurvivorsSystem extends createSystem({}) {
 
   /** A shock ring from (x, z): damage and a hard shove outward. */
   private blast(x: number, z: number, radius: number, dmg: number, color: number): void {
+    this.src = SRC.none;
     this.novas.burst(x, z, radius, color);
     const n = this.horde.gather(x, z, radius, this.near);
     for (let j = 0; j < n; j++) {
@@ -1548,6 +1724,7 @@ export class SurvivorsSystem extends createSystem({}) {
    * Rider makes it wide and leaves a wake of frost behind you.
    */
   private ram(dt: number, px: number, pz: number): void {
+    this.src = SRC.ram;
     const s = this.stats;
     const rider = !!s.evolved.rider;
     const speed = this.speed;
@@ -1622,7 +1799,10 @@ export class SurvivorsSystem extends createSystem({}) {
         const dz = this.horde.z[t] - pz;
         const d = Math.hypot(dx, dz) || 1;
         const pierce = hail ? 99 : L >= 7 ? 4 : L >= 4 ? 2 : 0;
-        this.bolts.fire(px, y, pz, dx / d, dz / d, hail ? 30 : 24, (7 + 3.5 * L) * s.might, (hail ? 0.5 : 0.35) * s.area, pierce, 1.3, hail ? 0xbff4ff : 0x8fe3ff);
+        // Down from your chest onto its body (low on a big one, so a
+        // piercing icicle goes on through the small ones behind it), and
+        // down among them within a few steps whatever it is aimed at.
+        this.bolts.fire(px, y, pz, dx / d, dz / d, hail ? 30 : 24, (7 + 3.5 * L) * s.might, (hail ? 0.5 : 0.35) * s.area, pierce, 1.3, hail ? 0xbff4ff : 0x8fe3ff, hail ? BOLT_HAIL : BOLT_ICICLE, Math.min(MAX_CRUISE, this.horde.radius(t) * BODY), Math.min(d, 3));
       }
     }
 
@@ -1636,7 +1816,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.compassTurn += 2.39996;
       for (let k = 0; k < dirs; k++) {
         const a = this.compassTurn + (k / dirs) * Math.PI * 2;
-        this.bolts.fire(px, y, pz, Math.sin(a), Math.cos(a), star ? 20 : 17, (6 + 3 * L) * s.might, 0.3 * s.area, star ? 3 : 1, 1.15, star ? 0xa8ffd0 : 0x7dffb2);
+        this.bolts.fire(px, y, pz, Math.sin(a), Math.cos(a), star ? 20 : 17, (6 + 3 * L) * s.might, 0.3 * s.area, star ? 3 : 1, 1.15, star ? 0xa8ffd0 : 0x7dffb2, star ? BOLT_STAR : BOLT_SHARD, CROWD_BODY, 1.5);
       }
     }
 
@@ -1648,14 +1828,18 @@ export class SurvivorsSystem extends createSystem({}) {
       const L = w.blades;
       const storm = !!evo.blades;
       const radius = (1.7 + 0.08 * L) * s.area;
-      const size = 0.9 + 0.08 * L * s.area;
+      // The swords grow with the build, but only so far to look at (what
+      // they hit is the ring, not the steel), and they sweep at hip height:
+      // at chest height a dozen big blades walled off the view.
+      const size = Math.min(1.25, 0.9 + 0.08 * L * s.area);
+      const hip = this.head.y - 0.95;
       this.bladeAngle += dt * (3.3 + 0.25 * L);
       const dmg = (10 + 4.5 * L) * s.might * (storm ? 1.5 : 1);
-      const used = this.blades.draw(blades, px, y + 0.15, pz, radius, this.bladeAngle, size, 0, storm ? 0xfff3a0 : 0xffd36a, 1);
+      const used = this.blades.draw(blades, px, hip, pz, radius, this.bladeAngle, size, 0, storm ? 0xfff3a0 : 0xffd36a, 1);
       this.bladeRing(blades, px, pz, radius, this.bladeAngle, dmg);
       if (storm) {
         const outer = radius * 1.9;
-        this.blades.draw(blades + 2, px, y + 0.05, pz, outer, -this.bladeAngle * 0.8, size * 1.2, used, 0xfff8d0, -1);
+        this.blades.draw(blades + 2, px, hip - 0.1, pz, outer, -this.bladeAngle * 0.8, size * 1.15, used, 0xfff8d0, -1);
         this.bladeRing(blades + 2, px, pz, outer, -this.bladeAngle * 0.8, dmg);
       }
     } else {
@@ -1669,7 +1853,8 @@ export class SurvivorsSystem extends createSystem({}) {
       const zero = !!evo.nova;
       this.cd.nova = (3.6 - 0.22 * L) * s.haste * (zero ? 0.75 : 1);
       const radius = (4.2 + 0.65 * L) * s.area * (zero ? 1.4 : 1);
-      this.novas.burst(px, pz, radius, zero ? 0xd8ccff : 0xb9a4ff);
+      this.novas.burst(px, pz, radius, zero ? 0xd8ccff : 0xb9a4ff, true);
+      this.src = SRC.nova;
       const n = this.horde.gather(px, pz, radius, this.near);
       const dmg = (14 + 8 * L) * s.might * (zero ? 1.5 : 1);
       for (let j = 0; j < n; j++) {
@@ -1689,30 +1874,45 @@ export class SurvivorsSystem extends createSystem({}) {
       const chains = Math.floor((2 + L + s.amount) * (thunder ? 1.5 : 1));
       const dmg = (12 + 6 * L) * s.might * (thunder ? 1.3 : 1);
       this.hitSet.clear();
-      let fx = px;
-      let fy = y + 0.3;
-      let fz = pz;
+      let lx = px;
+      let ly = y + 0.3;
+      let lz = pz;
       let t = this.horde.nearest(px, pz, thunder ? 20 : 15, this.hitSet);
+      this.src = SRC.lightning;
+      // A crack of light where it leaves you, and a Thunderhead's opening
+      // strike comes down out of the sky onto the first of them.
+      if (t >= 0) {
+        this.impacts.spawn(lx, ly, lz, thunder ? 0xfffbb0 : 0xfff27a, 1.1);
+        if (thunder) {
+          const tx = this.horde.x[t];
+          const tz = this.horde.z[t];
+          const ty = this.bodyY(t);
+          this.zaps.zap(tx + (Math.random() - 0.5) * 2, ty + 11, tz + (Math.random() - 0.5) * 2, tx, ty, tz);
+          this.impacts.spawn(tx, ty, tz, 0xfffbb0, 2.6);
+          this.novas.burst(tx, tz, 1.8, 0xfffbb0);
+        }
+      }
       for (let c = 0; c < chains && t >= 0; c++) {
         this.hitSet.add(t);
         const tx = this.horde.x[t];
         const tz = this.horde.z[t];
-        const ty = this.horde.radius(t) * 0.8;
-        this.zaps.zap(fx, fy, fz, tx, ty, tz);
-        this.hit(t, dmg, tx - fx, tz - fz, 1.5);
-        this.impacts.spawn(tx, ty, tz, 0xfff27a, 0.9);
+        const ty = this.bodyY(t);
+        this.zaps.zap(lx, ly, lz, tx, ty, tz);
+        this.hit(t, dmg, tx - lx, tz - lz, 1.5);
+        // A flash on the first few it strikes: the bolt itself marks the rest.
+        if (c < LIGHTNING_FLARES && this.spendFlare()) this.impacts.spawn(tx, ty, tz, 0xfff27a, 0.9);
         if (thunder) {
           const f = this.horde.nearest(tx, tz, 5, this.hitSet);
           if (f >= 0) {
             this.hitSet.add(f);
-            this.zaps.zap(tx, ty, tz, this.horde.x[f], this.horde.radius(f) * 0.8, this.horde.z[f]);
+            this.zaps.zap(tx, ty, tz, this.horde.x[f], this.bodyY(f), this.horde.z[f]);
             this.hit(f, dmg, this.horde.x[f] - tx, this.horde.z[f] - tz, 1.5);
-            this.impacts.spawn(this.horde.x[f], this.horde.radius(f) * 0.8, this.horde.z[f], 0xfffbb0, 0.7);
+            if (c < LIGHTNING_FLARES && this.spendFlare()) this.impacts.spawn(this.horde.x[f], this.bodyY(f), this.horde.z[f], 0xfffbb0, 0.7);
           }
         }
-        fx = tx;
-        fy = ty;
-        fz = tz;
+        lx = tx;
+        ly = ty;
+        lz = tz;
         t = this.horde.nearest(tx, tz, 5, this.hitSet);
       }
       if (this.hitSet.size > 0) audio.zap();
@@ -1814,11 +2014,15 @@ export class SurvivorsSystem extends createSystem({}) {
     if (h.dead[i] || h.kind[i] === GLITTER) return;
     h.burn[i] = Math.max(h.burn[i], seconds);
     h.burnDps[i] = Math.max(h.burnDps[i], dps);
+    // It burns in the colour of what set it alight.
+    if (this.src !== SRC_KEEP && this.src !== SRC.none) h.hitBy[i] = this.src;
   }
 
   /** Burning ones burn down (a bite of damage four times a second) and shed embers. */
   private updateBurning(dt: number): void {
     const h = this.horde;
+    // A burn ticking down keeps the colour of whatever lit it.
+    this.src = SRC_KEEP;
     this.burnTick -= dt;
     const tick = this.burnTick <= 0;
     if (tick) this.burnTick = 0.25;
@@ -1835,6 +2039,7 @@ export class SurvivorsSystem extends createSystem({}) {
       }
       if (tick && h.burn[i] > -0.25) this.hit(i, h.burnDps[i] * 0.25, 0, 0, 0);
     }
+    this.src = SRC.none;
   }
 
   /** A burning one dies: the fire leaps to whatever is round it, a little cooler. */
@@ -1852,6 +2057,7 @@ export class SurvivorsSystem extends createSystem({}) {
 
   /** Fire Breath, roaring: bite everything in the cone ten times a second and set it alight. */
   private roar(dt: number, px: number, pz: number): void {
+    this.src = SRC.breath;
     const s = this.stats;
     const L = s.weapons.breath;
     const dragon = !!s.evolved.breath;
@@ -1905,8 +2111,14 @@ export class SurvivorsSystem extends createSystem({}) {
         this.patchZ[i] = pz - (game.velocity.z / Math.max(0.1, this.speed)) * back;
         this.patchR[i] = (0.8 + 0.05 * L) * s.area * (wild ? 1.8 : 1);
         this.patchLife[i] = this.patchFull[i] = (2.4 + 0.25 * L) * (wild ? 2 : 1);
+        // The snow it burns melts and blackens (a decal every so often: they overlap).
+        if (Math.hypot(this.patchX[i] - this.lastScorch.x, this.patchZ[i] - this.lastScorch.z) > this.patchR[i] * 1.1) {
+          this.lastScorch.set(this.patchX[i], 0, this.patchZ[i]);
+          this.fxGround.decals.scorch(this.patchX[i], this.patchZ[i], this.patchR[i] * 1.3, this.patchFull[i] + 10);
+        }
       }
     }
+    this.src = SRC.trail;
     this.patchTick -= dt;
     const bite = this.patchTick <= 0;
     if (bite) this.patchTick = 0.2;
@@ -1923,6 +2135,7 @@ export class SurvivorsSystem extends createSystem({}) {
   /** Draw the trail's flames and the breath's cone. */
   private drawFire(dt: number, time: number, yaw: number): void {
     const f = this.flames;
+    const wild = !!this.stats.evolved.trail;
     f.begin();
     for (let i = 0; i < TRAIL_CAP; i++) {
       const life = this.patchLife[i];
@@ -1931,27 +2144,46 @@ export class SurvivorsSystem extends createSystem({}) {
       const t = 1 - life / this.patchFull[i];
       const strength = Math.min(1, t * 8) * Math.min(1, life / 0.8);
       const r = this.patchR[i];
-      const gy = duneHeight(this.patchX[i], this.patchZ[i]);
-      for (let k = 0; k < 4; k++) {
-        const a = i * 2.3 + k * 1.57;
-        const d = k === 0 ? 0 : r * 0.55;
-        f.add(this.patchX[i] + Math.cos(a) * d, gy, this.patchZ[i] + Math.sin(a) * d, r * (k === 0 ? 1.3 : 0.85), i * 1.7 + k, strength, time, this.head);
+      const x = this.patchX[i];
+      const z = this.patchZ[i];
+      const gy = duneHeight(x, z);
+      // One tall fire in the middle and a ring of lower ones across the patch: more of them the wider it
+      // is, never taller than FLAME_TALL (each flipbook frame is a whole fire, tongues and smoke).
+      const ring = 2 + Math.min(2, Math.floor(r * 0.6));
+      f.add(x, gy, z, Math.min(r * 1.15, FLAME_TALL), i * 1.7, strength, time, this.head, wild);
+      for (let k = 0; k < ring; k++) {
+        const a = i * 2.3 + (k / ring) * Math.PI * 2;
+        const d = r * (0.45 + 0.25 * ((k * 7 + i) % 3) / 2);
+        f.add(x + Math.cos(a) * d, gy, z + Math.sin(a) * d, Math.min(r * 0.8, FLAME_TALL * 0.7), i * 1.7 + k + 1, strength, time, this.head, wild);
       }
+      // Its light on the snow (every third patch: they overlap, and light adds up).
+      if (i % 3 === 0) this.fxGround.glow.add(this.patchX[i], this.patchZ[i], r * 3.2, 1.0, 0.52, 0.2, 0.14 * strength, i * 1.3);
       if (dt > 0 && Math.random() < 0.25 * strength) {
-        this.embers.emit(this.patchX[i] + (Math.random() - 0.5) * r, gy + 0.3, this.patchZ[i] + (Math.random() - 0.5) * r, 0, 1 + Math.random(), 0, 0.6 + Math.random() * 0.4, 0.12);
+        this.embers.emit(x + (Math.random() - 0.5) * r, gy + 0.3, z + (Math.random() - 0.5) * r, 0, 1 + Math.random(), 0, 0.6 + Math.random() * 0.4, 0.12);
+      }
+    }
+    // Comet craters: black and smoking, fading back to snow.
+    for (let i = 0; i < CRATER_CAP; i++) {
+      if (this.craterLife[i] <= 0) continue;
+      this.craterLife[i] -= dt;
+      const left = this.craterLife[i] / CRATER_LIFE;
+      if (dt > 0 && Math.random() < left * 0.6) {
+        const cr = this.craterR[i] * 0.5;
+        const cx = this.craterX[i] + (Math.random() - 0.5) * cr;
+        const cz = this.craterZ[i] + (Math.random() - 0.5) * cr;
+        this.embers.emit(cx, duneHeight(cx, cz) + 0.1, cz, 0, 0.8 + Math.random(), 0, 0.7 + Math.random() * 0.5, 0.14);
       }
     }
     f.end();
     const s = this.stats;
+    const dragon = !!s.evolved.breath;
     this.breathAlpha += ((this.breathT > 0 ? 1 : 0) - this.breathAlpha) * Math.min(1, dt * 12);
-    const length = (4.5 + 0.3 * s.weapons.breath) * s.area * (s.evolved.breath ? 1.5 : 1);
-    const width = Math.tan(s.evolved.breath ? 0.55 : 0.42) * length;
+    const length = (4.5 + 0.3 * s.weapons.breath) * s.area * (dragon ? 1.5 : 1);
+    const width = Math.tan(dragon ? 0.55 : 0.42) * length;
     const fx = -Math.sin(yaw);
     const fz = -Math.cos(yaw);
-    this.breath.draw(this.head.x + fx * BREATH_OUT, this.head.y - BREATH_DOWN, this.head.z + fz * BREATH_OUT, yaw, length, width, this.breathAlpha, time);
+    this.breath.draw(this.head.x + fx * BREATH_OUT, this.head.y - BREATH_DOWN, this.head.z + fz * BREATH_OUT, yaw, length, width, this.breathAlpha, time, dragon);
   }
-
-  /** Rockets fly; each that bursts throws sparks of its colour and sets what is under it alight. */
   private moveRockets(dt: number): void {
     const r = this.rockets;
     r.move(dt, this.embers);
@@ -1985,6 +2217,7 @@ export class SurvivorsSystem extends createSystem({}) {
   }
 
   private fireworkBurst(x: number, y: number, z: number, color: number, dmg: number, radius: number, size: number): void {
+    this.src = SRC.fireworks;
     const gy = duneHeight(x, z);
     const by = Math.max(y, gy + 0.8);
     // A sphere of sparks in its colour, falling as they fade.
@@ -1995,6 +2228,13 @@ export class SurvivorsSystem extends createSystem({}) {
       const c = Math.sqrt(1 - u * u);
       const v = (4 + Math.random() * 2) * size;
       this.embers.emit(x, by, z, Math.cos(a) * c * v, u * v + 1.5, Math.sin(a) * c * v, 0.7 + Math.random() * 0.5, 0.16 * size + 0.05, color, -1.2);
+    }
+    // Then the crackle: slow gold glitter drifting down after the burst.
+    const glitter = Math.round(18 * size);
+    for (let k = 0; k < glitter; k++) {
+      const a = Math.random() * Math.PI * 2;
+      const v = (1 + Math.random() * 2.2) * size;
+      this.embers.emit(x, by + 0.3, z, Math.cos(a) * v, 1 + Math.random() * 1.5, Math.sin(a) * v, 1.2 + Math.random() * 0.6, 0.07, GLITTER_GOLD, -0.35);
     }
     this.impacts.spawn(x, by, z, color, 1.8 * size);
     this.novas.burst(x, z, radius, color);
@@ -2013,6 +2253,7 @@ export class SurvivorsSystem extends createSystem({}) {
 
   /** Comets strike: a blast, a ring of fire and everything near it burning. */
   private moveComets(dt: number): void {
+    this.src = SRC.comet;
     const c = this.comets;
     c.move(dt, this.embers);
     for (let i = c.n - 1; i >= 0; i--) {
@@ -2023,7 +2264,15 @@ export class SurvivorsSystem extends createSystem({}) {
       const gy = duneHeight(x, z);
       this.novas.burst(x, z, r * 1.6, 0xff6a2e);
       this.novas.burst(x, z, r, 0xffd27a);
-      this.impacts.spawn(x, gy + 0.8, z, 0xffb054, 4);
+      this.impacts.spawn(x, gy + 0.8, z, 0xffb054, 2.8);
+      // A crater charred into the snow, smoking as it fades.
+      this.fxGround.decals.scorch(x, z, r * 1.25, 24);
+      const ci = this.craterNext;
+      this.craterNext = (this.craterNext + 1) % CRATER_CAP;
+      this.craterX[ci] = x;
+      this.craterZ[ci] = z;
+      this.craterR[ci] = r * 1.2;
+      this.craterLife[ci] = CRATER_LIFE;
       this.shards.burst(x, gy + 0.4, z, 40, 0x3a2a24, 0.14, 6, 7);
       for (let k = 0; k < 50; k++) {
         const a = Math.random() * Math.PI * 2;
@@ -2048,6 +2297,7 @@ export class SurvivorsSystem extends createSystem({}) {
 
   /** One ring of blades: each sword hits what it passes through, once a pass. */
   private bladeRing(count: number, px: number, pz: number, radius: number, angle: number, dmg: number): void {
+    this.src = SRC.blades;
     for (let k = 0; k < count; k++) {
       const a = angle + (k / count) * Math.PI * 2;
       const bx = px + Math.sin(a) * radius * 0.72;
@@ -2058,9 +2308,9 @@ export class SurvivorsSystem extends createSystem({}) {
         if (this.horde.bladeCd[i] > 0) continue;
         this.horde.bladeCd[i] = 0.32;
         // A spark where the blade bites (a few a frame at most).
-        if (this.bladeSparks < 6) {
+        if (this.bladeSparks < 6 && this.spendFlare()) {
           this.bladeSparks++;
-          this.impacts.spawn(this.horde.x[i], this.horde.radius(i) * 0.7, this.horde.z[i], 0xffe28a, 0.45);
+          this.impacts.spawn(this.horde.x[i], this.bodyY(i), this.horde.z[i], 0xffe28a, 0.45);
         }
         this.hit(i, dmg, this.horde.x[i] - px, this.horde.z[i] - pz, 4);
       }
@@ -2077,6 +2327,7 @@ export class SurvivorsSystem extends createSystem({}) {
       }
       b.x[i] += b.vx[i] * dt;
       b.z[i] += b.vz[i] * dt;
+      b.fly(i, Math.hypot(b.vx[i], b.vz[i]) * dt, duneHeight(b.x[i], b.z[i]));
       if (b.cool[i] > 0) {
         b.cool[i] -= dt;
         continue;
@@ -2084,8 +2335,20 @@ export class SurvivorsSystem extends createSystem({}) {
       const n = this.horde.gather(b.x[i], b.z[i], b.radius[i], this.near);
       if (n === 0) continue;
       const e = this.near[0];
+      this.src = b.kind[i] >= BOLT_SHARD ? SRC.compass : SRC.icicles;
       this.hit(e, b.dmg[i], b.vx[i], b.vz[i], 2.5);
-      this.impacts.spawn(b.x[i], b.y[i], b.z[i], b.color[i], 0.35 + b.radius[i]);
+      // The flash and the shatter on the enemy itself: on its body, on the
+      // side the bolt came in from.
+      const hit = this.onBody(e, b.vx[i], b.vz[i], this.pickAt);
+      if (this.boltFlares < BOLT_FLARES && this.spendFlare()) {
+        this.boltFlares++;
+        this.impacts.spawn(hit.x, hit.y, hit.z, b.color[i], 0.35 + 0.5 * Math.min(1, b.radius[i]));
+      }
+      // The ice shatters off what it hits (a handful a frame at most).
+      if (this.shatters < SHATTERS) {
+        this.shatters++;
+        this.shards.burst(hit.x, hit.y, hit.z, 4, b.color[i], 0.035 + 0.05 * Math.min(1, b.radius[i]), 2.4, 1.6);
+      }
       if (b.pierce[i] > 0) {
         b.pierce[i]--;
         b.cool[i] = 0.07;

@@ -23,11 +23,12 @@ import {
   Vector3,
 } from '@iwsdk/core';
 import { GeometryBuilder, placed } from './mesh-utils.js';
+import { gear, upgradeMesh } from './baked/dynamic.js';
 
 /**
- * One slot's size (m); 3 x 3 slots make a 0.33 m square tray. Nine is the
- * most any level fills at once (the expedition's whole kit, both pairs of
- * tools stowed); the tutorial's pack holds at most its three glider parts.
+ * One slot's size (m); 3 x 3 slots make a 0.33 m square tray. The
+ * tutorial's pack holds at most its three glider parts (Snow Survivors
+ * packs just the poles).
  */
 export const CELL = 0.11;
 export const COLS = 3;
@@ -158,6 +159,11 @@ export function buildPackTray(): PackTray {
   const body = new Mesh(b.build(), new MeshStandardMaterial({ vertexColors: true, roughness: 0.75, metalness: 0.05 }));
   body.name = 'PackBox';
   group.add(body);
+  // The baked box (art/scripts/lib/gear.py build_pack) carries its own slatted floor.
+  if (gear('pack')) {
+    upgradeMesh(body, 'pack');
+    floor.visible = false;
+  }
 
   // The notes rest against the open lid, a little proud of it.
   const notes = new Object3D();

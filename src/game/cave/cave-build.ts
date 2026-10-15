@@ -46,6 +46,7 @@ import {
   ShaderMaterial,
 } from '@iwsdk/core';
 import { buildGlider, type GliderPartId } from '../glider-model.js';
+import type { CaveBaked } from './cave-baked.js';
 import { GeometryBuilder, placed, segmentMatrix } from '../mesh-utils.js';
 import { fbm, mulberry32, valueNoise } from '../terrain.js';
 import {
@@ -58,6 +59,7 @@ import {
   type Kind,
   PLATFORMS,
   ROUTE,
+  ROUTE_STEP,
   type PlatformSpec,
   type Sq,
   sqOffset,
@@ -170,6 +172,10 @@ export interface CaveVisuals {
   /** The torch on its hook at the beacon and its flame. */
   torch: Group;
   torchFlame: Sprite;
+  /** Flame tongues licking up from the head (they always burn upward). */
+  torchTongues: Sprite[];
+  /** Sparks rising off the flame. */
+  torchEmbers: Sprite[];
   /** Warm halo round the torch on its post: take me. */
   torchHalo: Sprite;
   /** Light rising from the torch once all the parts are found. */
@@ -189,6 +195,12 @@ export interface CaveVisuals {
   shaft: Mesh;
   /** Ice glitter drifting in the light (its uTime runs from the system). */
   glitter: Points;
+  /** The procedural stand-ins the Blender bake replaces once it has loaded (see applyBakedCave). */
+  procedural: Object3D[];
+  /** Soft glow cards round the signal lamps (the bake's; null until it loads). */
+  glows: InstancedMesh | null;
+  /** The cave is drawn from the Blender bake. */
+  baked: boolean;
 }
 
 // ------------------------------------------------------------- textures ---
@@ -756,11 +768,44 @@ function addRails(b: GeometryBuilder, spec: PlatformSpec, gaps: Set<string> | un
   }
 }
 
+/**
+ * The art pipeline's view of the works (art/scripts/export_cave_ref.mjs): with `on`, every piece any
+ * WorksBuilder adds is recorded as (group, primitive, parameters, matrix, material), so the Blender
+ * rebuild traces exactly the timbers the clearance logic here placed. Lanterns are recorded as points.
+ */
+export interface CaveRecPart {
+  group: string;
+  type: string;
+  params: Record<string, unknown>;
+  matrix: number[];
+  mat: string;
+}
+export const caveRec = {
+  on: false,
+  group: '',
+  parts: [] as CaveRecPart[],
+  lanterns: [] as { group: string; at: [number, number, number] }[],
+  suppress: 0,
+};
+
+function matTag(color: unknown): string {
+  if (color === WOOD) return 'wood';
+  if (color === WOOD_DARK) return 'wood_dark';
+  if (color === WOOD_PALE) return 'wood_pale';
+  if (color === IRON) return 'iron';
+  if (color === BRASS) return 'brass';
+  if (color === ROPE) return 'rope';
+  if (color === TRACK_STEEL) return 'steel';
+  return 'other';
+}
+
 /** Surface kinds the timber works' material draws (the `surface` attribute's w). */
 const SURF_PLAIN = 1;
 const SURF_WOOD = 2;
 const SURF_METAL = 3;
 const SURF_ROPE = 4;
+/** A piece's own tone is packed into its kind as kind + SURF_TONE * tone. */
+const SURF_TONE = 0.35;
 
 function surfaceOf(color: Color | unknown): number {
   if (color === WOOD || color === WOOD_DARK || color === WOOD_PALE) return SURF_WOOD;
@@ -780,8 +825,25 @@ class WorksBuilder extends GeometryBuilder {
   private readonly size = new Vector3();
   private readonly dir = new Vector3();
   private readonly m3 = new Matrix3();
+  /** Each piece's own timber tone, 0..1 (golden-ratio steps: neighbours differ). */
+  private tone = 0.37;
+
+  constructor() {
+    // Joints everywhere: a rail over its post, a bar across its upright.
+    super({ separate: true });
+  }
 
   override add(geometry: BufferGeometry, matrix: Matrix4, color: Color | Parameters<GeometryBuilder['add']>[2]): this {
+    if (caveRec.on && caveRec.suppress === 0) {
+      const g = geometry as BufferGeometry & { parameters?: Record<string, unknown> };
+      caveRec.parts.push({
+        group: caveRec.group,
+        type: geometry.type,
+        params: { ...(g.parameters ?? {}) },
+        matrix: Array.from(matrix.elements),
+        mat: matTag(color),
+      });
+    }
     const count = geometry.index ? geometry.index.count : geometry.getAttribute('position').count;
     if (!geometry.boundingBox) geometry.computeBoundingBox();
     geometry.boundingBox!.getSize(this.size);
@@ -790,7 +852,9 @@ class WorksBuilder extends GeometryBuilder {
     else if (z >= y) this.dir.set(0, 0, z);
     else this.dir.set(0, y, 0);
     this.dir.applyMatrix3(this.m3.setFromMatrix4(matrix)).normalize();
-    const kind = surfaceOf(color);
+    // The piece's tone rides in the fraction of its kind (see SURFACE_FRAGMENT).
+    this.tone = (this.tone + 0.618034) % 1;
+    const kind = surfaceOf(color) + SURF_TONE * this.tone;
     for (let i = 0; i < count; i++) this.surface.push(this.dir.x, this.dir.y, this.dir.z, kind);
     return super.add(geometry, matrix, color);
   }
@@ -842,7 +906,9 @@ if ( wkKind > 1.5 ) {
     float rings = fract( length( across + vec2( 0.23, -0.17 ) ) * 24.0 + waver * 2.2 );
     float late = smoothstep( 0.5, 0.8, rings ) * ( 1.0 - smoothstep( 0.88, 1.0, rings ) );
     float fibre = wkNoise( vec3( along * 1.4, across * 55.0 ) );
-    float board = wkNoise( floor( vWkPos * 1.7 ) + 0.5 );
+    // One tone per piece of timber (not per cube of space, which split a
+    // basket or the wheel's rim into a checkerboard).
+    float board = ( vWkSurf.w - wkKind ) / ${SURF_TONE.toFixed(2)};
     vec2 kc = across * 9.0;
     float knotAt = wkNoise( vec3( along * 2.2, kc ) );
     float knot = smoothstep( 0.82, 0.93, knotAt );
@@ -925,6 +991,13 @@ function frameMaterial(): MeshStandardMaterial {
 
 /** A lantern sitting on a post top: iron cage with a warm glow and a ring to carry it by. */
 function addLantern(b: GeometryBuilder, x: number, y: number, z: number) {
+  if (caveRec.on) caveRec.lanterns.push({ group: caveRec.group, at: [x, y, z] });
+  caveRec.suppress++;
+  addLanternParts(b, x, y, z);
+  caveRec.suppress--;
+}
+
+function addLanternParts(b: GeometryBuilder, x: number, y: number, z: number) {
   box(b, 0.12, 0.02, 0.12, x, y - 0.1, z, IRON);
   box(b, 0.14, 0.02, 0.14, x, y + 0.1, z, IRON);
   for (const [cx, cz] of CORNERS) box(b, 0.012, 0.2, 0.012, x + cx * 0.06, y, z + cz * 0.06, IRON);
@@ -1232,6 +1305,7 @@ function lanternCorner(spec: PlatformSpec, index: number, gaps: Set<string> | un
 
 /** Fixed works: hoist head frames, rails, the wheel's tower, cables. */
 function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
+  caveRec.group = 'statics';
   const b = new WorksBuilder();
   const v = (p: V3, dx = 0, dy = 0, dz = 0) => new Vector3(p.x + dx, p.y + dy, p.z + dz);
 
@@ -1457,10 +1531,24 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
   mesh.name = 'TimberWorks';
 
   // The rotating rim, spokes and pins.
+  caveRec.group = 'wheel';
   const wb = new WorksBuilder();
-  const rim = new TorusGeometry(WHEEL_R, 0.09, 6, 48);
-  wb.add(rim, new Matrix4().makeRotationY(Math.PI / 2), WOOD);
-  wb.add(new TorusGeometry(WHEEL_R - 0.35, 0.05, 5, 48), new Matrix4().makeRotationY(Math.PI / 2), WOOD_DARK);
+  // Both rings are built up from straight felloes, each its own length of
+  // timber with the grain running along it (one torus took a single grain
+  // direction straight across the whole wheel).
+  const ring = (radius: number, count: number, axial: number, radial: number, color: Color) => {
+    const chord = 2 * radius * Math.sin(Math.PI / count) + radial * 0.5;
+    for (let k = 0; k < count; k++) {
+      const a = ((k + 0.5) / count) * Math.PI * 2;
+      wb.add(
+        new BoxGeometry(axial, radial, chord),
+        new Matrix4().makeRotationX(-(a + Math.PI / 2)).setPosition(0, Math.sin(a) * radius, Math.cos(a) * radius),
+        color,
+      );
+    }
+  };
+  ring(WHEEL_R, 20, 0.2, 0.18, WOOD);
+  ring(WHEEL_R - 0.35, 16, 0.1, 0.1, WOOD_DARK);
   for (let k = 0; k < 8; k++) {
     const a = (k / 8) * Math.PI * 2;
     rod(wb, new Vector3(0, 0, 0), new Vector3(0, Math.sin(a) * WHEEL_R, Math.cos(a) * WHEEL_R), 0.06, WOOD_DARK, 5);
@@ -1578,17 +1666,85 @@ function buildBrazier(): Group {
 
 /** The signal torch is drawn this much bigger than life so it reads from below. */
 export const TORCH_SCALE = 1.5;
-/** Where the torch's flaming head is, above its grip (torch space, unscaled). */
+/** Where the torch's flaming head is (torch space, unscaled; the shaft's middle is 0). */
 export const TORCH_HEAD = 0.32;
+/** The top of the head, where the flame stands. */
+export const TORCH_CROWN = 0.356;
+/** Where your fist goes on it: the middle of the leather grip. */
+export const TORCH_GRIP = -0.1;
 
+const LEATHER = new Color(0.27, 0.14, 0.07);
+const PITCH = new Color(0.13, 0.085, 0.06);
+const RIBBON_RED = new Color(0.8, 0.09, 0.06);
+const RIBBON_GOLD = new Color(0.98, 0.72, 0.2);
+
+/**
+ * The signal torch: a tapered ash handle with a cord-bound leather grip
+ * and a brass pommel, red and gold ribbons tied under an iron collar, and a
+ * pitch-soaked head in a cage of iron straps with embers glowing in its top.
+ */
 function buildTorch(): Group {
   const b = new WorksBuilder();
-  b.add(new CylinderGeometry(0.022, 0.028, 0.5, 8), placed(0, 0, 0), WOOD);
-  b.add(new CylinderGeometry(0.045, 0.035, 0.12, 8), placed(0, 0.28, 0), new Color(0.2, 0.15, 0.1));
+  const ring = (y: number) => new Matrix4().makeRotationX(Math.PI / 2).setPosition(0, y, 0);
+  b.add(new CylinderGeometry(0.019, 0.015, 0.46, 10), placed(0, -0.02, 0), WOOD);
+  b.add(new CylinderGeometry(0.0215, 0.02, 0.17, 10), placed(0, TORCH_GRIP, 0), LEATHER);
+  for (const k of [-1, 0, 1]) b.add(new TorusGeometry(0.021, 0.0034, 4, 14), ring(TORCH_GRIP + k * 0.07), ROPE);
+  b.add(new SphereGeometry(0.025, 10, 8), placed(0, -0.255, 0), BRASS);
+  b.add(new CylinderGeometry(0.029, 0.024, 0.032, 12), placed(0, 0.212, 0), IRON);
+  b.add(new CylinderGeometry(0.047, 0.034, 0.13, 12), placed(0, 0.29, 0), PITCH);
+  for (let k = 0; k < 6; k++) {
+    const a = (k / 6) * Math.PI * 2;
+    const lo = new Vector3(Math.cos(a) * 0.036, 0.226, Math.sin(a) * 0.036);
+    const hi = new Vector3(Math.cos(a) * 0.049, 0.354, Math.sin(a) * 0.049);
+    rod(b, lo, hi, 0.0055, IRON, 4);
+  }
+  b.add(new TorusGeometry(0.049, 0.0065, 4, 18), ring(0.352), IRON);
+  b.add(new TorusGeometry(0.042, 0.0055, 4, 18), ring(0.29), IRON);
+  for (let k = 0; k < 8; k++) {
+    const a = k * 2.4;
+    const r = 0.008 + (k % 3) * 0.011;
+    b.add(new SphereGeometry(0.0095, 6, 4), placed(Math.cos(a) * r, TORCH_CROWN, Math.sin(a) * r), new Color(3.2, 1.25, 0.25));
+  }
+  for (let k = 0; k < 4; k++) {
+    const a = (k / 4) * Math.PI * 2 + 0.4;
+    const len = k % 2 ? 0.15 : 0.12;
+    rod(
+      b,
+      new Vector3(Math.cos(a) * 0.027, 0.2, Math.sin(a) * 0.027),
+      new Vector3(Math.cos(a) * 0.052, 0.2 - len, Math.sin(a) * 0.052),
+      0.008,
+      k % 2 ? RIBBON_GOLD : RIBBON_RED,
+      3,
+    );
+  }
   const group = new Group();
   group.name = 'Torch';
   group.add(new Mesh(b.build(), frameMaterial()));
   return group;
+}
+
+/** A flame tongue: a soft teardrop, white-gold at its root to red at its tip. */
+function flameTexture(): CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+  ctx.globalCompositeOperation = 'lighter';
+  for (let k = 0; k < 14; k++) {
+    const t = k / 13;
+    const y = 104 - t * 88;
+    const r = 26 * (1 - t) ** 0.8 + 3;
+    const g = ctx.createRadialGradient(32, y, 0, 32, y, r);
+    const a = 0.32 * (1 - 0.6 * t);
+    g.addColorStop(0, `rgba(255,${Math.round(230 - 120 * t)},${Math.round(150 - 130 * t)},${a})`);
+    g.addColorStop(0.6, `rgba(255,${Math.round(140 - 80 * t)},30,${a * 0.5})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 128);
+  }
+  const texture = new CanvasTexture(canvas);
+  texture.colorSpace = SRGBColorSpace;
+  return texture;
 }
 
 // ---------------------------------------------------------------- build ---
@@ -1599,9 +1755,12 @@ export function buildCave(): CaveVisuals {
   root.position.copy(CAVE_ORIGIN);
   root.visible = false;
 
+  const procedural: Object3D[] = [];
   const shellMesh = buildShell();
   root.add(shellMesh);
-  root.add(buildIce());
+  const ice = buildIce();
+  root.add(ice);
+  procedural.push(shellMesh, ice);
   const shaft = buildShaft();
   const glitter = buildGlitter();
   root.add(glitter);
@@ -1612,6 +1771,7 @@ export function buildCave(): CaveVisuals {
   const statics = buildStatics(ropeSpecs);
   root.add(statics.mesh);
   root.add(statics.wheel);
+  procedural.push(statics.mesh, ...statics.wheel.children);
 
   // Shared banks.
   let tileCount = 0;
@@ -1654,6 +1814,7 @@ export function buildCave(): CaveVisuals {
     const spec = PLATFORMS[i];
     const group = new Group();
     group.name = `Platform-${spec.id}`;
+    caveRec.group = `platform:${spec.id}`;
     const builder =
       spec.kind === 'station'
         ? buildStationFrame(spec, i, gaps.get(i))
@@ -1661,6 +1822,7 @@ export function buildCave(): CaveVisuals {
     const mesh = new Mesh(builder.build(), frameMat);
     group.add(mesh);
     root.add(group);
+    procedural.push(mesh);
     platforms.push({
       spec,
       group,
@@ -1697,7 +1859,9 @@ export function buildCave(): CaveVisuals {
   marker.visible = false;
   root.add(marker);
 
-  // Glider parts on their racks, at half scale like the summit kit.
+  // Glider parts on their racks, at half scale like the summit kit. The
+  // last one on the way up hangs right across the way on instead.
+  const lastPart = PLATFORMS.reduce((best, p, i) => (p.part && (best < 0 || ROUTE_STEP[i] > ROUTE_STEP[best]) ? i : best), -1);
   const glider = buildGlider();
   const partGlowTex = glowTexture('rgba(255,240,190,0.9)', 'rgba(255,190,90,0.35)');
   const parts = {} as Record<GliderPartId, Group>;
@@ -1706,24 +1870,38 @@ export function buildCave(): CaveVisuals {
     const spec = PLATFORMS[i];
     if (!spec.part) continue;
     const at = spec.keys[0].a;
-    const rack = rackSpot(spec, gaps.get(i));
     const part = glider.parts[spec.part];
     glider.root.remove(part);
     part.position.set(0, 0, 0);
     part.scale.setScalar(0.5);
     const holder = new Group();
     holder.name = `Rack-${spec.part}`;
-    holder.position.set(at.x + rack.x, at.y + 1.05, at.z + rack.z);
-    // Wings lie along the rack; the bar stands up.
-    holder.rotation.y = rack.yaw;
-    if (spec.part === 'ControlBar') part.rotation.set(-1.2, 0, 0);
-    else part.rotation.set(0, spec.part === 'LeftWing' ? -Math.PI / 2 : Math.PI / 2, 0);
-    holder.add(part);
-    root.add(holder);
+    caveRec.group = `rack:${spec.part}`;
     const rackB = new WorksBuilder();
-    box(rackB, 0.08, 1.0, 0.08, at.x + rack.x, at.y + 0.5, at.z + rack.z, WOOD_DARK);
-    box(rackB, Math.abs(Math.sin(rack.yaw)) > 0.5 ? 0.08 : 0.7, 0.06, Math.abs(Math.sin(rack.yaw)) > 0.5 ? 0.7 : 0.08, at.x + rack.x, at.y + 0.98, at.z + rack.z, WOOD);
-    root.add(new Mesh(rackB.build(), frameMat));
+    const inWay = i === lastPart ? inWaySpot(i) : null;
+    if (inWay) {
+      // Hanging over the edge you step off by, at hand height, spread across
+      // the gap: you can't leave without walking into it.
+      holder.position.set(at.x + inWay.x, at.y + IN_WAY_Y, at.z + inWay.z);
+      holder.rotation.y = inWay.yaw;
+      if (spec.part === 'ControlBar') part.rotation.set(BAR_PLUMB, 0, 0);
+      holder.add(part);
+      root.add(holder);
+    } else {
+      const rack = rackSpot(spec, gaps.get(i));
+      holder.position.set(at.x + rack.x, at.y + 1.05, at.z + rack.z);
+      // Wings lie along the rack; the bar stands up.
+      holder.rotation.y = rack.yaw;
+      if (spec.part === 'ControlBar') part.rotation.set(-1.2, 0, 0);
+      else part.rotation.set(0, spec.part === 'LeftWing' ? -Math.PI / 2 : Math.PI / 2, 0);
+      holder.add(part);
+      root.add(holder);
+      box(rackB, 0.08, 1.0, 0.08, at.x + rack.x, at.y + 0.5, at.z + rack.z, WOOD_DARK);
+      box(rackB, Math.abs(Math.sin(rack.yaw)) > 0.5 ? 0.08 : 0.7, 0.06, Math.abs(Math.sin(rack.yaw)) > 0.5 ? 0.7 : 0.08, at.x + rack.x, at.y + 0.98, at.z + rack.z, WOOD);
+    }
+    const rackMesh = new Mesh(rackB.build(), frameMat);
+    root.add(rackMesh);
+    procedural.push(rackMesh);
     const glow = glowSprite(partGlowTex, 1.1, 0.6);
     glow.position.copy(holder.position);
     root.add(glow);
@@ -1734,24 +1912,45 @@ export function buildCave(): CaveVisuals {
   // The beacon: brazier on the top deck's east side, torch on a hook.
   const top = PLATFORMS.find((p) => p.beacon)!;
   const topAt = top.keys[0].a;
+  caveRec.group = 'brazier';
   const brazierGroup = buildBrazier();
   brazierGroup.position.set(topAt.x + GRID.pitch * 2 + 0.1, topAt.y - 0.1, topAt.z + GRID.pitch * 0.5);
   root.add(brazierGroup);
+  procedural.push(brazierGroup);
   const brazier = brazierGroup.position.clone().add(new Vector3(0, 1.3, 0));
+  caveRec.group = 'plinth';
   const plinth = new WorksBuilder();
   box(plinth, 0.9, 0.12, 1.4, brazierGroup.position.x, topAt.y - 0.16, brazierGroup.position.z, WOOD_DARK);
   // The torch hook on a post north of the centre square.
   const hook = new Vector3(topAt.x - 0.05, topAt.y + 1.1, topAt.z - HALF - 0.22);
   box(plinth, 0.08, 1.4, 0.08, hook.x, topAt.y + 0.55, hook.z - 0.06, WOOD_DARK);
   box(plinth, 0.04, 0.04, 0.14, hook.x, hook.y + 0.1, hook.z - 0.02, IRON);
-  root.add(new Mesh(plinth.build(), frameMat));
+  const plinthMesh = new Mesh(plinth.build(), frameMat);
+  root.add(plinthMesh);
+  procedural.push(plinthMesh);
+  caveRec.group = 'torch';
   const torch = buildTorch();
   torch.position.copy(hook);
   root.add(torch);
   const flameTex = glowTexture('rgba(255,236,170,1)', 'rgba(255,140,40,0.6)');
   const torchFlame = glowSprite(flameTex, 0.28, 0.9);
-  torchFlame.position.set(0, 0.36, 0);
+  torchFlame.position.set(0, TORCH_CROWN + 0.03, 0);
   torch.add(torchFlame);
+  const tongueTex = flameTexture();
+  const torchTongues: Sprite[] = [];
+  for (let k = 0; k < 3; k++) {
+    const tongue = glowSprite(tongueTex, 1, 0.85);
+    tongue.scale.set(0.2, 0.36, 1);
+    tongue.position.set(0, TORCH_CROWN + 0.12, 0);
+    torch.add(tongue);
+    torchTongues.push(tongue);
+  }
+  const torchEmbers: Sprite[] = [];
+  for (let k = 0; k < 6; k++) {
+    const ember = glowSprite(flameTex, 0.03, 0.9);
+    torch.add(ember);
+    torchEmbers.push(ember);
+  }
   const torchHalo = glowSprite(partGlowTex, 1.1, 0.7);
   torchHalo.position.set(0, 0.12, 0);
   torch.add(torchHalo);
@@ -1815,6 +2014,8 @@ export function buildCave(): CaveVisuals {
     partGlow,
     torch,
     torchFlame,
+    torchTongues,
+    torchEmbers,
     torchHalo,
     torchBeam,
     torchHome: hook.clone(),
@@ -1826,7 +2027,91 @@ export function buildCave(): CaveVisuals {
     shell: shellMesh.material as MeshStandardMaterial,
     shaft,
     glitter,
+    procedural,
+    glows: null,
+    baked: false,
   };
+}
+
+/**
+ * Swap the procedural cave for the Blender bake (cave-baked.ts): the shell and every fixed timber become
+ * the two light-mapped regions, each machine and the wheel its baked mesh in its own frame (so the
+ * system moves them exactly as before), and the shared banks (decks, lamps, ropes) take the baked
+ * geometry and materials. The edge strips give way to the decks' own nosing; the step marker becomes
+ * light pooled on the next deck's boards (caveLight.uMarker, set by the system).
+ */
+export function applyBakedCave(v: CaveVisuals, b: CaveBaked): void {
+  for (const o of v.procedural) o.visible = false;
+  v.root.add(b.statics);
+  v.platforms.forEach((pv) => {
+    if (pv.spec.kind === 'station') return;
+    const m = b.machines.get(pv.spec.id);
+    if (m) pv.group.add(m);
+  });
+  const wheel = b.machines.get('wheel');
+  if (wheel) v.wheel.add(wheel);
+  v.decks.geometry = b.deckGeometry;
+  v.decks.material = b.deckMaterial;
+  v.lamps.geometry = b.lampGeometry;
+  v.lamps.material = b.lampMaterial;
+  const glows = new InstancedMesh(b.glowGeometry, b.glowMaterial, v.lamps.count);
+  glows.instanceMatrix = v.lamps.instanceMatrix;
+  glows.instanceColor = v.lamps.instanceColor;
+  glows.frustumCulled = false;
+  glows.renderOrder = 10;
+  glows.name = 'SignalGlows';
+  v.root.add(glows);
+  v.glows = glows;
+  v.strips.visible = false;
+  v.ropes.geometry = b.ropeGeometry;
+  v.ropes.material = b.ropeMaterial;
+  (v.marker.material as MeshBasicMaterial).visible = false;
+  v.shaft.visible = false;
+  // the glow sprites and beams are drawn on top of real light now: keep them out of the tone curve's
+  // brightest end so they read as glows, not white blots
+  for (const s of [...Object.values(v.partGlow), v.torchHalo, v.beaconGlow, v.brazierTarget]) s.material.toneMapped = false;
+  for (const l of v.lights) (l as HemisphereLight).intensity = 0.9;
+  v.baked = true;
+}
+
+/** The in-the-way part's centre above its deck, and the gallows' height. */
+const IN_WAY_Y = 1.25;
+const GALLOWS_H = 2.3;
+/** Tilts the control bar so its apex hangs plumb over the base bar (a flat, upright triangle). */
+const BAR_PLUMB = -Math.atan2(0.3, 1.1);
+
+/**
+ * Where the last part hangs: over the edge you step off the station by
+ * (x, z, from the anchor), facing across it (yaw), and the gallows post off
+ * that edge's corner on the side away from the way you came in (px, pz).
+ * Null if the gallows would get in a machine's way.
+ */
+function inWaySpot(index: number): { x: number; z: number; px: number; pz: number; yaw: number } | null {
+  const step = ROUTE_STEP[index];
+  const out = BOARDINGS[step + 1];
+  const into = BOARDINGS[step];
+  if (!out || !into) return null;
+  const o = sqOffset(out.from);
+  const dx = out.to[0] - out.from[0];
+  const dz = out.to[1] - out.from[1];
+  // Of the two corners on that edge, the one further from where you arrive.
+  const came = sqOffset(into.from);
+  let sx = -dz;
+  let sz = dx;
+  if (sx * (came.x - o.x) + sz * (came.z - o.z) > 0) {
+    sx = -sx;
+    sz = -sz;
+  }
+  const x = o.x + dx * (HALF - 0.03);
+  const z = o.z + dz * (HALF - 0.03);
+  const px = x + sx * (HALF + 0.07);
+  const pz = z + sz * (HALF + 0.07);
+  const at = PLATFORMS[index].keys[0].a;
+  const foot = new Vector3(at.x + px, at.y - 0.3, at.z + pz);
+  const head = foot.clone().setY(at.y + GALLOWS_H);
+  const tip = new Vector3(at.x + x, head.y, at.z + z);
+  if (!clearOfMachines(foot, head, 0.04, index) || !clearOfMachines(head, tip, 0.04, index)) return null;
+  return { x, z, px, pz, yaw: dx !== 0 ? Math.PI / 2 : 0 };
 }
 
 /** A free side of a part station for the rack: offset from the anchor and facing. */
@@ -1850,3 +2135,9 @@ export function setRope(ropes: InstancedMesh, index: number, a: Vector3, b: Vect
 }
 
 export { CORNERS as TILE_CORNERS, EDGES as TILE_EDGES, EDGE_DIR, HALF as TILE_HALF };
+
+/** For the art pipeline: what the works sweep through, the fixed keep-outs, and the cave's outline. */
+export function caveClearance(): { swept: Swept[]; keep: Swept[]; frame: (y: number) => ReturnType<typeof shellFrame> } {
+  return { swept: sweptVolumes(), keep: keepOuts(), frame: shellFrame };
+}
+export const CAVE_SHELL = { floorY: FLOOR_Y, top: SHELL_TOP, wheelX: WHEEL_X, headframe: HEADFRAME, cableH: CABLE_H, hoistYoke: HOIST_YOKE, swingYoke: SWING_YOKE };

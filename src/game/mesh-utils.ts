@@ -15,6 +15,20 @@ import {
 
 export type ColorFn = (position: Vector3, normal: Vector3, out: Color) => void;
 
+export interface GeometryBuilderOptions {
+  /**
+   * Grow every piece by a hair (0.5 to 2.9 mm, a different amount for each
+   * of seven pieces in turn) so faces meant to sit flush (a rail over its
+   * post, a crossbar on its upright, overlapping footing stones) never
+   * share a plane. Shared planes z-fight: in a headset they shimmer and
+   * crawl as you move your head.
+   */
+  separate?: boolean;
+}
+
+/** World-space growth steps for `separate` pieces (metres). */
+const SEPARATE_STEPS = [0.0005, 0.0009, 0.0013, 0.0017, 0.0021, 0.0025, 0.0029];
+
 export class GeometryBuilder {
   private positions: number[] = [];
   private normals: number[] = [];
@@ -23,12 +37,50 @@ export class GeometryBuilder {
   private readonly n = new Vector3();
   private readonly c = new Color();
   private readonly normalMatrix = new Matrix4();
+  private readonly separate: boolean;
+  private pieces = 0;
+  private readonly grown = new Matrix4();
+  private readonly grow = new Matrix4();
+  private readonly centre = new Vector3();
+  private readonly half = new Vector3();
+  private readonly axis = new Vector3();
+
+  constructor(options: GeometryBuilderOptions = {}) {
+    this.separate = options.separate ?? false;
+  }
+
+  /**
+   * `matrix` with the piece grown about its own centre by this piece's
+   * separation step, in world units whatever the matrix's scale (and never
+   * by more than a tenth of the piece's thickness).
+   */
+  private separated(geometry: BufferGeometry, matrix: Matrix4): Matrix4 {
+    const step = SEPARATE_STEPS[(this.pieces++ * 3) % SEPARATE_STEPS.length];
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const box = geometry.boundingBox!;
+    box.getCenter(this.centre);
+    box.getSize(this.half).multiplyScalar(0.5);
+    const e = matrix.elements;
+    const scale = [0, 0, 0];
+    for (let k = 0; k < 3; k++) {
+      const h = this.half.getComponent(k);
+      const world = this.axis.set(e[k * 4], e[k * 4 + 1], e[k * 4 + 2]).length();
+      // Flat pieces (a plane) stay flat; everything else grows outward.
+      scale[k] = h > 1e-5 && world > 1e-9 ? 1 + Math.min(step / world, h * 0.1) / h : 1;
+    }
+    this.grow
+      .makeTranslation(-this.centre.x, -this.centre.y, -this.centre.z)
+      .premultiply(this.grown.makeScale(scale[0], scale[1], scale[2]))
+      .premultiply(this.grown.makeTranslation(this.centre.x, this.centre.y, this.centre.z));
+    return this.grown.copy(matrix).multiply(this.grow);
+  }
 
   /**
    * Append a geometry transformed by `matrix`, coloured either uniformly or
    * per vertex via a callback that receives the transformed position/normal.
    */
   add(geometry: BufferGeometry, matrix: Matrix4, color: Color | ColorFn): this {
+    if (this.separate) matrix = this.separated(geometry, matrix);
     const geo = geometry.index ? geometry.toNonIndexed() : geometry;
     if (!geo.getAttribute('normal')) geo.computeVertexNormals();
     const pos = geo.getAttribute('position');
