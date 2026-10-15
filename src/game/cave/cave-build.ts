@@ -12,7 +12,6 @@
 import {
   AdditiveBlending,
   BackSide,
-  Box3,
   BoxGeometry,
   BufferAttribute,
   BufferGeometry,
@@ -1881,23 +1880,13 @@ export function buildCave(): CaveVisuals {
     const rackB = new WorksBuilder();
     const inWay = i === lastPart ? inWaySpot(i) : null;
     if (inWay) {
-      // Hung from a gallows over the edge you step off by, at hand height,
-      // spread across the gap: you can't leave without walking into it.
+      // Hanging over the edge you step off by, at hand height, spread across
+      // the gap: you can't leave without walking into it.
       holder.position.set(at.x + inWay.x, at.y + IN_WAY_Y, at.z + inWay.z);
       holder.rotation.y = inWay.yaw;
       if (spec.part === 'ControlBar') part.rotation.set(BAR_PLUMB, 0, 0);
       holder.add(part);
       root.add(holder);
-      holder.updateMatrixWorld(true);
-      const top = new Box3().setFromObject(holder).max.y;
-      const post = new Vector3(at.x + inWay.px, at.y - 0.3, at.z + inWay.pz);
-      const head = post.clone().setY(at.y + GALLOWS_H);
-      const tip = new Vector3(holder.position.x, head.y, holder.position.z);
-      box(rackB, 0.07, head.y - post.y + 0.05, 0.07, post.x, (post.y + head.y + 0.05) / 2, post.z, WOOD_DARK);
-      box(rackB, Math.abs(tip.x - post.x) + 0.07, 0.07, Math.abs(tip.z - post.z) + 0.07, (post.x + tip.x) / 2, head.y + 0.035, (post.z + tip.z) / 2, WOOD_DARK);
-      rod(rackB, head.clone().setY(head.y - 0.4), tip.clone().lerp(head, 0.55), 0.02, WOOD_DARK, 4);
-      rackB.add(new TorusGeometry(0.035, 0.009, 4, 10), new Matrix4().makeRotationX(Math.PI / 2).setPosition(tip.x, head.y - 0.01, tip.z), IRON);
-      rod(rackB, tip.clone().setY(head.y - 0.02), tip.clone().setY(top - 0.01), 0.012, ROPE, 5);
     } else {
       const rack = rackSpot(spec, gaps.get(i));
       holder.position.set(at.x + rack.x, at.y + 1.05, at.z + rack.z);
@@ -1912,8 +1901,7 @@ export function buildCave(): CaveVisuals {
     }
     const rackMesh = new Mesh(rackB.build(), frameMat);
     root.add(rackMesh);
-    // the racks are in the cave bake; the gallows isn't yet (re-run cave_build/cave_bake), so it stays
-    if (!inWay) procedural.push(rackMesh);
+    procedural.push(rackMesh);
     const glow = glowSprite(partGlowTex, 1.1, 0.6);
     glow.position.copy(holder.position);
     root.add(glow);
