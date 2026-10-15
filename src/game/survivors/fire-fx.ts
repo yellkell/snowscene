@@ -265,6 +265,7 @@ function fireMaterial(atlas: 'fire' | 'fireball', lmax: number, grid: number, co
       varying float vSunVis;
       varying float vNear;
       varying float vGold;
+      varying float vBall;
       void main() {
         float h = aPos.w;
         float w = h * 0.5;
@@ -290,6 +291,7 @@ function fireMaterial(atlas: 'fire' | 'fireball', lmax: number, grid: number, co
         vData = aData.xyz;
         vData.y = aData.y;
         vGold = aDir.y;
+        vBall = aDir.x;
         vSunVis = groundSunVisibility(aPos.xz);
         // Standing fires fade right at your eyes; the breath's balls over the first few metres of the jet
         // (you always look straight down it: up close they veiled the middle of the view).
@@ -306,6 +308,7 @@ function fireMaterial(atlas: 'fire' | 'fireball', lmax: number, grid: number, co
       varying float vSunVis;
       varying float vNear;
       varying float vGold;
+      varying float vBall;
       void main() {
         vec4 s = flipbook(tFire, vUv, vData.x, vec2(GRID), COUNT, LOOP == 1);
         float strength = vData.y;
@@ -318,7 +321,7 @@ function fireMaterial(atlas: 'fire' | 'fireball', lmax: number, grid: number, co
         // Under the glow budget the flames soften (their smoke and shape stay).
         emit *= 0.55 + 0.45 * uGain;
         // The breath's smoke is thinner than a standing fire's, so the crowd shows through the jet.
-        float a = s.b * mix(0.55, 1.0, strength) * vNear * (aDir.x < 0.5 ? 1.0 : 0.45);
+        float a = s.b * mix(0.55, 1.0, strength) * vNear * (vBall < 0.5 ? 1.0 : 0.45);
         // Soot lit by the evening (from above, a little sun) and by the flames beneath it.
         vec3 smoke = vec3(0.055, 0.052, 0.05) * (uOpenSky * uSkyTint * uSkyGain * 0.9 + uSunColor * 0.25 * vSunVis)
                      + vec3(0.6, 0.25, 0.08) * 0.012 * LMAX * strength * uEmit * (1.0 - vUv.y);

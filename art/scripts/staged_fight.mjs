@@ -18,6 +18,10 @@ const browser = await chromium.launch({ channel: 'chrome', headless: true, args:
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
+// shader compile failures are console errors (three.js logs them; the page carries on)
+page.on('console', (m) => {
+  if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text().slice(0, 300));
+});
 await page.goto(`${BASE}?survivors&debug&fight=${Date.now()}`);
 await page.waitForFunction(() => globalThis.__snow?.survivors?.arena, null, { timeout: 180000 });
 await page.waitForTimeout(4000);
@@ -59,3 +63,4 @@ await page.keyboard.up('KeyW');
 console.log(JSON.stringify(shots));
 console.log('errors', errors.length, errors.slice(0, 3));
 await browser.close();
+if (errors.length) process.exit(1);
