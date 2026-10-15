@@ -45,7 +45,7 @@ import { audio } from '../audio.js';
 import { equipPair, setPack } from '../equipment.js';
 import { HANDS, type Handedness } from '../hand-input.js';
 import { level } from '../level.js';
-import { poleTuning } from '../pole-system.js';
+import { poleMeshes, poleTuning } from '../pole-system.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt } from '../rig.js';
 import { sceneRefs, setBakedLook } from '../scene-system.js';
 import { bakedView } from '../baked/light.js';
@@ -53,6 +53,7 @@ import { fadeThen, game, Phase, requestRestart, setPhase, toast } from '../state
 import { WALL_Z } from '../terrain.js';
 import { startTutorialKit } from '../tutorial-kit.js';
 import { tutorialLevel } from '../tutorial-level.js';
+import { POLE_TIP_DISTANCE } from '../world-builders.js';
 import { BLOATER, BRUTE, CAP, GHOUL, GLITTER, Horde, KINDS, LUNGER, SPLITTER, TITAN } from './horde.js';
 import { billboard, Blades, BOLT_HAIL, BOLT_ICICLE, BOLT_SHARD, BOLT_STAR, Bolts, Chests, fx, type FxGround, Gems, Hurls, Impacts, MIN_GAIN, Novas, Orbs, Zaps } from './survivors-fx.js';
 import { SOURCE_COLORS, SRC, SRC_KEEP } from './weapon-colors.js';
@@ -150,6 +151,13 @@ const MILESTONES = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000];
 /** Faster than this (m/s) you ram through them (slower as the Avalanche Rider). */
 const RAM_SPEED = 2.8;
 const RIDER_RAM_SPEED = 1.8;
+/** A pole tip moving faster than this (m/s) pokes what it is in; how far round it reaches (m). */
+const POKE_SPEED = 1.0;
+const POKE_REACH = 0.18;
+/** Seconds before the same pole pokes again. */
+const POKE_COOLDOWN = 0.25;
+/** A poke's damage, in a ghoul's health (one always dies to it anyway). */
+const POKE_POWER = 1.5;
 /** A run lasts this long (s): hold out to the end and you win. */
 export const RUN_SECONDS = 480;
 /** The bosses, and when each comes: the last one for the final minute. */
@@ -320,6 +328,12 @@ export class SurvivorsSystem extends createSystem({}) {
   private readonly headUp = new Vector3();
   private readonly bossAt = new Vector3();
   private readonly pickAt = new Vector3();
+  /** Each pole's tip last frame (world), whether there is one, and its poke cooldown (s). */
+  private readonly tipLast = { left: new Vector3(), right: new Vector3() };
+  private readonly tipSeen = { left: false, right: false };
+  private readonly pokeCd = { left: 0, right: 0 };
+  private readonly tipAt = new Vector3();
+  private readonly tipVel = new Vector3();
   /** Seconds until the end-of-run cards come up (0: up, or not yet over), and their line. */
   private endWait = 0;
   private endLine = '';
@@ -562,6 +576,10 @@ export class SurvivorsSystem extends createSystem({}) {
     this.simClock += simDt;
     const clock = this.simClock;
     this.killFlares = 0;
+    // A poke is measured in real time (slow motion would make every wave of
+    // the pole a stab); with time stopped the tips start afresh.
+    const frameDt = dt;
+    if (this.dead || choosing) this.tipSeen.left = this.tipSeen.right = false;
     if (!this.dead && !choosing) {
       const dt = simDt;
       this.time += dt;
@@ -577,6 +595,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.hurt(dps * this.stats.armor * dt, dt);
       this.hp = Math.min(this.stats.maxHp, this.hp + this.stats.regen * dt);
       this.ram(dt, px, pz);
+      this.poke(frameDt);
       this.hurl(dt, px, pz);
       this.fireWeapons(dt, clock, px, pz);
       this.moveBolts(dt);
@@ -924,6 +943,58 @@ export class SurvivorsSystem extends createSystem({}) {
    * in five) lob ice boulders on a high arc at where you are heading, and a
    * boss throws a spread of three. Each lands on a red ring: be elsewhere.
    */
+  /**
+   * Poking: jab a pole's tip into one and it hurts, enough to finish a
+   * ghoul outright and to dent anything bigger. The tip has to be moving
+   * (a pole left resting where they walk does nothing), and each pole
+   * strikes one at a time.
+   */
+  private poke(dt: number): void {
+    const h = this.horde;
+    for (const hand of HANDS) {
+      const side = hand.handedness;
+      const mesh = poleMeshes[side];
+      const last = this.tipLast[side];
+      this.pokeCd[side] -= dt;
+      if (!mesh || !mesh.visible || dt <= 0) {
+        this.tipSeen[side] = false;
+        continue;
+      }
+      const tip = this.tipAt.set(0, 0, POLE_TIP_DISTANCE).applyQuaternion(mesh.quaternion).add(mesh.position);
+      const seen = this.tipSeen[side];
+      this.tipVel.subVectors(tip, last).divideScalar(dt);
+      last.copy(tip);
+      this.tipSeen[side] = true;
+      if (!seen || this.pokeCd[side] > 0 || this.tipVel.length() < POKE_SPEED) continue;
+      // The nearest one whose body the tip is inside.
+      const n = h.gather(tip.x, tip.z, POKE_REACH, this.near);
+      let best = -1;
+      let bestD = Infinity;
+      for (let j = 0; j < n; j++) {
+        const i = this.near[j];
+        const r = h.radius(i);
+        const gy = duneHeight(h.x[i], h.z[i]);
+        if (tip.y < gy - 0.15 || tip.y > gy + r * 2 + POKE_REACH) continue;
+        const d = (h.x[i] - tip.x) ** 2 + (h.z[i] - tip.z) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      if (best < 0) continue;
+      this.pokeCd[side] = POKE_COOLDOWN;
+      const ghoul = h.kind[best] === GHOUL;
+      let dmg = KINDS[GHOUL].hp * this.hpScale() * POKE_POWER * this.stats.might;
+      if (ghoul) dmg = Math.max(dmg, h.hp[best] + 1);
+      this.hit(best, dmg, this.tipVel.x, this.tipVel.z, 6);
+      this.killPulse++;
+      this.impacts.spawn(tip.x, tip.y, tip.z, 0xe8f6ff, 0.5);
+      sceneRefs.puffs?.emit(tip, 5, 1);
+      audio.crunch(1.1);
+      this.pulse(side, 0.8, 60);
+    }
+  }
+
   private hurl(dt: number, px: number, pz: number): void {
     const h = this.horde;
     const t = this.time;
