@@ -22,6 +22,9 @@ import { survivors, survivorsControl } from './survivors/survivors-state.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt, yawForward } from './rig.js';
 import { fadeThen, game, PART_COUNT, Phase, requestRestart, setPhase, toast } from './state.js';
 import { equipment, PART_ITEMS } from './equipment.js';
+import { loadProgress } from './baked/loaders.js';
+import { bakedView } from './baked/light.js';
+import { offerXR } from './xr-offer.js';
 import { CLIFF_HEIGHT, WALL_S, WALL_Z } from './terrain.js';
 import { startTutorialKit } from './tutorial-kit.js';
 
@@ -49,6 +52,13 @@ export class GuideSystem extends createSystem({}) {
   private metricText!: UIKit.Text;
   private xrButton!: UIKit.Component;
   private restartButton!: UIKit.Component;
+  private loadRow!: UIKit.Component;
+  private loadLabel!: UIKit.Text;
+  private loadFill!: UIKit.Component;
+  /** The bar never runs backwards (more loads start as earlier ones finish). */
+  private loadShown = -1;
+  /** The baked world is in: Enter VR is offered. */
+  private worldReady = false;
   private survivorsButton!: UIKit.Component;
   private survivorsAgainButton!: UIKit.Component;
   private survivorsExitButton!: UIKit.Component;
@@ -131,6 +141,9 @@ export class GuideSystem extends createSystem({}) {
     this.metricText = panel.requireElementById<UIKit.Text>('guide-metric');
     this.xrButton = panel.requireElementById('xr-button');
     this.restartButton = panel.requireElementById('restart-button');
+    this.loadRow = panel.requireElementById('load-row');
+    this.loadLabel = panel.requireElementById<UIKit.Text>('load-label');
+    this.loadFill = panel.requireElementById('load-fill');
     this.stepText.name = 'guide-step';
     this.titleText.name = 'guide-title';
     this.bodyText.name = 'guide-body';
@@ -335,8 +348,9 @@ export class GuideSystem extends createSystem({}) {
     const metric = copy.metric ?? '';
     this.metricText.setProperties({ text: metric, display: metric ? 'flex' : 'none' });
     this.xrButton.setProperties({
-      display: !immersive && this.world.xrEnabled ? 'flex' : 'none',
+      display: !immersive && this.world.xrEnabled && this.worldReady ? 'flex' : 'none',
     });
+    this.loadRow.setProperties({ display: this.worldReady ? 'none' : 'flex' });
     this.restartButton.setProperties({ display: phase === Phase.Landed ? 'flex' : 'none' });
     // Snow Survivors: offered at the trailhead and on the end screen; once
     // in, a way back to the mountain (in the pack), and another go when you fall.
@@ -352,6 +366,7 @@ export class GuideSystem extends createSystem({}) {
   update(delta: number): void {
     this.updateSoundCard(delta);
     if (!this.tryBindPanel()) return;
+    this.updateLoading();
     this.phaseTime += delta;
     const toastNow = game.toast.peek();
     if (toastNow && toastNow.until <= performance.now() / 1000) game.toast.value = null;
@@ -448,6 +463,30 @@ export class GuideSystem extends createSystem({}) {
   }
 
   /** In XR, does the panel live in the backpack (shown only while it's open)? */
+  /**
+   * Until the baked world is in, a loading bar stands where Enter VR goes (and the headset's own prompt
+   * isn't offered): entering early showed the plain stand-in world. Then the button comes up and the
+   * headset is offered the session.
+   */
+  private updateLoading(): void {
+    if (this.worldReady) return;
+    const survivorsFirst = new URLSearchParams(window.location.search).has('survivors');
+    const ready = survivorsFirst ? bakedView.survivorsReady : bakedView.tutorialReady;
+    if (ready) {
+      this.worldReady = true;
+      offerXR(this.world);
+      this.refresh();
+      return;
+    }
+    const p = loadProgress.started ? loadProgress.done / loadProgress.started : 0;
+    // short of done until the world says it's ready (the last loads start late)
+    const pct = Math.floor(Math.min(0.96, p * 0.96) * 100);
+    if (pct <= this.loadShown) return;
+    this.loadShown = pct;
+    this.loadFill.setProperties({ width: `${pct}%` });
+    this.loadLabel.setProperties({ text: `${survivorsFirst ? 'Loading Snow Survivors' : 'Loading the mountain'}... ${pct}%` });
+  }
+
   private panelInPack(): boolean {
     const phase = game.phase.peek();
     // Snow Survivors: always out of the way (the end of a run offers its

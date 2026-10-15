@@ -11,6 +11,7 @@
 
 import { BufferAttribute, BufferGeometry, Group, type Material, Mesh, type Object3D, Vector3 } from '@iwsdk/core';
 import { loadSurvivorsArena, type BakedArena } from '../baked/survivors-arena.js';
+import { bakedView } from '../baked/light.js';
 import { createLandMaterial } from '../land-material.js';
 import { ARENA_RADIUS, ARENA_X, ARENA_Z, duneHeight } from './survivors-level.js';
 
@@ -33,6 +34,7 @@ export function buildSurvivorsWorld(addWorldSpace: (o: Object3D) => void): Survi
   loadSurvivorsArena(ARENA_X, ARENA_Z)
     .then((a) => {
       arena = a;
+      bakedView.survivorsReady = true;
       if (a.groundMaterial) ground.material = a.groundMaterial;
       group.add(a.group);
       if (a.sky) addWorldSpace(a.sky);

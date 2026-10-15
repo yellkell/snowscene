@@ -19,6 +19,8 @@ export const bakedView = {
   forceProgress: -1,
   /** the tutorial's bake has loaded (both levels are baked from then on) */
   tutorialReady: false,
+  /** Snow Survivors' arena bake is in (the arena is built on the first run). */
+  survivorsReady: false,
 };
 
 export const bakedLight = {

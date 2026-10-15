@@ -45,7 +45,7 @@ import {
   WebGLCubeRenderTarget,
   type WebGLRenderer,
 } from '@iwsdk/core';
-import { assetUrl, loadGLTF, loadJSON, loadTexture } from '../baked/loaders.js';
+import { assetUrl, loadGLTF, loadJSON, loadTexture, track } from '../baked/loaders.js';
 import { bakedLight, bakedView } from '../baked/light.js';
 import { firstGeometry } from '../baked/survivors-arena.js';
 import { loadChunked } from '../baked/lod.js';
@@ -714,7 +714,7 @@ export interface CaveBaked {
 
 async function loadVolume(man: CaveManifest, origin: Vector3): Promise<void> {
   const v = man.volume;
-  const r = await fetch(assetUrl(DIR + v.file));
+  const r = await track(fetch(assetUrl(DIR + v.file)));
   if (!r.ok) throw new Error(`cave volume: ${r.status}`);
   const data = new Uint8Array(await r.arrayBuffer());
   const [nx, ny, nz] = v.dims;
