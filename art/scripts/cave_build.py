@@ -93,11 +93,58 @@ def wall_anchors():
     return out
 
 
+def reach_wall(V):
+    """Carry each station cantilever and strut that stops short of the sculpted wall on into it (15 cm deep).
+    The wall used to be pulled out to meet the timber instead: where that was a metre or more, the ice was
+    drawn out into a long torn tent round the beam's end."""
+    from mathutils.bvhtree import BVHTree
+    ny, nx, _ = V.shape
+    verts = [Vector(v) for v in V.reshape(-1, 3)]
+    polys = [(j * nx + i, j * nx + (i + 1) % nx, (j + 1) * nx + (i + 1) % nx, (j + 1) * nx + i) for j in range(ny - 1) for i in range(nx)]
+    tree = BVHTree.FromPolygons(verts, polys)
+    n = 0
+    for p in L['parts']:
+        g = p['group']
+        if not g.startswith('platform:') or p['type'] != 'CylinderGeometry' or not p['mat'].startswith('wood'):
+            continue
+        pl = platform(g.split(':', 1)[1])
+        if pl['kind'] != 'station':
+            continue
+        c, x, y, z = K.m3(p['matrix'])
+        hh = p['params']['height'] * y.length / 2
+        if hh < 0.8:
+            continue
+        a = Vector(anchor(pl['id']))
+        d = y.normalized()
+        for sgn in (-1, 1):
+            e = c + d * (hh * sgn)
+            if Vector((e.x, 0, e.z)).length <= 1.0:
+                continue
+            out = d * sgn
+            hit = tree.ray_cast(a + e, out, 4.0)
+            if hit[0] is None or hit[3] < 0.02:
+                continue
+            ext = hit[3] + 0.15
+            m = p['matrix']
+            k = (2 * hh + ext) / (2 * hh)
+            for i in (4, 5, 6):
+                m[i] *= k
+            for i, v in zip((12, 13, 14), out * (ext / 2)):
+                m[i] += v
+            hh += ext / 2
+            c = c + out * (ext / 2)
+            n += 1
+            print('  cantilever carried', round(hit[3], 2), 'm on into the wall', flush=True)
+    return n
+
+
 def build_shell(coll, M, clear):
     V = SH.shell_grid(L, fy=8, fx=20)
     V, attrs, N = SH.sculpt(L, V, clear, random.Random(5))
+    reach_wall(V)
     anchors = wall_anchors()
     V = SH.embed(L, V, anchors)
+    V = SH.unfold(V)
     keys = ('thin', 'rock', 'dirt', 'fall', 'milky', 'cusp', 'notch', 'crack', 'moulin', 'rim', 'layer')
     ob = SH.to_mesh('CAVE_SHELL', V, {k: attrs[k] for k in keys}, coll, M['ice'])
     # the runtime's wall: every third ring and segment of the same grid (so its unrolled UVs are exact),
@@ -441,7 +488,9 @@ def wall_props(clear):
             continue
         c, x, y, z = K.m3(p['matrix'])
         hh = p['params']['height'] * y.length / 2
-        if hh * 2 < 6 or abs(y.normalized().y) > 0.3:
+        # under the level cantilevers only: a strut sloping down to the wall beneath one got a second row
+        # of props hung from it, each stopping at the strut just beside one that went on up to the beam
+        if hh * 2 < 6 or abs(y.normalized().y) > 0.05:
             continue
         a = Vector(anchor(pl['id']))
         p0, p1 = a + c - y.normalized() * hh, a + c + y.normalized() * hh

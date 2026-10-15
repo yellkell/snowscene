@@ -224,7 +224,7 @@ def sculpt(L, V, clear, rng):
     return Pn.reshape(ny, nx, 3), attrs, N
 
 
-def embed(L, V, anchors, falloff=1.1, depth=0.12):
+def embed(L, V, anchors, falloff=1.1, depth=0.12, most=0.4):
     """Pull the wall out (into the cave) round each anchor point so the beam's end is buried in ice."""
     ny, nx, _ = V.shape
     n = grid_normals(V)
@@ -244,9 +244,39 @@ def embed(L, V, anchors, falloff=1.1, depth=0.12):
         s = (dv[m] * N[m]).sum(1)                 # > 0: the anchor stands in the cave in front of this vertex
         tang = np.sqrt(np.maximum(dist[m] ** 2 - s ** 2, 0))
         w = smoothstep(falloff, falloff * 0.25, tang)
-        push = np.maximum(0, s + depth) * w
+        # (never more than `most`: the timber is carried on into the wall to meet it, not the wall drawn out)
+        push = np.clip(s + depth, 0, most) * w
         P[m] += N[m] * push[:, None]
     return P.reshape(ny, nx, 3)
+
+
+def unfold(V, rounds=100):
+    """Relax wherever the wall has folded over itself (a waterfall lobe's flutes or an anchor's pull, laid on a
+    tight curve, can push a row of vertices past its neighbours): such a patch rendered as a crumpled, torn
+    sheet. Folded vertices (and a ring round them) move to their neighbours' mean until none is left."""
+    V = V.copy()
+    ny, nx, _ = V.shape
+    first = None
+    for k in range(rounds):
+        n = grid_normals(V)
+        ctr = V.mean(1, keepdims=True)
+        ta = ctr - V
+        ta[..., 1] = 0
+        n[(n * ta).sum(-1) < 0] *= -1
+        m = sum(np.roll(np.roll(n, a, 0), b, 1) for a in (-1, 0, 1) for b in (-1, 0, 1))
+        m /= np.linalg.norm(m, axis=-1, keepdims=True) + 1e-9
+        bad = (n * m).sum(-1) < 0.1
+        bad[0] = bad[-1] = False
+        if first is None:
+            first = int(bad.sum())
+        if not bad.any():
+            break
+        grow = bad | np.roll(bad, 1, 0) | np.roll(bad, -1, 0) | np.roll(bad, 1, 1) | np.roll(bad, -1, 1)
+        grow[0] = grow[-1] = False
+        avg = (np.roll(V, 1, 0) + np.roll(V, -1, 0) + np.roll(V, 1, 1) + np.roll(V, -1, 1)) / 4
+        V[grow] = avg[grow]
+    print('shell: unfolded', first, 'folded vertices in', k + 1, 'rounds;', int(bad.sum()), 'left', flush=True)
+    return V
 
 
 def to_mesh(name, V, attrs, coll, mat, cap=True):

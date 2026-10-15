@@ -4,14 +4,14 @@
   "switch": 10,
   "ratio": 0.3,
   "chunks": 13,
-  "tris": 178372
+  "tris": 182657
  },
  "works": {
   "mesh": "works_lod.glb",
   "switch": 14,
   "ratio": 0.5,
   "chunks": 8,
-  "tris": 101652
+  "tris": 102036
  },
  "shell": {
   "mesh": "shell_lod.glb",

@@ -532,9 +532,10 @@ class Works:
                 pts = [p0.lerp(p1, i / 8) - Vector((0, 0, 4 * sag * (i / 8) * (1 - i / 8))) for i in range(9)]
                 tube(b, pts, min(lens[A], lens[B]) * 0.7, M['rope'], sides=8)
             elif mat == 'steel':
-                # run each length a few centimetres on, so where the track bends the rail stays whole
-                ov = a_l.normalized() * 0.035
-                rail_profile(b, cb - a_l - ov, cb + a_l + ov, Vector((0, 0, 1)), M['steel'])
+                # each length ends exactly where the next begins: overlapping lengths crossed their faces at a
+                # fraction of a degree, and that near-coincident steel flickered in the headset (the track is
+                # straight but for a few bends, where the hairline at the joint is far below a pixel)
+                rail_profile(b, cb - a_l, cb + a_l, Vector((0, 0, 1)), M['steel'])
             else:
                 box_iron(b, cb, [g2b(a) for a in ax], M['iron'])
         elif typ == 'CylinderGeometry':
@@ -784,17 +785,22 @@ def separate_pieces(objs):
     """Two pieces' faces in one plane flicker in the headset (the depth test flips between them frame to
     frame): rails overlapping at their joins, a handrail flush with the post it meets, a cleat on a beam.
     Every piece (loose part) grows by a hair along its vertex normals, one of six levels, 1 to 6 mm; pieces
-    that have faces in a common plane in the same place (the only ones that can fight) always get different
-    levels (a greedy colouring of that graph), so flush faces end at least a millimetre apart, well inside
-    what the depth buffer resolves (zfight_scan.py checks)."""
+    with faces that overlap in a common plane (the only ones that can fight) always get different levels (a
+    greedy colouring of that graph), so flush faces end at least a millimetre apart, well inside what the
+    depth buffer resolves (zfight_live.mjs measures it in the running cave)."""
     import bmesh
     from collections import defaultdict
     LEVELS = [0.001 * (k + 1) for k in range(6)]
-    ANG, PLANE, CELL = 0.01, 0.0006, 1.0
+    # coarse buckets, each face entered in its neighbours too: on the sloped incline, two practically
+    # coincident faces could round into different buckets and never meet
+    ANG, PLANE = 0.04, 0.002
     parts = []          # list of vertex lists
+    nested = set()      # steel rails (butted end to end): one fixed hair for all of them, see below
+    small = set()       # bolt heads, washers, nails: left where they are (see below)
+    iron = set()        # straps and plates: a thinner hair
     owner = {}          # (object index, vertex index) -> part
     meshes = []
-    buckets = defaultdict(set)
+    buckets = defaultdict(list)
     for oi, ob in enumerate(objs):
         if ob.type != 'MESH':
             continue
@@ -817,6 +823,15 @@ def separate_pieces(objs):
                     if w.index not in seen:
                         seen.add(w.index)
                         stack.append(w)
+            mats = {ob.material_slots[f.material_index].name for v in part[:4] for f in v.link_faces if f.material_index < len(ob.material_slots)}
+            if mats and all('steel' in m for m in mats):
+                nested.add(len(parts))
+            elif mats and all('iron' in m for m in mats):
+                iron.add(len(parts))
+            lo = Vector((min(v.co.x for v in part), min(v.co.y for v in part), min(v.co.z for v in part)))
+            hi = Vector((max(v.co.x for v in part), max(v.co.y for v in part), max(v.co.z for v in part)))
+            if (hi - lo).length < 0.09:
+                small.add(len(parts))
             parts.append(part)
         mw = ob.matrix_world
         nm = mw.to_3x3().inverted().transposed()
@@ -824,16 +839,31 @@ def separate_pieces(objs):
             if f.calc_area() < 1e-8:
                 continue
             n = (nm @ f.normal).normalized()
-            c = mw @ f.calc_center_median()
-            d = n.dot(c)
-            key = (round(n.x / ANG), round(n.y / ANG), round(n.z / ANG), round(d / PLANE),
-                   int(c.x // CELL), int(c.y // CELL), int(c.z // CELL))
-            buckets[key].add(owner[(oi, f.verts[0].index)])
+            ws = [mw @ v.co for v in f.verts]
+            d = n.dot(ws[0])
+            lo = [min(p[k] for p in ws) - 0.002 for k in range(3)]
+            hi = [max(p[k] for p in ws) + 0.002 for k in range(3)]
+            nx, ny, nz, dd = n.x / ANG, n.y / ANG, n.z / ANG, d / PLANE
+            for ix in {math.floor(nx), math.ceil(nx)}:
+                for iy in {math.floor(ny), math.ceil(ny)}:
+                    for iz in {math.floor(nz), math.ceil(nz)}:
+                        for idd in {math.floor(dd), math.ceil(dd)}:
+                            buckets[(ix, iy, iz, idd)].append((lo, hi, owner[(oi, f.verts[0].index)]))
+    # in each plane, faces of different pieces whose extents overlap (a sweep along x) are in contact: a
+    # long rail's face against the sleeper or spike it lies on counts, however far apart their centres
     nbr = defaultdict(set)
-    for ps in buckets.values():
-        if len(ps) > 1:
-            for a in ps:
-                nbr[a] |= ps - {a}
+    for fs in buckets.values():
+        if len({f[2] for f in fs}) < 2:
+            continue
+        fs.sort(key=lambda f: f[0][0])
+        active = []
+        for lo, hi, pa in fs:
+            active = [a for a in active if a[1][0] >= lo[0]]
+            for alo, ahi, pb in active:
+                if pb != pa and all(alo[k] <= hi[k] and lo[k] <= ahi[k] for k in (1, 2)):
+                    nbr[pa].add(pb)
+                    nbr[pb].add(pa)
+            active.append((lo, hi, pa))
     level = [-1] * len(parts)
     short = 0
     for i in sorted(range(len(parts)), key=lambda i: -len(nbr[i])):
@@ -842,11 +872,19 @@ def separate_pieces(objs):
         if not free:
             short += 1
         level[i] = free[0] if free else i % len(LEVELS)
-    for part, lv in zip(parts, level):
-        h = LEVELS[lv]
+    for pi, (part, lv) in enumerate(zip(parts, level)):
+        # rails: all one fixed hair (they butt end to end), enough that the sloped top of the foot stands
+        # clear of any sleeper or stringer the levels raise beneath it (a timber top cutting that 14-degree
+        # slope flickered along every rail); what still meets the rail meets its upright foot, square on
+        # bolt heads and washers sit on a face with their bottoms open (nothing of theirs lies flush), and
+        # they're so small that pushing their corners out along the averaged normals splayed every one into
+        # a burr of teeth at the joins; iron straps (6 mm thick) take a hair, not a level
+        if pi in small:
+            continue
+        h = 0.003 if pi in nested else min(LEVELS[lv], 0.0015) if pi in iron else LEVELS[lv]
         for v in part:
             v.co += v.normal * h
     for ob, bm in meshes:
         bm.to_mesh(ob.data)
         bm.free()
-    print('flush faces separated:', len(parts), 'pieces,', sum(1 for i in nbr if nbr[i]), 'in contact;', short, 'ran out of levels', flush=True)
+    print('flush faces separated:', len(parts), 'pieces (', len(nested), 'nested rails kept,', len(small), 'small left),', sum(1 for i in nbr if nbr[i]), 'in contact;', short, 'ran out of levels', flush=True)

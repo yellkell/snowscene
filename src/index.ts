@@ -7,7 +7,7 @@
  * hand tracking, with controller and desktop fallbacks.
  */
 
-import { World } from '@iwsdk/core';
+import { Raycaster, World } from '@iwsdk/core';
 import projectOptions from 'virtual:iwsdk-project';
 import { audio } from './game/audio.js';
 import { BackpackSystem } from './game/backpack-system.js';
@@ -96,6 +96,8 @@ World.create(
       lodDebug,
       lodStats,
       look: world.getSystem(DesktopLookSystem),
+      // for tools that pick what's under a pixel
+      Raycaster,
     };
     // Debug bridge for tools that can only navigate and read the console: #js=<code> evaluates
     // <code> (with `s` = this handle) and logs the result.

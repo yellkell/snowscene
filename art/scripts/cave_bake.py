@@ -256,10 +256,15 @@ def receiver(low):
 
 
 # ---------------------------------------------------------------- stages
+SHELL_CAGE, SHELL_REACH = 0.5, 1.2
+
+
 def stage_shell():
     """The wall: the build's low grid (exactly unrolled UVs, from just below the waterline up), baked from
     the HIGH wall (icicles, rocks and drips are the debris region's)."""
     hi = [O['CAVE_SHELL']]
+    # (the low grid can't follow a frozen fall's flutes, which stand up to ~0.9 m proud of it: with only
+    # 25 cm of reach the bake grazed those lobes and smeared them into crumpled, torn-looking sheets)
     src = O['CAVE_SHELL_LOW']
     low = bpy.data.objects.new('SHELL_LOW', src.data.copy())
     low.matrix_world = src.matrix_world
@@ -275,13 +280,13 @@ def stage_shell():
     ar, lr = res(2048), res(2048)
     alb = bpy.data.images.new('shell_alb', ar, ar, float_buffer=True)
     channel(set())
-    BK.bake(low, alb, 'DIFFUSE', {'COLOR'}, 4, margin=6, high=hi, extrusion=0.1, maxdist=0.25)
+    BK.bake(low, alb, 'DIFFUSE', {'COLOR'}, 4, margin=6, high=hi, extrusion=SHELL_CAGE, maxdist=SHELL_REACH)
     save('shell_albedo', BK.pixels(alb)[..., :3])
     channel({'day'})
     em = bpy.data.images.new('shell_emit', ar, ar, float_buffer=True)
-    BK.bake(low, em, 'EMIT', None, 4, margin=6, high=hi, extrusion=0.1, maxdist=0.25)
+    BK.bake(low, em, 'EMIT', None, 4, margin=6, high=hi, extrusion=SHELL_CAGE, maxdist=SHELL_REACH)
     save('shell_emit', BK.pixels(em)[..., :3])
-    lit_bakes('shell', low, lr, high=hi, keep=False, extrusion=0.1, maxdist=0.25)
+    lit_bakes('shell', low, lr, high=hi, keep=False, extrusion=SHELL_CAGE, maxdist=SHELL_REACH)
     hide(moving(), False)
     export(low, os.path.join(OUT, 'shell.glb'))
     bpy.data.objects.remove(low)
@@ -304,7 +309,6 @@ def stage_works():
     # every piece apart from its neighbours (the lanterns, plates and fittings come in as instances only
     # here): flush faces of two pieces flicker in the headset
     K.separate_pieces([low])
-    K.separate_pieces([low])  # again: an offset can land a face on another piece's plane
     tris = sum(len(p.vertices) - 2 for p in low.data.polygons)
     BK.log('works tris', tris)
     atlas_uv(low, margin=0.0005, angle=60)
@@ -430,7 +434,6 @@ def stage_machines(src=None, name='machines', size=2048):
         c.matrix_world = Matrix.Translation((i * 9.0, 400.0, -200.0)) @ Matrix.Rotation(0, 4, 'Z')
         c['src'] = o.name
         copies.append(c)
-    K.separate_pieces(copies)
     K.separate_pieces(copies)
     atlas_uv(copies, margin=0.001, angle=60)
     ar = res(size)

@@ -17,6 +17,9 @@
 
 import {
   AdditiveBlending,
+  CustomBlending,
+  ZeroFactor,
+  SrcColorFactor,
   type BufferGeometry,
   ClampToEdgeWrapping,
   Color,
@@ -91,7 +94,7 @@ const GLOBE_CHROMA = new Color(1.48, 0.917, 0.414);
  */
 export const CAVE_EXPOSURE = 16;
 /** The renderer's exposure inside the cave (on top of CAVE_EXPOSURE's grade). */
-const CAVE_VIEW_EXPOSURE = 1.3;
+const CAVE_VIEW_EXPOSURE = 1.75;
 /** The pool's surface in cave space (cave-build.ts POOL_Y; not imported, cave-build imports this file). */
 const POOL_LOCAL_Y = -0.32;
 /** How many lanterns' glints the wet ice and the pool evaluate (the nearest few). */
@@ -176,7 +179,8 @@ vec3 caveEnv(vec3 p, vec3 r, float blur) {
   float b = dot(o, d);
   float c = dot(o, o) - 1.0;
   float t = (-b + sqrt(max(b * b - a * c, 0.0))) / a;
-  vec3 e = textureCube(tEnv, p + r * t - uEnvC, blur).rgb * uEnvOn;
+  // (clamped first, so the roll-off below never sees an overflowed half-float texel)
+  vec3 e = min(textureCube(tEnv, p + r * t - uEnvC, blur).rgb, vec3(1e3)) * uEnvOn;
   // the chimney's sky is far brighter than anything else in the capture: don't let it sparkle everywhere
   return e / (1.0 + dot(e, vec3(0.08)));
 }
@@ -275,6 +279,13 @@ function regionMaterial(kind: 'shell' | 'works' | 'debris', r: RegionInfo, albed
       vec4 a = texture2D(tAlbedo, vUv);
       vec3 t = texture2D(tLight, vUv).rgb;
       vec3 L = t * t * uMax;
+      // under the water the bake saw the old black pool and baked the ice beneath it black; through the
+      // clear water it reads lit by what reaches the surface above it (as the bed is)
+      float sub = smoothstep(uLowWet - 0.03, uLowWet - 0.35, vW.y);
+      // (sampled a metre out from the ice, in the open: the volume's cells against the wall lie in the ice)
+      vec3 hz = vec3(vN.x, 0.0, vN.z);
+      vec3 sp = vec3(vW.x, uLowWet + 0.4, vW.z) + hz * (1.0 / max(length(hz), 1e-3));
+      if (sub > 0.0) L = mix(L, 0.6 * ambientCube(vec3(0.0, 1.0, 0.0), sp), sub);
       float extra = a.a * a.a * uExtraMax;
       ${
         shell
@@ -291,7 +302,7 @@ function regionMaterial(kind: 'shell' | 'works' | 'debris', r: RegionInfo, albed
       // on every scallop at once read as a mosaic, not as wet ice.
       vec3 ng = normalize(vN) * (gl_FrontFacing ? 1.0 : -1.0);
       float streak = texture2D(tIce, vec2(vW.x * 0.11 + vW.z * 0.07, vW.y * 0.012)).x;
-      float wet = clamp(smoothstep(0.66, 0.86, streak) + smoothstep(uLowWet + 2.5, uLowWet, vW.y), 0.0, 1.0);
+      float wet = clamp(smoothstep(0.66, 0.86, streak) + smoothstep(uLowWet + 2.5, uLowWet, vW.y), 0.0, 1.0) * (1.0 - sub);
       vec3 V = normalize(cameraPosition - vW);
       vec3 n = ng;
       if (wet > 0.0) {
@@ -578,45 +589,216 @@ function ropeMaterial(albedo: Texture, lay: number): ShaderMaterial {
 
 /* ── the meltwater: black, a mirror for the lanterns and the sky at the top of the chimney ──────── */
 
-function poolMaterial(chimney: Vector3, chimneyR: Vector2): ShaderMaterial {
-  return shader(
-    { uChimney: { value: chimney }, uChimneyR: { value: chimneyR } },
+/**
+ * Clear glacial meltwater over a stony bed: the bed is a shallow basin under the whole pool (deepest in the
+ * middle), lit by the cave's light volume, with caustics from the light above playing on it. The water
+ * absorbs each colour by the length of the path through it (red first), so the shallows are clear and the
+ * deep middle glacial turquoise; posts and stones under it take the same tint. Three draws: the bed, then
+ * the water's transmittance multiplied over everything under it, then its reflections and glow added.
+ */
+const POOL_GLSL = /* glsl */ `
+uniform vec2 uPoolC;
+// how deep the bed lies under the surface at q (pool-centred world x, z)
+float bedDepth(vec2 q) {
+  float r = length(q * vec2(1.0, 0.85)) / 11.0;
+  float d = 0.4 + 2.4 * (1.0 - smoothstep(0.1, 1.1, r));
+  d += 0.22 * sin(q.x * 0.83 + 1.3) * sin(q.y * 0.71 - 0.4) + 0.09 * sin(q.x * 2.3 + q.y * 1.7) + 0.05 * sin(q.x * 5.1 - q.y * 4.3);
+  return max(d, 0.22);
+}
+// moving caustic lines: a warped interference pattern, sharpened into bright filaments
+float caustic(vec2 p, float t) {
+  vec2 a = p;
+  float c = 0.0;
+  for (int i = 0; i < 3; i++) {
+    a += vec2(sin(a.y * 1.31 + t * 0.71 + float(i) * 1.7), cos(a.x * 1.17 - t * 0.53 + float(i) * 2.3)) * 0.42;
+    float v = abs(sin(a.x * 2.1) + sin(a.y * 2.3)) * 0.5;
+    c += pow(1.0 - min(v, 1.0), 6.0);
+  }
+  return c / 3.0;
+}
+// the water's slope where it shivers (drips from the icicles): smooth travelling wavelets
+vec3 waterNormal(vec2 q, float t) {
+  vec2 slope = vec2(0.0);
+  const vec2 D0 = vec2(0.83, 0.56), D1 = vec2(-0.47, 0.88), D2 = vec2(0.12, -0.99), D3 = vec2(-0.91, -0.41), D4 = vec2(0.64, -0.77);
+  slope += D0 * cos(dot(q, D0) * 2.3 + t * 0.9) * 0.010;
+  slope += D1 * cos(dot(q, D1) * 3.7 - t * 1.3) * 0.007;
+  slope += D2 * cos(dot(q, D2) * 5.9 + t * 1.7) * 0.005;
+  slope += D3 * cos(dot(q, D3) * 9.1 - t * 2.2) * 0.0035;
+  slope += D4 * cos(dot(q, D4) * 14.3 + t * 2.9) * 0.0025;
+  return normalize(vec3(slope.x, 1.0, slope.y));
+}
+// glacial meltwater's absorption per metre (red goes first, then green): turquoise
+const vec3 SIGMA = vec3(0.6, 0.13, 0.07);
+`;
+
+// The light over the water: the light volume's, except the daylight down the chimney, which the volume's
+// half-metre cells drew as a stepped white blot (with the posts' shadows in it): that lands as a soft-edged
+// disc under the chimney, as bright as the volume has it at the shaft's centre.
+const POOL_LIGHT_GLSL = /* glsl */ `
+uniform vec2 uShaftC;
+uniform vec2 uShaftR;
+vec3 poolLight(vec2 xz, float h) {
+  // (a metre in toward the middle: by the walls the volume's cells lie in the ice, and read black)
+  vec2 toC = uPoolC - xz;
+  xz += toC * min(1.0, 1.0 / max(length(toC), 1e-3));
+  vec3 L = ambientCube(vec3(0.0, 1.0, 0.0), vec3(xz.x, h, xz.y));
+  float day = ambientCube(vec3(0.0, 1.0, 0.0), vec3(uShaftC.x, h, uShaftC.y)).x;
+  float disc = 1.0 - smoothstep(0.55, 1.2, length((xz - uShaftC) / uShaftR));
+  L.x = min(L.x, day * 0.12) + day * 0.88 * disc;
+  return caveLight(L, h);
+}
+`;
+
+const POOL_SURFACE_VERT = /* glsl */ `
+varying vec3 vW;
+void main() {
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vW = wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+
+/** The bed: gravel and pale stones under the water, the glacier's blue in the hollows, caustics on it. */
+function poolBedMaterial(poolC: Vector2, shaftC: Vector2, shaftR: Vector2): ShaderMaterial {
+  const m = shader(
+    { uPoolC: { value: poolC }, uShaftC: { value: shaftC }, uShaftR: { value: shaftR } },
     /* glsl */ `
+    uniform float uLowWet;
+    ${POOL_GLSL}
     varying vec3 vW;
+    varying vec3 vN;
     void main() {
       vec4 wp = modelMatrix * vec4(position, 1.0);
+      vec2 q = wp.xz - uPoolC;
+      wp.y = uLowWet - bedDepth(q);
+      float e = 0.15;
+      float hx = bedDepth(q + vec2(e, 0.0)) - bedDepth(q - vec2(e, 0.0));
+      float hz = bedDepth(q + vec2(0.0, e)) - bedDepth(q - vec2(0.0, e));
+      vN = normalize(vec3(hx, 2.0 * e, hz));
       vW = wp.xyz;
       gl_Position = projectionMatrix * viewMatrix * wp;
     }`,
     /* glsl */ `
     ${CAVE_GLSL}
+    ${POOL_GLSL}
+    ${POOL_LIGHT_GLSL}
+    varying vec3 vW;
+    varying vec3 vN;
+    float h21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float vn(vec2 p) {
+      vec2 i = floor(p), f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(h21(i), h21(i + vec2(1.0, 0.0)), f.x), mix(h21(i + vec2(0.0, 1.0)), h21(i + vec2(1.0, 1.0)), f.x), f.y);
+    }
+    void main() {
+      vec3 n = normalize(vN);
+      vec2 p = vW.xz;
+      // rounded cobbles (cells of a jittered grid, each its own tone, dark silt in the gaps between them)
+      // over fine gravel, and glacial silt settled blue-grey in the deep hollows
+      vec2 c = p * 2.4 + (vec2(vn(p * 0.6), vn(p * 0.6 + 5.3)) - 0.5) * 0.9;
+      vec2 ci = floor(c);
+      float d1 = 9.0, d2 = 9.0;
+      vec2 id = ci;
+      for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+        vec2 g = ci + vec2(float(i), float(j));
+        vec2 o = g + 0.5 + 0.38 * (vec2(h21(g), h21(g + 17.3)) - 0.5) * 2.0;
+        float d = length(c - o);
+        if (d < d1) { d2 = d1; d1 = d; id = g; } else if (d < d2) d2 = d;
+      }
+      float edge = smoothstep(0.02, 0.09, d2 - d1);
+      // each stone domed: lit on top, falling off toward its rim
+      float dome = 0.62 + 0.38 * (1.0 - smoothstep(0.05, 0.55, d1));
+      float tone = h21(id + 3.1);
+      float gravel = vn(p * 11.0) * 0.6 + vn(p * 29.0) * 0.4;
+      vec3 stone = mix(vec3(0.46, 0.47, 0.47), vec3(0.8, 0.8, 0.77), tone);
+      stone = mix(stone, vec3(0.55, 0.5, 0.44), step(0.82, tone)) * (0.85 + 0.25 * vn(p * 14.0));
+      // gravel and silt between and around the stones; whole patches with none (bare gravel, larger at random)
+      float bare = max(smoothstep(0.66, 0.72, vn(p * 0.5 + 2.0)), step(0.86, h21(id + 9.7)));
+      vec3 grav = mix(vec3(0.26, 0.27, 0.27), vec3(0.42, 0.42, 0.4), gravel);
+      vec3 alb = mix(grav * 0.7, stone * dome, edge * (1.0 - bare));
+      alb = mix(alb, grav, bare);
+      float hollow = smoothstep(1.2, 2.6, uLowWet - vW.y);
+      alb = mix(alb, vec3(0.5, 0.6, 0.66), hollow * 0.55);
+      // lit by the light that reaches the water's surface above it (the light volume below the surface holds
+      // only the dark of the old black pool)
+      vec3 L = 0.6 * poolLight(vW.xz, uLowWet + 0.4) * (0.85 + 0.15 * n.y);
+      // caustics: the light above, gathered by the ripples into moving lines (sharper in the shallows)
+      float depth = uLowWet - vW.y;
+      float cs = caustic(p * (1.6 / (0.6 + 0.4 * depth)), uCaveTime * 0.9);
+      vec3 col = alb * L * (0.8 + 1.3 * cs * exp(-0.22 * depth));
+      gl_FragColor = vec4(col, 1.0);
+      ${OUT_FRAG}
+    }`,
+  );
+  return m;
+}
+
+/** What makes it through the water to the eye: multiplied over the bed and everything else under it. */
+function poolAbsorbMaterial(poolC: Vector2): ShaderMaterial {
+  const m = shader(
+    { uPoolC: { value: poolC } },
+    POOL_SURFACE_VERT,
+    /* glsl */ `
+    ${CAVE_GLSL}
+    ${POOL_GLSL}
+    varying vec3 vW;
+    void main() {
+      vec2 q = vW.xz - uPoolC;
+      vec3 n = waterNormal(vW.xz, uCaveTime);
+      vec3 V = normalize(cameraPosition - vW);
+      float c = max(dot(n, V), 0.0);
+      float fres = 0.02 + 0.98 * pow(1.0 - c, 5.0);
+      // the path down to the bed, bent by refraction (1.33)
+      float ct = sqrt(max(1.0 - (1.0 - c * c) / 1.77, 0.04));
+      float path = bedDepth(q) / ct;
+      vec3 T = exp(-SIGMA * path) * (1.0 - fres);
+      // the scene behind is already display-encoded: carry the factor over to that space
+      gl_FragColor = vec4(pow(T, vec3(1.0 / 2.2)), 1.0);
+    }`,
+  );
+  m.transparent = true;
+  m.depthWrite = false;
+  m.blending = CustomBlending;
+  m.blendSrc = ZeroFactor;
+  m.blendDst = SrcColorFactor;
+  return m;
+}
+
+/** The water's own light: the cave mirrored on it, lanterns drawn out into streaks, and the blue glow of
+ * light scattered in its depth. Added over the transmitted view. */
+function poolMaterial(chimney: Vector3, chimneyR: Vector2, poolC: Vector2, shaftC: Vector2, shaftR: Vector2): ShaderMaterial {
+  const m = shader(
+    { uChimney: { value: chimney }, uChimneyR: { value: chimneyR }, uPoolC: { value: poolC }, uShaftC: { value: shaftC }, uShaftR: { value: shaftR } },
+    POOL_SURFACE_VERT,
+    /* glsl */ `
+    ${CAVE_GLSL}
+    ${POOL_GLSL}
+    ${POOL_LIGHT_GLSL}
     uniform vec3 uChimney;
     uniform vec2 uChimneyR;
     varying vec3 vW;
     void main() {
-      // a faint shiver on the surface (drips from the icicles): a few smooth travelling wavelets, summed
-      // as a slope (the ice's cellular scallop map gave the water facets)
-      vec2 q = vW.xz;
-      vec2 slope = vec2(0.0);
-      const vec2 D0 = vec2(0.83, 0.56), D1 = vec2(-0.47, 0.88), D2 = vec2(0.12, -0.99), D3 = vec2(-0.91, -0.41), D4 = vec2(0.64, -0.77);
-      slope += D0 * cos(dot(q, D0) * 2.3 + uCaveTime * 0.9) * 0.010;
-      slope += D1 * cos(dot(q, D1) * 3.7 - uCaveTime * 1.3) * 0.007;
-      slope += D2 * cos(dot(q, D2) * 5.9 + uCaveTime * 1.7) * 0.005;
-      slope += D3 * cos(dot(q, D3) * 9.1 - uCaveTime * 2.2) * 0.0035;
-      slope += D4 * cos(dot(q, D4) * 14.3 + uCaveTime * 2.9) * 0.0025;
-      vec3 n = normalize(vec3(slope.x, 1.0, slope.y));
+      vec2 q = vW.xz - uPoolC;
+      vec3 n = waterNormal(vW.xz, uCaveTime);
       vec3 V = normalize(cameraPosition - vW);
       vec3 R = reflect(-V, n);
-      float fres = 0.02 + 0.98 * pow(1.0 - max(dot(n, V), 0.0), 5.0);
-      vec3 col = vec3(0.0005, 0.0008, 0.0012);
-      col += fres * caveEnv(vW, R, 0.0);
+      float c = max(dot(n, V), 0.0);
+      float fres = 0.02 + 0.98 * pow(1.0 - c, 5.0);
+      // the cave mirrored: four taps a little apart (the capture is coarse, and the chimney's bright mouth
+      // drew its texels as steps), capped near the walls' own brightness so that mouth, seen from straight
+      // below, is a soft glow on the water and not a white blot
+      vec3 t1 = normalize(cross(R, vec3(0.0, 0.0, 1.0)));
+      vec3 t2 = cross(R, t1);
+      vec3 env = caveEnv(vW, normalize(R + t1 * 0.035), 0.0) + caveEnv(vW, normalize(R - t1 * 0.035), 0.0)
+               + caveEnv(vW, normalize(R + t2 * 0.035), 0.0) + caveEnv(vW, normalize(R - t2 * 0.035), 0.0);
+      env *= 0.25;
+      env *= min(1.0, 0.45 / max(dot(env, vec3(0.333)), 1e-3));
+      vec3 col = fres * env * 0.3;
       // the chimney's daylight, far above
       if (R.y > 0.0 && uEnvOn < 0.5) {
         vec3 hit = vW + R * ((uChimney.y - vW.y) / R.y);
         vec2 e = (hit.xz - uChimney.xz) / uChimneyR;
         float inside = 1.0 - smoothstep(0.85, 1.05, length(e));
         col += fres * inside * uDayCol * 0.55;
-        // and the blue of the glacier all round it
         col += fres * uGlowCol * 0.01 * smoothstep(0.0, 0.6, R.y);
       }
       // the lanterns, mirrored and drawn out into streaks by the ripples
@@ -627,10 +809,19 @@ function poolMaterial(chimney: Vector3, chimneyR: Vector2): ShaderMaterial {
         float s = pow(max(dot(R, l), 0.0), 3000.0);
         col += uLanCol * g.w * s * fres * 4.0;
       }
+      // light scattered back out of the depth: glacial blue, more of it over the deep middle
+      float ct = sqrt(max(1.0 - (1.0 - c * c) / 1.77, 0.04));
+      float path = bedDepth(q) / ct;
+      vec3 Lw = poolLight(vW.xz, vW.y + 0.3);
+      col += (1.0 - fres) * Lw * vec3(0.004, 0.026, 0.032) * (1.0 - exp(-0.5 * path));
       gl_FragColor = vec4(col, 1.0);
       ${OUT_FRAG}
     }`,
   );
+  m.transparent = true;
+  m.depthWrite = false;
+  m.blending = AdditiveBlending;
+  return m;
 }
 
 /* ── the chimney: the sky through its mouth, and the light falling down it ─────────────────────── */
@@ -793,12 +984,36 @@ export async function loadCaveBaked(origin: Vector3): Promise<CaveBaked> {
 
   // the pool: one big quad at the waterline (the shell hides its edges)
   const top = man.chimney;
-  const pool = new Mesh(new PlaneGeometry(40, 40).rotateX(-Math.PI / 2), poolMaterial(
+  // (its centre in world x, z: the bed's depth is measured from there)
+  const poolC = new Vector2(origin.x, origin.z - 9);
+  // where the shaft (below) lands on the water, and its half-widths there
+  const shaftC = new Vector2(top[1] + origin.x, top[2] + origin.z);
+  const shaftR = new Vector2(top[3] * 1.1, top[4] * 1.1);
+  const poolGeo = new PlaneGeometry(40, 40).rotateX(-Math.PI / 2);
+  const bed = new Mesh(new PlaneGeometry(40, 40, 120, 120).rotateX(-Math.PI / 2), poolBedMaterial(poolC, shaftC, shaftR));
+  bed.position.set(0, -0.32, -9);
+  bed.name = 'PoolBed';
+  bed.frustumCulled = false;
+  // where it runs in under the foot of the wall, the wall wins (they met at a shallow angle and flickered)
+  bed.material.polygonOffset = true;
+  bed.material.polygonOffsetFactor = 2;
+  bed.material.polygonOffsetUnits = 4;
+  statics.add(bed);
+  const absorb = new Mesh(poolGeo, poolAbsorbMaterial(poolC));
+  absorb.position.set(0, -0.32, -9);
+  absorb.name = 'BakedPool';
+  absorb.renderOrder = 1;
+  statics.add(absorb);
+  const pool = new Mesh(poolGeo, poolMaterial(
     new Vector3(top[1] + origin.x, top[0] + 2.6 + origin.y, top[2] + origin.z),
     new Vector2(top[3] * 0.85, top[4] * 0.85),
+    poolC,
+    shaftC,
+    shaftR,
   ));
   pool.position.set(0, -0.32, -9);
   pool.name = 'BakedPool';
+  pool.renderOrder = 2;
   statics.add(pool);
   // the sky in the chimney's mouth
   const sky = new Mesh(new PlaneGeometry(2, 2).rotateX(Math.PI / 2), skyMaterial());
@@ -962,7 +1177,7 @@ export class CaveLook {
     if (i.beacon > 0.01 && this.beaconAt.distanceToSquared(i.head) < 36) {
       B.uFire.value.set(this.beaconAt.x, this.beaconAt.y + 0.3, this.beaconAt.z, 60 * fire);
     }
-    // a third of a stop over the look-dev grade: in the headset the timber in the shadows read too dark
+    // about four fifths of a stop over the look-dev grade: in the headset the timber in the shadows read too dark
     bakedView.exposure = CAVE_VIEW_EXPOSURE;
   }
 }
