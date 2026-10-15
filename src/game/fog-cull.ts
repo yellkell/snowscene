@@ -16,10 +16,21 @@ export interface FogCullable {
   maxDistance?: number;
   /** Swap `near` for the cheap `far` stand-in beyond `distance`. */
   lod?: { near: Object3D[]; far: Object3D; distance: number };
+  /** Hide only beyond this multiple of the fog distance (the baked haze still lets ~10% through at 1x). */
+  fogScale?: number;
+  /** `center` is in the parent's space (it moves with it); `world` is where it is now. */
+  local?: { world: Vector3 };
+  /** Keeps its own LOD switch through the glide (which pins the forest to its stand-ins). */
+  ownLod?: boolean;
+  /** Drawn at all only while this says so (the climbing holds' glows, during the climb). */
+  enabled?: () => boolean;
 }
 
 /** Everything the weather may hide when the fog closes in. */
 export const fogCullables: FogCullable[] = [];
+
+/** Debug: 0 picks each LOD by distance, 1 forces full detail, 2 the stand-ins (for side-by-side checks). */
+export const lodDebug = { force: 0 };
 
 /**
  * Split instanced meshes that share their instance transforms (e.g. a tree's

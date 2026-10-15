@@ -27,6 +27,7 @@ import { currentLevel, level } from './level.js';
 import { PoleMarks } from './pole-marks.js';
 import { game, Phase } from './state.js';
 import { buildPole, POLE_TIP_DISTANCE } from './world-builders.js';
+import { upgradeMesh } from './baked/dynamic.js';
 
 /** The two pole meshes, for things built onto them (Snow Survivors' handle screens). */
 export const poleMeshes: Partial<Record<'left' | 'right', Mesh>> = {};
@@ -99,6 +100,7 @@ export class PoleSystem extends createSystem({}) {
     this.world.createTransformEntity(this.marks.mesh, { persistent: true });
     const makePole = (): PoleState => {
       const mesh = buildPole();
+      upgradeMesh(mesh, 'pole');
       mesh.visible = false;
       mesh.castShadow = true;
       this.world.createTransformEntity(mesh, { persistent: true });

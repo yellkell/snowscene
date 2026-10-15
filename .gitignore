@@ -46,3 +46,11 @@ pids/
 
 # Local verification output (screenshots, browser scripts)
 artifacts/
+
+# Art pipeline: downloaded sources and bake intermediates (re-fetch with art/scripts/fetch_polyhaven.py)
+art/assets/
+art/work/
+*.blend1
+
+# Art review renders (contact sheets, play-throughs, LOD checks): local only
+art/renders/

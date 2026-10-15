@@ -13,8 +13,6 @@ import { LAUNCH_EDGE } from './cave-bluff.js';
 import { CLIMB_TRIGGER_S, game, Phase, setPhase, SUMMIT_STAND } from './state.js';
 import {
   clamp,
-  BLUFF_FACE_S,
-  BLUFF_X,
   CLIFF_BASE_Y,
   CLIFF_CENTER_X,
   CLOUD_SEA_Y,
@@ -49,7 +47,6 @@ const wall: ClimbWall = {
   baseY: CLIFF_BASE_Y,
   topY: SUMMIT_Y,
   topStand: new Vector3(SUMMIT_STAND.x, SUMMIT_Y, SUMMIT_STAND.z),
-  mode: 'holds',
   standoff: 0.45,
   onTop: () => {
     audio.fanfare();
@@ -134,67 +131,6 @@ export const tutorialLevel: Level = {
     out.near = 120 + (2 - 120) * t;
     out.far = Math.exp(Math.log(9000) + (Math.log(38) - Math.log(9000)) * t);
     return out;
-  },
-
-  drawMap(ctx: CanvasRenderingContext2D, size: number, you: Vector3, yaw: number): void {
-    // North-up sketch of the tutorial: trail, cliff, summit and the lake party.
-    const minX = -80;
-    const maxX = 80;
-    const minZ = -90;
-    const maxZ = 270;
-    const scale = (size * 0.84) / Math.max(maxX - minX, maxZ - minZ);
-    const ox = size / 2 - ((minX + maxX) / 2) * scale;
-    const oz = size / 2 - ((minZ + maxZ) / 2) * scale;
-    const px = (x: number) => ox + x * scale;
-    const pz = (z: number) => oz + z * scale;
-    ctx.fillStyle = 'rgba(120,150,190,0.45)';
-    ctx.beginPath();
-    ctx.ellipse(px(LAKE_CENTER_X), pz(LAKE_CENTER_Z), LAKE_RADIUS_X * scale, LAKE_RADIUS_Z * scale, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#b8402c';
-    ctx.lineWidth = 5;
-    ctx.setLineDash([12, 8]);
-    ctx.beginPath();
-    for (let s = -5; s <= WALL_S; s += 2) {
-      const z = -s;
-      if (s === -5) ctx.moveTo(px(pathX(z)), pz(z));
-      else ctx.lineTo(px(pathX(z)), pz(z));
-    }
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.strokeStyle = '#3d3a36';
-    ctx.lineWidth = 8;
-    ctx.beginPath();
-    ctx.moveTo(px(CLIFF_CENTER_X - 8), pz(WALL_Z));
-    ctx.lineTo(px(CLIFF_CENTER_X + 8), pz(WALL_Z));
-    ctx.stroke();
-    ctx.fillStyle = '#e8822c';
-    ctx.beginPath();
-    ctx.arc(px(FIRE_POS.x), pz(FIRE_POS.z), 9, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#2b2b2b';
-    ctx.font = '600 22px Georgia, serif';
-    ctx.fillText('Summit', px(CLIFF_CENTER_X + 10), pz(WALL_Z - 6));
-    // The bluff with the cave mouth, and the beacon on top.
-    ctx.fillStyle = '#5b5550';
-    ctx.beginPath();
-    ctx.arc(px(BLUFF_X), pz(-BLUFF_FACE_S - 5), 7, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = game.beaconLit.peek() ? '#e8822c' : '#2b2b2b';
-    ctx.fillText('Cave', px(BLUFF_X + 12), pz(-BLUFF_FACE_S - 9));
-    ctx.fillStyle = '#2b2b2b';
-    ctx.fillText('Party', px(FIRE_POS.x + 12), pz(FIRE_POS.z));
-    // You: a dot with a heading tick.
-    ctx.fillStyle = '#1d5fd1';
-    ctx.beginPath();
-    ctx.arc(px(you.x), pz(you.z), 10, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#1d5fd1';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.moveTo(px(you.x), pz(you.z));
-    ctx.lineTo(px(you.x - Math.sin(yaw) * 14), pz(you.z - Math.cos(yaw) * 14));
-    ctx.stroke();
   },
 
   cloudLanding: () => ({

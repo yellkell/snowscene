@@ -20,7 +20,7 @@
  * one square onto it.
  */
 
-import { Box3, Color, createSystem, Matrix4, Mesh, MeshBasicMaterial, type ShaderMaterial, TorusGeometry, Vector3 } from '@iwsdk/core';
+import { Box3, Color, createSystem, Matrix4, Mesh, MeshBasicMaterial, type Object3D, type ShaderMaterial, TorusGeometry, Vector3 } from '@iwsdk/core';
 import { audio } from '../audio.js';
 import { addToPack, PART_ITEM } from '../equipment.js';
 import { Bonfire, fires } from '../campfire.js';
@@ -48,8 +48,10 @@ import {
   validateScore,
   wheelTurns,
 } from './cave-score.js';
-import { buildCave, CAVE_ORIGIN, type CaveVisuals, LAMP, setRope, TILE_CORNERS, TILE_EDGES, EDGE_DIR, TILE_HALF, TORCH_HEAD, TORCH_SCALE } from './cave-build.js';
+import { applyBakedCave, buildCave, CAVE_ORIGIN, type CaveVisuals, LAMP, setRope, TILE_CORNERS, TILE_EDGES, EDGE_DIR, TILE_HALF, TORCH_HEAD, TORCH_SCALE } from './cave-build.js';
+import { captureCaveEnv, type CaveBaked, caveLight, caveView, loadCaveBaked } from './cave-baked.js';
 import type { GliderPartId } from '../glider-model.js';
+import { bakedLight } from '../baked/light.js';
 
 interface PlatformState {
   anchor: V3;
@@ -121,6 +123,11 @@ export class CaveSystem extends createSystem({}) {
   private airborne = false;
   private beaconTimer = -1;
   private waitHintAt = 0;
+  private baked: CaveBaked | null = null;
+  /** The baked look's shared state (debug handle: s.cave.view.beacon). */
+  readonly view = caveView;
+  /** The baked cave's reflections are captured once, the first frame inside. */
+  private envDone = false;
 
   private readonly head = new Vector3();
   private readonly p = new Vector3();
@@ -143,6 +150,15 @@ export class CaveSystem extends createSystem({}) {
     this.v = buildCave();
     this.world.createTransformEntity(this.v.root, { persistent: true });
     this.v.root.updateMatrixWorld(true);
+    // The Blender bake replaces the procedural cave once it has loaded (the procedural one stays as the
+    // fallback if it can't).
+    loadCaveBaked(CAVE_ORIGIN)
+      .then((b) => {
+        applyBakedCave(this.v, b);
+        caveView.look = b.look;
+        this.baked = b;
+      })
+      .catch((e) => console.error('Cave bake failed to load', e));
     for (const id of Object.keys(this.v.parts) as GliderPartId[]) {
       this.partBounds.set(id, new Box3().setFromObject(this.v.parts[id]));
     }
@@ -213,6 +229,7 @@ export class CaveSystem extends createSystem({}) {
     this.v.torch.visible = false;
     this.v.beaconGlow.material.opacity = 0;
     this.v.shell.emissive.copy(ICE_GLOW);
+    caveView.beacon = 0;
     this.caveFire.setVisible(false);
     this.beaconTimer = -1;
     game.partsFound.value = 0;
@@ -292,6 +309,7 @@ export class CaveSystem extends createSystem({}) {
   private exit(): void {
     this.inside = false;
     game.indoors = 0;
+    bakedLight.uCaveOn.value = 0;
     this.v.root.visible = false;
     this.v.marker.visible = false;
     for (const light of this.v.lights) light.visible = false;
@@ -367,6 +385,22 @@ export class CaveSystem extends createSystem({}) {
       );
     }
     this.updateVisuals(time);
+    if (this.baked && !this.envDone) this.captureEnv(time);
+  }
+
+  /** The wet ice and the black pool reflect the cave: capture it once, lit as it is now. */
+  private captureEnv(time: number): void {
+    const b = this.baked!;
+    const v = this.v;
+    getHeadWorld(this.world, this.head);
+    b.look.apply({ storm: 0, beacon: 0, time, head: this.head });
+    v.root.updateMatrixWorld(true);
+    const hide: Object3D[] = [v.ropes, v.lamps, v.strips, v.glitter, v.marker, v.torchBeam, v.beaconGlow, v.torch, ...Object.values(v.partGlow)];
+    if (v.glows) hide.push(v.glows);
+    for (const o of b.statics.children) if (o.name === 'BakedPool' || o.name === 'DaylightShaft') hide.push(o);
+    this.m.set(CAVE_ORIGIN.x + 0.5, CAVE_ORIGIN.y + 1.2, CAVE_ORIGIN.z - 8.5);
+    captureCaveEnv(this.world.renderer, this.world.scene, this.m, hide);
+    this.envDone = true;
   }
 
   // ------------------------------------------------------------ the frame ---
@@ -565,6 +599,8 @@ export class CaveSystem extends createSystem({}) {
         this.beaconTimer += dt;
         // Firelight on the ice: the walls warm as the beacon takes.
         this.v.shell.emissive.copy(ICE_GLOW).lerp(FIRE_GLOW, Math.min(1, this.beaconTimer / 2));
+        // the baked cave's beacon channel: the fire takes, and the cave warms from the top down
+        caveView.beacon = Math.min(1, this.beaconTimer / 2.5) ** 1.5;
         this.v.beaconGlow.material.opacity = Math.min(0.85, this.beaconTimer);
         if (this.beaconTimer > BEACON_HOLD) {
           this.beaconTimer = -1;
@@ -777,6 +813,9 @@ export class CaveSystem extends createSystem({}) {
       v.marker.position.set(st.anchor.x + o.x, st.anchor.y + 0.035, st.anchor.z + o.z);
       v.marker.scale.setScalar(0.85 + 0.15 * pulse);
     }
+    // In the baked cave the marker is lantern light pooled on the next deck's boards.
+    const mk = caveLight.uMarker.value;
+    mk.set(CAVE_ORIGIN.x + v.marker.position.x, CAVE_ORIGIN.y + v.marker.position.y, CAVE_ORIGIN.z + v.marker.position.z, next ? 6 + 4 * pulse : 0);
 
     // Parts still on their racks pulse; the one waiting for you most of all.
     const part = this.partHere();

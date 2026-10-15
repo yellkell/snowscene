@@ -1,13 +1,13 @@
 /**
- * The active level (the tutorial mountain or the full expedition). Shared
- * systems — poling, climbing, gliding, weather — ask the level for ground
+ * The active level (the tutorial mountain or the Snow Survivors arena).
+ * Shared systems — poling, climbing, gliding, weather — ask the level for ground
  * heights, walking rules, climbing walls, the launch site and the glide
  * target instead of hard-coding one mountain.
  */
 
 import { Object3D, signal, Vector3 } from '@iwsdk/core';
 
-export type LevelId = 'tutorial' | 'expedition' | 'survivors';
+export type LevelId = 'tutorial' | 'survivors';
 
 /** A climbable face, treated as a vertical plane with a lane on it. */
 export interface ClimbWall {
@@ -23,8 +23,6 @@ export interface ClimbWall {
   topY: number;
   /** Where the climber stands (floor position) after hauling over the top. */
   topStand: Vector3;
-  /** 'holds': grab placed holds. 'axes': swing ice axes into the face anywhere. */
-  mode: 'holds' | 'axes';
   /** Head is kept at least this far off the face. */
   standoff: number;
   /** Called once the climber has topped out. */
@@ -48,7 +46,7 @@ export interface FogRange {
 
 export interface Level {
   id: LevelId;
-  /** Walkable surface height: terrain, ice, bridges, ladders. */
+  /** Walkable surface height: terrain and ice. */
   groundAt(x: number, z: number): number;
   /** Desktop (keyboard) walking speed, m/s. */
   desktopWalkSpeed?: number;
@@ -67,15 +65,6 @@ export interface Level {
   landingShort: number;
   /** Cruise airspeed for this level's glider (m/s). */
   glideSpeed: number;
-  /** Optional glide-assist tuning; the defaults suit the tutorial's short glide. */
-  glideAssist?: {
-    /** Upper limit of the assisted sink rate (m/s). Default 4.5. */
-    maxSink: number;
-    /** How strongly the assist sets the sink rate at neutral pitch (0..1). Default 0.8. */
-    weight: number;
-    /** Lift over rising ground to keep about this much air below (m); 0 = off. */
-    clearance: number;
-  };
   /** Storm level the weather should head toward right now (0..1). */
   stormTarget(head: Vector3): number;
   /** Height of the cloud deck (sea of clouds). */
@@ -84,14 +73,6 @@ export interface Level {
   fogRange?(storm: number, out: FogRange): FogRange;
   /** Called when the glide passes below the cloud deck over open air. */
   cloudLanding?(): { x: number; z: number; yaw: number } | null;
-  /** Draw this level's map (route, camps, you) into a square canvas. */
-  drawMap?(ctx: CanvasRenderingContext2D, size: number, you: Vector3, yaw: number): void;
-  /** Can the packed glider be deployed here? Returns why not, or null if yes. */
-  gliderDeployBlocker?(head: Vector3): string | null;
-  /** The packed glider was dropped at a valid launch: start the launch. */
-  deployGlider?(): void;
-  /** Fire the emergency flare: returns a message, and may schedule a rescue. */
-  onFlare?(): string;
 }
 
 /** The current level; systems read `level.peek()` every frame. */

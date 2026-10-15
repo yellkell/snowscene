@@ -42,6 +42,7 @@ import {
   WING_CRATE_X,
   WING_CRATE_Z,
 } from './world-builders.js';
+import { upgradeMesh } from './baked/dynamic.js';
 
 const KIT_SCALE = 0.5;
 /** Let go this close to a part's place on the frame to fit it. */
@@ -83,6 +84,7 @@ export class GliderBuildSystem extends createSystem({
   init(): void {
     const base = WORKBENCH_POS.clone();
     this.bench = buildWorkbench(base);
+    upgradeMesh(this.bench.children[0] as Mesh, 'bench');
     this.world.createTransformEntity(this.bench, { parent: sceneRefs.tutorialRoot ?? undefined, persistent: true });
 
     const kit = buildGlider();

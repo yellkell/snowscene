@@ -2,9 +2,9 @@
  * Snow Scene: pole up a mountain trail, climb the final cliff, ride the old
  * timber works up the ice cave inside the Needle to recover the glider parts
  * and light the beacon, then build the hang glider on top of the rock the cave
- * runs up inside and glide straight down to the valley. The expedition that follows ends with a
- * steep chute ride down the summit's flank and a long glide home. Designed
- * for WebXR hand tracking, with controller and desktop fallbacks.
+ * runs up inside and glide straight down to the valley. Snow Survivors, a
+ * horde-survival arena, is offered from the guide panel. Designed for WebXR
+ * hand tracking, with controller and desktop fallbacks.
  */
 
 import { World } from '@iwsdk/core';
@@ -17,18 +17,6 @@ import { survivorsControl } from './game/survivors/survivors-state.js';
 import { CampfireSystem } from './game/campfire.js';
 import { ClimbSystem } from './game/climb-system.js';
 import { DesktopLookSystem } from './game/desktop-look-system.js';
-import { ExpeditionDirectorSystem } from './game/expedition/director/director-system.js';
-import { ExpeditionSoundSystem } from './game/expedition/audio/expedition-sound-system.js';
-import { WristHudSystem } from './game/expedition/director/wrist-hud.js';
-import { ExpeditionEventsSystem } from './game/expedition/fx/events-system.js';
-import { ExpeditionSkySystem } from './game/expedition/sky/expedition-sky-system.js';
-import { ExpeditionTerrainSystem } from './game/expedition/terrain/expedition-terrain-system.js';
-import { fxHooks } from './game/expedition/fx/fx-context.js';
-import { ExpeditionWorldSystem, setCollapsingSeracVisible } from './game/expedition/world/expedition-world-system.js';
-import { ChuteSystem } from './game/expedition/slide/chute-system.js';
-import { CrossingGuardSystem } from './game/expedition/mechanics/crossing-guard-system.js';
-import { LadderSystem } from './game/expedition/mechanics/ladder-system.js';
-import { RopeSystem } from './game/expedition/mechanics/rope-system.js';
 import { GlideSystem } from './game/glide-system.js';
 import { GlideMistSystem } from './game/glide-mist.js';
 import { GliderBuildSystem } from './game/glider-build-system.js';
@@ -39,23 +27,39 @@ import { PoleSystem } from './game/pole-system.js';
 import { SceneSetupSystem } from './game/scene-system.js';
 import { WeatherSystem } from './game/weather-system.js';
 import { game, Phase, setPhase } from './game/state.js';
+import { bakedView } from './game/baked/light.js';
+import { lodDebug } from './game/fog-cull.js';
+import { lodStats } from './game/baked/lod.js';
+import { preloadGear } from './game/baked/dynamic.js';
+import { initCompressedTextures, loadTexture } from './game/baked/loaders.js';
 import { level } from './game/level.js';
 import { addToPack, equipment } from './game/equipment.js';
 import { startTutorialKit } from './game/tutorial-kit.js';
 import { tutorialLevel } from './game/tutorial-level.js';
 import { installToonStyle } from './game/toon-style.js';
 
+// Debug: surface uncaught errors in the console (tools that read it don't see them otherwise).
+if (import.meta.env.DEV || new URLSearchParams(window.location.search).has('debug')) {
+  window.addEventListener('error', (e) => console.error('[uncaught]', e.message, e.error?.stack ?? ''));
+  window.addEventListener('unhandledrejection', (e) =>
+    console.error('[uncaught]', String((e.reason as Error)?.stack ?? e.reason)),
+  );
+}
+
 // The stylised shading must be in place before any material compiles.
 installToonStyle();
 
-// The tutorial is the starting level; the expedition follows it.
+// The tutorial is the starting level.
 level.value = tutorialLevel;
 startTutorialKit();
 
+// Baked gear (poles, glider parts) loads first: the builders use it synchronously.
+void preloadGear().then(() =>
 World.create(
   document.getElementById('scene-container') as HTMLDivElement,
   projectOptions,
 ).then((world) => {
+  initCompressedTextures(world.renderer);
   world
     .registerSystem(SceneSetupSystem, { priority: 20 })
     .registerSystem(GlideMistSystem, { priority: 20.5 })
@@ -71,29 +75,11 @@ World.create(
     .registerSystem(CaveSystem, { priority: 14 })
     .registerSystem(SurvivorsSystem, { priority: 16 })
     .registerSystem(CaveBluffSystem, { priority: 15 })
-    .registerSystem(GuideSystem, { priority: 30 })
-    // The expedition (?expedition / ?expedition&s=5000 start it directly).
-    // The director must be registered before other expedition systems.
-    .registerSystem(ExpeditionDirectorSystem, { priority: 5 })
-    .registerSystem(WristHudSystem, { priority: 31 })
-    // Expedition crossings: Rope < Ladder < Pole (10) < Guard < Climb (11).
-    .registerSystem(RopeSystem, { priority: 9 })
-    .registerSystem(LadderSystem, { priority: 9.5 })
-    .registerSystem(CrossingGuardSystem, { priority: 10.5 })
-    .registerSystem(ExpeditionSoundSystem, { priority: 32 })
-    .registerSystem(ExpeditionEventsSystem, { priority: 27 })
-    .registerSystem(ExpeditionSkySystem, { priority: 23 })
-    .registerSystem(ExpeditionTerrainSystem, { priority: 24 })
-    .registerSystem(ExpeditionWorldSystem, { priority: 25 })
-    // The Summit Chute, from the summit down to the deck above the ice cliff.
-    .registerSystem(ChuteSystem, { priority: 15.5 });
-
-  // The world builds the collapsing serac; the events system topples it.
-  fxHooks.setSeracVisible = setCollapsingSeracVisible;
+    .registerSystem(GuideSystem, { priority: 30 });
 
   // Dev-only handle for automated checks and quick phase skipping.
-  if (import.meta.env.DEV) {
-    (window as unknown as Record<string, unknown>).__snow = {
+  if (import.meta.env.DEV || new URLSearchParams(window.location.search).has('debug')) {
+    (globalThis as unknown as Record<string, unknown>).__snow = {
       world,
       game,
       hands,
@@ -105,6 +91,26 @@ World.create(
       addToPack,
       survivors: world.getSystem(SurvivorsSystem),
       survivorsControl,
+      bakedView,
+      loadTexture,
+      lodDebug,
+      lodStats,
     };
+    // Debug bridge for tools that can only navigate and read the console: #js=<code> evaluates
+    // <code> (with `s` = this handle) and logs the result.
+    const run = () => {
+      const m = /^#js=(.*)$/s.exec(decodeURIComponent(window.location.hash));
+      if (!m) return;
+      try {
+        // eslint-disable-next-line no-new-func
+        const out = new Function('s', `return (${m[1]});`)((globalThis as Record<string, unknown>).__snow);
+        Promise.resolve(out).then((v) => console.log('[js]', typeof v === 'string' ? v : JSON.stringify(v)));
+      } catch (e) {
+        console.log('[js] error', String(e));
+      }
+    };
+    window.addEventListener('hashchange', run);
+    run();
   }
-});
+}),
+);

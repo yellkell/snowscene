@@ -1,0 +1,51 @@
+{
+ "hut": {
+  "mesh": "hut_lod.glb",
+  "switch": 55,
+  "ratio": 0.2,
+  "chunks": 1,
+  "tris": 17286
+ },
+ "props": {
+  "mesh": "props_lod.glb",
+  "switch": 45,
+  "ratio": 0.22,
+  "chunks": 49,
+  "tris": 222227
+ },
+ "rim": {
+  "mesh": "rim_lod.glb",
+  "switch": 0,
+  "ratio": null,
+  "chunks": 14,
+  "tris": 69999
+ },
+ "bands": {
+  "mesh": "bands_lod.glb",
+  "switch": 90,
+  "ratio": 0.4,
+  "chunks": 4,
+  "tris": 50593
+ },
+ "wall": {
+  "mesh": "wall_lod.glb",
+  "switch": 70,
+  "ratio": 0.4,
+  "chunks": 2,
+  "tris": 45600
+ },
+ "bluff": {
+  "mesh": "bluff_lod.glb",
+  "switch": 80,
+  "ratio": 0.4,
+  "chunks": 2,
+  "tris": 37385
+ },
+ "party": {
+  "mesh": "party_lod.glb",
+  "switch": 70,
+  "ratio": 0.3,
+  "chunks": 1,
+  "tris": 18430
+ }
+}

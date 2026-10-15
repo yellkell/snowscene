@@ -8,18 +8,28 @@
 import {
   Color,
   createSystem,
+  AgXToneMapping,
   CustomToneMapping,
   DirectionalLight,
   type Entity,
   Fog,
   Group,
+  type InstancedMesh,
   Mesh,
   MeshBasicMaterial,
   Object3D,
   PCFShadowMap,
   type Texture,
   Vector3,
+  type WebGLRenderer,
 } from '@iwsdk/core';
+import { bakedView } from './baked/light.js';
+import { caveView } from './cave/cave-baked.js';
+import { FIRE_POS } from './campfire.js';
+import { bakeFlag, type BakedFlag } from './baked/flag.js';
+import { HoldGlowMaterial } from './baked/hold-glow.js';
+import { loadTutorialWorld, type TutorialWorld } from './baked/tutorial-world.js';
+import { weatherHooks } from './weather-system.js';
 import { buildDepthClear } from './far-layer.js';
 import { buildFarRanges } from './far-ranges.js';
 import { ClimbHold } from './game-components.js';
@@ -34,10 +44,11 @@ import {
   setSunDirection,
 } from './sky.js';
 import { SnowPuffs } from './snow-puffs.js';
-import { game } from './state.js';
+import { game, Phase } from './state.js';
 import { LAKE_CENTER_Z } from './terrain.js';
 import { buildForest } from './trees.js';
 import { chunkInstanced, fogCullables } from './fog-cull.js';
+import { splitMesh } from './baked/lod.js';
 import {
   buildCabin,
   buildCliff,
@@ -71,10 +82,44 @@ export const sceneRefs = {
   farRanges: null as Object3D | null,
   clearEnvironment: null as Texture | null,
   stormEnvironment: null as Texture | null,
+  /** Analytic sky and cloud deck: hidden while a baked level brings its own sky. */
+  sky: null as Mesh | null,
+  cloudSea: null as Mesh | null,
+  /** The bluff's parts (face and portal under root, the beacon deck). */
+  bluff: null as { root: Object3D; deck: Mesh } | null,
+  /** The lake party's bonfire (its objects show and hide with the fire). */
+  party: null as { objects: Object3D[]; visible: boolean } | null,
+  depthClear: null as Mesh | null,
+};
+
+/**
+ * Switch between the tutorial's live look and a baked level's (Snow
+ * Survivors): the baked level brings its own photographed sky, is lit by its
+ * bake rather than the shadow-casting sun, and is graded with AgX, the view
+ * transform its Cycles reference renders use.
+ */
+export function setBakedLook(renderer: WebGLRenderer, baked: boolean): void {
+  // once the tutorial's own bake is in, both levels are baked
+  if (bakedView.tutorialReady) baked = true;
+  if (sceneRefs.sky) sceneRefs.sky.visible = !baked;
+  if (sceneRefs.cloudSea) sceneRefs.cloudSea.visible = !baked;
+  // with the baked skies nothing draws in the far depth layer any more: skip its depth clear
+  if (sceneRefs.depthClear) sceneRefs.depthClear.visible = !baked;
+  if (sceneRefs.sunLight) sceneRefs.sunLight.visible = !baked;
+  bakedView.active = baked;
+  renderer.toneMapping = baked ? AgXToneMapping : CustomToneMapping;
+  renderer.toneMappingExposure = baked ? 1.0 : 0.56;
+}
+
+/** The holds glow on the approach and the climb; after that nothing reaches for them. */
+const holdsInPlay = (): boolean => {
+  const p = game.phase.peek();
+  return p === Phase.Poling || p === Phase.Climbing;
 };
 
 export class SceneSetupSystem extends createSystem({}) {
   private flagCloth!: Mesh;
+  private bakedFlag: BakedFlag | null = null;
   private fadeSphere!: Mesh;
   private puffs!: SnowPuffs;
   private sky!: Mesh;
@@ -84,6 +129,7 @@ export class SceneSetupSystem extends createSystem({}) {
   private flagFrame = 0;
   private shadowFrame = 0;
   private readonly shadowAt = new Vector3(Infinity, 0, 0);
+  private baked: TutorialWorld | null = null;
 
   init(): void {
     const { renderer, scene } = this.world;
@@ -119,10 +165,13 @@ export class SceneSetupSystem extends createSystem({}) {
 
     this.sky = buildSky();
     add(this.sky);
+    sceneRefs.sky = this.sky;
     this.cloudSea = buildCloudSea();
     add(this.cloudSea);
+    sceneRefs.cloudSea = this.cloudSea;
     // Distant scenery draws first in its own depth range; then depth clears.
-    add(buildDepthClear());
+    sceneRefs.depthClear = buildDepthClear();
+    add(sceneRefs.depthClear);
 
     // Low golden sun with a shadow frustum that follows the player.
     this.sun = new DirectionalLight(new Color(1.0, 0.8, 0.6), 3.2);
@@ -142,22 +191,29 @@ export class SceneSetupSystem extends createSystem({}) {
     add(this.sun.target);
     sceneRefs.sunLight = this.sun;
 
-    addTutorial(buildTerrain());
+    const terrain = buildTerrain();
+    addTutorial(terrain);
     const farRanges = buildFarRanges();
     sceneRefs.farRanges = farRanges;
     addTutorial(farRanges);
-    addTutorial(buildForest());
-    addTutorial(chunkInstanced([buildRocks()], 100, 'Rocks'));
-    addTutorial(buildCliff());
-    addTutorial(buildTrailMarkers());
-    addTutorial(buildTrailSign());
-    addTutorial(buildSummitSign());
-    addTutorial(buildCabin(-9.5, 4.5, 0.65));
-    addTutorial(buildCabin(-36, LAKE_CENTER_Z + 14, 1.3));
-    addTutorial(buildCabin(22, LAKE_CENTER_Z + 30, -0.9));
-    addTutorial(buildLake());
+    // The procedural world: replaced by the Blender bake once it has loaded (baked/tutorial-world.ts).
+    const replaced: Object3D[] = [
+      buildForest(),
+      chunkInstanced([buildRocks()], 100, 'Rocks'),
+      buildCliff(),
+      buildTrailMarkers(),
+      buildTrailSign(),
+      buildSummitSign(),
+      buildCabin(-9.5, 4.5, 0.65),
+      buildCabin(-36, LAKE_CENTER_Z + 14, 1.3),
+      buildCabin(22, LAKE_CENTER_Z + 30, -0.9),
+      buildLake(),
+    ];
+    for (const o of replaced) addTutorial(o);
+    const holdMeshes: Mesh[] = [];
     const flag = buildSummitFlag();
     this.flagCloth = flag.cloth;
+    const flagGroup = flag.group;
     addTutorial(flag.group);
 
     holdLayout().forEach((hold, i) => {
@@ -172,7 +228,9 @@ export class SceneSetupSystem extends createSystem({}) {
       }
       mesh.name = `ClimbHold${i}`;
       // Thirty separate little draws: only worth it near the cliff.
-      fogCullables.push({ object: mesh, center: mesh.position.clone(), radius: 0.4, maxDistance: 60 });
+      // and only until you're over the top (from the launch deck they were 31 additive halos for nothing)
+      fogCullables.push({ object: mesh, center: mesh.position.clone(), radius: 0.4, maxDistance: 60, enabled: holdsInPlay });
+      holdMeshes.push(mesh);
       addTutorial(mesh).addComponent(ClimbHold, { lip: hold.lip, glow: 0 });
     });
 
@@ -181,12 +239,79 @@ export class SceneSetupSystem extends createSystem({}) {
     add(this.puffs.points);
     this.fadeSphere = buildFadeSphere();
     add(this.fadeSphere);
+
+    loadTutorialWorld()
+      .then((w) => {
+        this.baked = w;
+        // the terrain as chunks the frustum and the fog can drop (it's one 80k-triangle mesh otherwise)
+        terrain.visible = false;
+        tutorialGroup.add(splitMesh((terrain as Mesh).geometry, w.groundMaterial, 'TerrainChunks', 14000, 60));
+        for (const o of replaced) o.visible = false;
+        if (sceneRefs.farRanges) sceneRefs.farRanges.visible = false;
+        sceneRefs.farRanges = null;
+        tutorialGroup.add(w.group);
+        if (w.sky) tutorialGroup.add(w.sky);
+        // the holds are carved into the baked wall; what stays is their guiding glow
+        for (const m of holdMeshes) m.material = new HoldGlowMaterial();
+        this.bakedFlag = bakeFlag(flagGroup, this.flagCloth);
+        // nothing samples the realtime shadow map any more: the light is in the bake
+        this.sun.castShadow = false;
+        this.world.renderer.shadowMap.enabled = false;
+        const bluff = sceneRefs.bluff;
+        if (bluff) {
+          for (const c of bluff.root.children) if (c !== bluff.deck) c.visible = false;
+          if (w.deck) {
+            bluff.deck.geometry = w.deck.geometry;
+            bluff.deck.material = w.deck.material;
+          }
+        }
+        // the party: the baked camp replaces the procedural log stack, tents, benches and festoons, and
+        // shows and hides with the fire like they did
+        const party = sceneRefs.party;
+        if (party && w.party) {
+          for (const o of [...party.objects]) {
+            if (o.name === 'Bonfire' || o.name === 'Camp') {
+              o.visible = false;
+              party.objects.splice(party.objects.indexOf(o), 1);
+            } else if (o.name === 'FestoonLights') {
+              // the poles and wires are baked; the bulbs still glow on their own
+              for (const c of o.children) if (!(c as InstancedMesh).isInstancedMesh) c.visible = false;
+            }
+          }
+          w.party.position.copy(FIRE_POS);
+          w.party.visible = party.visible;
+          tutorialGroup.add(w.party);
+          party.objects.push(w.party);
+        }
+        bakedView.tutorialReady = true;
+        setBakedLook(this.world.renderer, true);
+      })
+      .catch((e) => console.error('Tutorial bake failed to load', e));
   }
 
   update(delta: number, time: number): void {
     const dt = Math.min(delta, 0.1);
     getHeadWorld(this.world, this.head);
 
+    // The baked tutorial: light follows the weather; the sky dome stays on the viewer. Inside the ice
+    // cave its own bake (cave/cave-baked.ts) writes the shared light terms instead, under the same AgX.
+    if (game.indoors > 0.5 && caveView.look) {
+      const ci = caveView.inputs;
+      ci.storm = weatherHooks.storm;
+      ci.beacon = caveView.beacon;
+      ci.time = time;
+      ci.head.copy(this.head);
+      caveView.look.apply(ci);
+      this.world.renderer.toneMapping = AgXToneMapping;
+      this.world.renderer.toneMappingExposure = bakedView.exposure;
+    } else if (this.baked && currentLevel().id === 'tutorial') {
+      const fog = this.world.scene.fog as Fog | null;
+      this.baked.look.apply({ storm: weatherHooks.storm, fogFar: fog ? fog.far : 5000, indoors: game.indoors });
+      this.baked.sky?.position.copy(this.head);
+      this.baked.update(dt, this.head);
+      this.world.renderer.toneMapping = AgXToneMapping;
+      this.world.renderer.toneMappingExposure = bakedView.exposure;
+    }
     // Sky and cloud deck stay centred on the viewer.
     this.sky.position.copy(this.head);
     this.cloudSea.position.set(this.head.x, currentLevel().cloudDeckY, this.head.z);
@@ -207,13 +332,19 @@ export class SceneSetupSystem extends createSystem({}) {
     this.sun.position.copy(this.sun.target.position).addScaledVector(SUN_DIRECTION, 200);
     this.sun.target.updateMatrixWorld();
     const frame = this.shadowFrame++;
+    if (this.bakedFlag) {
+      this.puffs.update(dt);
+      this.updateFade(dt);
+      this.bakedFlag.update(time);
+      return;
+    }
     const moved = !this.shadowAt.equals(this.sun.target.position);
     if ((moved && (frame & 1) === 0) || frame % 8 === 0) {
       this.shadowAt.copy(this.sun.target.position);
       this.world.renderer.shadowMap.needsUpdate = true;
     }
 
-    // The flag only needs a refresh every other frame.
+    // The flag only needs a refresh every other frame (the baked one waves on the GPU, above).
     if ((this.flagFrame++ & 1) === 0) waveFlag(this.flagCloth, time);
     this.puffs.update(dt);
     this.updateFade(dt);

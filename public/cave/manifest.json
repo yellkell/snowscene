@@ -1,0 +1,295 @@
+{
+ "version": 1,
+ "shell": {
+  "mesh": "shell.glb",
+  "albedo": "shell_albedo.webp",
+  "light": "shell_light.webp",
+  "max": [
+   0.16764450073242188,
+   0.06657613068819046,
+   0.21621061861515045
+  ],
+  "glow_max": 0.010936036705970764,
+  "tris": 100608
+ },
+ "works": {
+  "mesh": "works.glb",
+  "albedo": "works_albedo.webp",
+  "light": "works_light.webp",
+  "max": [
+   0.2185039222240448,
+   0.5451012253761292,
+   0.4488176107406616
+  ],
+  "emit_max": 49.5164794921875,
+  "tris": 101652
+ },
+ "debris": {
+  "mesh": "debris.glb",
+  "albedo": "debris_albedo.webp",
+  "light": "debris_light.webp",
+  "max": [
+   0.02878730371594429,
+   0.03616073355078697,
+   0.01568622514605522
+  ],
+  "emit_max": 1.0,
+  "tris": 178372
+ },
+ "machines": {
+  "albedo": "machines_albedo.webp",
+  "objects": {
+   "MC_raft": {
+    "mesh": "m_MC_raft.glb",
+    "tris": 4796
+   },
+   "MC_hoist-1": {
+    "mesh": "m_MC_hoist-1.glb",
+    "tris": 2236
+   },
+   "MC_incline": {
+    "mesh": "m_MC_incline.glb",
+    "tris": 2876
+   },
+   "MC_swing-1": {
+    "mesh": "m_MC_swing-1.glb",
+    "tris": 2428
+   },
+   "MC_hoist-2": {
+    "mesh": "m_MC_hoist-2.glb",
+    "tris": 2236
+   },
+   "MC_gondola-0": {
+    "mesh": "m_MC_gondola-0.glb",
+    "tris": 2004
+   },
+   "MC_gondola-1": {
+    "mesh": "m_MC_gondola-1.glb",
+    "tris": 2004
+   },
+   "MC_gondola-2": {
+    "mesh": "m_MC_gondola-2.glb",
+    "tris": 2004
+   },
+   "MC_gondola-3": {
+    "mesh": "m_MC_gondola-3.glb",
+    "tris": 2004
+   },
+   "MC_skip": {
+    "mesh": "m_MC_skip.glb",
+    "tris": 2876
+   },
+   "MC_ropeway": {
+    "mesh": "m_MC_ropeway.glb",
+    "tris": 2064
+   },
+   "MC_lift-3": {
+    "mesh": "m_MC_lift-3.glb",
+    "tris": 2236
+   },
+   "MC_trolley": {
+    "mesh": "m_MC_trolley.glb",
+    "tris": 2876
+   },
+   "MC_swing-2": {
+    "mesh": "m_MC_swing-2.glb",
+    "tris": 2428
+   },
+   "MC_hoist-3": {
+    "mesh": "m_MC_hoist-3.glb",
+    "tris": 2236
+   },
+   "MC_wheel": {
+    "mesh": "m_MC_wheel.glb",
+    "tris": 7928
+   }
+  }
+ },
+ "deck": {
+  "albedo": "deck_albedo.webp",
+  "mesh": "m_DECK_TILE.glb",
+  "tris": 980
+ },
+ "rope": {
+  "albedo": "rope_albedo.webp",
+  "normal": "rope_normal.webp",
+  "lay": 0.1,
+  "radius": 0.016
+ },
+ "volume": {
+  "file": "volume.bin",
+  "dims": [
+   30,
+   63,
+   46
+  ],
+  "origin": [
+   -7.15,
+   -1.08,
+   -20.75
+  ],
+  "step": 0.5,
+  "max": [
+   0.0718274787068367,
+   0.024711940437555313,
+   0.0275474451482296
+  ],
+  "faces": [
+   "+x",
+   "-x",
+   "+y",
+   "-y",
+   "+z",
+   "-z"
+  ],
+  "valid": 0.9249942489072924
+ },
+ "detail": {
+  "wood": "wood_detail.webp",
+  "ice": "ice_detail.webp"
+ },
+ "lanterns": [
+  [
+   -0.93,
+   1.41,
+   0.39
+  ],
+  [
+   5.67,
+   1.41,
+   0.93
+  ],
+  [
+   6.33,
+   5.81,
+   -6.27
+  ],
+  [
+   0.27,
+   5.81,
+   -5.07
+  ],
+  [
+   0.27,
+   10.81,
+   -5.07
+  ],
+  [
+   -0.93,
+   10.81,
+   -11.73
+  ],
+  [
+   -5.67,
+   13.81,
+   -11.07
+  ],
+  [
+   -4.47,
+   14.81,
+   -18.73
+  ],
+  [
+   -6.33,
+   19.81,
+   -18.73
+  ],
+  [
+   -6.33,
+   22.81,
+   -12.73
+  ],
+  [
+   1.53,
+   22.81,
+   -12.73
+  ],
+  [
+   1.53,
+   27.81,
+   -13.27
+  ],
+  [
+   -6.06,
+   0.8,
+   -20.588
+  ],
+  [
+   -6.46,
+   0.8,
+   -10.812
+  ],
+  [
+   2.066,
+   0.8,
+   -11.6
+  ],
+  [
+   -4.61,
+   7.2,
+   -17.1
+  ],
+  [
+   -6.06,
+   7.2,
+   -10.412
+  ],
+  [
+   6.06,
+   7.2,
+   0.06
+  ],
+  [
+   4.17,
+   0.8,
+   -4.425
+  ],
+  [
+   -0.15,
+   5.6,
+   -13.23
+  ],
+  [
+   -4.17,
+   0.8,
+   -15.821
+  ],
+  [
+   -4.52,
+   18.4,
+   -14.192
+  ],
+  [
+   -6.06,
+   10.4,
+   -20.588
+  ],
+  [
+   -4.52,
+   12.0,
+   -14.892
+  ],
+  [
+   -4.325,
+   4.0,
+   -12.88
+  ],
+  [
+   -6.06,
+   5.6,
+   -20.588
+  ]
+ ],
+ "beacon": [
+  2.02,
+  27.6,
+  -12.67
+ ],
+ "chimney": [
+  31.3,
+  -0.9,
+  -13.3,
+  4.788,
+  6.552
+ ]
+}

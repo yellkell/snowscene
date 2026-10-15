@@ -26,12 +26,9 @@ class SnowAudio {
   private music = new Map<MusicTrack, { element: HTMLAudioElement; gain: GainNode }>();
   private wantedTrack: MusicTrack = 'river';
   private currentTrack: MusicTrack | null = null;
-  /** Whole-score level (expedition hands over to its generative pad). */
+  /** Whole-score level (see setMusicLevel). */
   private musicBus: GainNode | null = null;
   private musicLevel = 1;
-  /** Expedition scaling of the weather wind bed and storm howl. */
-  private bedWind = 1;
-  private bedHowl = 1;
 
   /** Create/resume the audio context; call from a user gesture or XR start. */
   unlock(): void {
@@ -60,21 +57,6 @@ class SnowAudio {
   /** Sound is actually playing (the browser has let the context run). */
   running(): boolean {
     return this.ctx?.state === 'running';
-  }
-
-  /** The audio context once unlocked (null before the first gesture). */
-  context(): AudioContext | null {
-    return this.ctx;
-  }
-
-  /** Master output node that extra sound modules should connect to. */
-  output(): GainNode | null {
-    return this.master;
-  }
-
-  /** Shared 2 s white-noise buffer for synthesising wind, water, snow. */
-  noiseBuffer(): AudioBuffer | null {
-    return this.noise;
   }
 
   /** Choose the score; crossfades if audio is already running. */
@@ -132,7 +114,7 @@ class SnowAudio {
   /**
    * Scale the whole score 0..1 over `seconds`. At 0 the playing track pauses
    * once faded (so it stops decoding), and raising the level restarts the
-   * wanted track (By the River from the top). Used by the expedition.
+   * wanted track (By the River from the top).
    */
   setMusicLevel(level: number, seconds = 6): void {
     const target = Math.max(0, Math.min(1, level));
@@ -158,12 +140,6 @@ class SnowAudio {
       }
       this.currentTrack = null;
     }, Math.max(0.05, seconds) * 1000 + 150);
-  }
-
-  /** Scale the weather wind bed and storm howl (1 = unchanged). Used by the expedition. */
-  setWeatherBedScale(wind: number, howl = 1): void {
-    this.bedWind = wind;
-    this.bedHowl = howl;
   }
 
   private startWind(): void {
@@ -210,7 +186,7 @@ class SnowAudio {
   setStorm(level: number, gust: number): void {
     if (!this.ctx || !this.howlGain || !this.howlFilter) return;
     const t = this.ctx.currentTime;
-    this.howlGain.gain.setTargetAtTime(level * level * (0.35 + 0.65 * gust) * 0.55 * this.bedHowl, t, 0.4);
+    this.howlGain.gain.setTargetAtTime(level * level * (0.35 + 0.65 * gust) * 0.55, t, 0.4);
     this.howlFilter.frequency.setTargetAtTime(320 + gust * 520 + level * 120, t, 0.6);
   }
 
@@ -229,7 +205,7 @@ class SnowAudio {
   setWind(level: number): void {
     if (!this.ctx || !this.windGain || !this.windFilter) return;
     const t = this.ctx.currentTime;
-    this.windGain.gain.setTargetAtTime((0.04 + level * 0.32) * this.bedWind, t, 0.3);
+    this.windGain.gain.setTargetAtTime(0.04 + level * 0.32, t, 0.3);
     this.windFilter.frequency.setTargetAtTime(380 + level * 1400, t, 0.3);
   }
 
@@ -278,14 +254,7 @@ class SnowAudio {
     osc.stop(t + duration + 0.05);
   }
 
-  /** An ice axe pick biting into hard ice. */
-  axeBite(): void {
-    this.burst(3800, 2.5, 0.05, 0.45, 'bandpass');
-    this.tone(1400 + Math.random() * 300, 0.12, 0.12, 'triangle');
-    this.burst(420, 1.2, 0.12, 0.25);
-  }
-
-  /** Deep avalanche / serac rumble; call repeatedly while it lasts. */
+  /** Deep rumble; call repeatedly while it lasts. */
   rumble(intensity: number): void {
     if (!this.ctx || intensity <= 0.02) return;
     this.burst(60 + Math.random() * 40, 0.7, 0.6 + Math.random() * 0.4, 0.5 * intensity, 'lowpass');
@@ -303,37 +272,7 @@ class SnowAudio {
     this.burst(1600, 1, 0.05, 0.2 * intensity, 'bandpass');
   }
 
-  /** A distant raptor's cry: a falling, slightly rough whistle. */
-  eagleCry(volume = 0.12): void {
-    if (!this.ctx) return;
-    const ctx = this.ctx;
-    const t = ctx.currentTime;
-    for (let i = 0; i < 3; i++) {
-      const osc = ctx.createOscillator();
-      osc.type = 'sawtooth';
-      const start = t + i * 0.32;
-      osc.frequency.setValueAtTime(2600 - i * 120, start);
-      osc.frequency.exponentialRampToValueAtTime(1500, start + 0.28);
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'bandpass';
-      filter.frequency.value = 2200;
-      filter.Q.value = 4;
-      const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(volume, start + 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.3);
-      osc.connect(filter).connect(gain).connect(this.master!);
-      osc.start(start);
-      osc.stop(start + 0.35);
-    }
-  }
-
-  /** A sip from the thermos / zip of the pack. */
-  sip(): void {
-    this.burst(700, 2, 0.25, 0.18, 'bandpass');
-    this.tone(260, 0.2, 0.05, 'sine', 0.1);
-  }
-
+  /** The zip of the pack. */
   zip(): void {
     for (let i = 0; i < 6; i++) this.burst(2600 + i * 200, 3, 0.03, 0.12, 'bandpass');
   }
@@ -608,12 +547,6 @@ class SnowAudio {
   ignite(): void {
     this.burst(400, 0.4, 1.6, 0.45, 'lowpass');
     this.burst(2400, 0.8, 0.5, 0.2, 'highpass');
-  }
-
-  /** Sliding down an iced chute: a continuous rumble while it lasts. */
-  slideRumble(speed: number): void {
-    if (speed <= 0.05) return;
-    this.burst(260 + speed * 30, 0.9, 0.12, 0.05 + 0.02 * speed, 'lowpass');
   }
 }
 

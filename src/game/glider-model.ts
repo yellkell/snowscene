@@ -21,6 +21,7 @@ import {
   SphereGeometry,
   Vector3,
 } from '@iwsdk/core';
+import { gear } from './baked/dynamic.js';
 import { GliderPartIds } from './game-components.js';
 import { GeometryBuilder, segmentMatrix } from './mesh-utils.js';
 
@@ -131,7 +132,15 @@ function centredPart(name: string, meshes: Mesh[]): Group {
   return group;
 }
 
+/** The baked part (art/scripts/lib/glider.py) if it has loaded, else null. */
+function bakedPart(name: string): Mesh | null {
+  const g = gear(name);
+  return g ? new Mesh(g.geometry, g.material) : null;
+}
+
 function buildWing(side: 1 | -1): Group {
+  const baked = bakedPart(side > 0 ? 'glider_right' : 'glider_left');
+  if (baked) return centredPart(side > 0 ? 'RightWing' : 'LeftWing', [baked]);
   const sail = new Mesh(sailGeometry(side), sailMaterial);
   const builder = new GeometryBuilder();
   const tip = TIP.clone().setX(TIP.x * side);
@@ -150,6 +159,8 @@ function buildWing(side: 1 | -1): Group {
 }
 
 function buildKeel(): Group {
+  const baked = bakedPart('glider_keel');
+  if (baked) return centredPart('Keel', [baked]);
   const builder = new GeometryBuilder();
   tube(builder, NOSE, TAIL, 0.035, tubeColor);
   const kingTop = new Vector3(0, 2.85, 0.05);
@@ -167,6 +178,8 @@ function buildKeel(): Group {
 }
 
 function buildControlBar(): Group {
+  const baked = bakedPart('glider_bar');
+  if (baked) return centredPart('ControlBar', [baked]);
   const builder = new GeometryBuilder();
   const left = new Vector3(-BAR_HALF_WIDTH, BAR_Y, BAR_Z);
   const right = new Vector3(BAR_HALF_WIDTH, BAR_Y, BAR_Z);

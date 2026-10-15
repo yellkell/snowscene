@@ -46,6 +46,7 @@ import {
   ShaderMaterial,
 } from '@iwsdk/core';
 import { buildGlider, type GliderPartId } from '../glider-model.js';
+import type { CaveBaked } from './cave-baked.js';
 import { GeometryBuilder, placed, segmentMatrix } from '../mesh-utils.js';
 import { fbm, mulberry32, valueNoise } from '../terrain.js';
 import {
@@ -189,6 +190,12 @@ export interface CaveVisuals {
   shaft: Mesh;
   /** Ice glitter drifting in the light (its uTime runs from the system). */
   glitter: Points;
+  /** The procedural stand-ins the Blender bake replaces once it has loaded (see applyBakedCave). */
+  procedural: Object3D[];
+  /** Soft glow cards round the signal lamps (the bake's; null until it loads). */
+  glows: InstancedMesh | null;
+  /** The cave is drawn from the Blender bake. */
+  baked: boolean;
 }
 
 // ------------------------------------------------------------- textures ---
@@ -756,6 +763,37 @@ function addRails(b: GeometryBuilder, spec: PlatformSpec, gaps: Set<string> | un
   }
 }
 
+/**
+ * The art pipeline's view of the works (art/scripts/export_cave_ref.mjs): with `on`, every piece any
+ * WorksBuilder adds is recorded as (group, primitive, parameters, matrix, material), so the Blender
+ * rebuild traces exactly the timbers the clearance logic here placed. Lanterns are recorded as points.
+ */
+export interface CaveRecPart {
+  group: string;
+  type: string;
+  params: Record<string, unknown>;
+  matrix: number[];
+  mat: string;
+}
+export const caveRec = {
+  on: false,
+  group: '',
+  parts: [] as CaveRecPart[],
+  lanterns: [] as { group: string; at: [number, number, number] }[],
+  suppress: 0,
+};
+
+function matTag(color: unknown): string {
+  if (color === WOOD) return 'wood';
+  if (color === WOOD_DARK) return 'wood_dark';
+  if (color === WOOD_PALE) return 'wood_pale';
+  if (color === IRON) return 'iron';
+  if (color === BRASS) return 'brass';
+  if (color === ROPE) return 'rope';
+  if (color === TRACK_STEEL) return 'steel';
+  return 'other';
+}
+
 /** Surface kinds the timber works' material draws (the `surface` attribute's w). */
 const SURF_PLAIN = 1;
 const SURF_WOOD = 2;
@@ -782,6 +820,16 @@ class WorksBuilder extends GeometryBuilder {
   private readonly m3 = new Matrix3();
 
   override add(geometry: BufferGeometry, matrix: Matrix4, color: Color | Parameters<GeometryBuilder['add']>[2]): this {
+    if (caveRec.on && caveRec.suppress === 0) {
+      const g = geometry as BufferGeometry & { parameters?: Record<string, unknown> };
+      caveRec.parts.push({
+        group: caveRec.group,
+        type: geometry.type,
+        params: { ...(g.parameters ?? {}) },
+        matrix: Array.from(matrix.elements),
+        mat: matTag(color),
+      });
+    }
     const count = geometry.index ? geometry.index.count : geometry.getAttribute('position').count;
     if (!geometry.boundingBox) geometry.computeBoundingBox();
     geometry.boundingBox!.getSize(this.size);
@@ -925,6 +973,13 @@ function frameMaterial(): MeshStandardMaterial {
 
 /** A lantern sitting on a post top: iron cage with a warm glow and a ring to carry it by. */
 function addLantern(b: GeometryBuilder, x: number, y: number, z: number) {
+  if (caveRec.on) caveRec.lanterns.push({ group: caveRec.group, at: [x, y, z] });
+  caveRec.suppress++;
+  addLanternParts(b, x, y, z);
+  caveRec.suppress--;
+}
+
+function addLanternParts(b: GeometryBuilder, x: number, y: number, z: number) {
   box(b, 0.12, 0.02, 0.12, x, y - 0.1, z, IRON);
   box(b, 0.14, 0.02, 0.14, x, y + 0.1, z, IRON);
   for (const [cx, cz] of CORNERS) box(b, 0.012, 0.2, 0.012, x + cx * 0.06, y, z + cz * 0.06, IRON);
@@ -1232,6 +1287,7 @@ function lanternCorner(spec: PlatformSpec, index: number, gaps: Set<string> | un
 
 /** Fixed works: hoist head frames, rails, the wheel's tower, cables. */
 function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
+  caveRec.group = 'statics';
   const b = new WorksBuilder();
   const v = (p: V3, dx = 0, dy = 0, dz = 0) => new Vector3(p.x + dx, p.y + dy, p.z + dz);
 
@@ -1457,6 +1513,7 @@ function buildStatics(ropes: RopeSpec[]): { mesh: Mesh; wheel: Group } {
   mesh.name = 'TimberWorks';
 
   // The rotating rim, spokes and pins.
+  caveRec.group = 'wheel';
   const wb = new WorksBuilder();
   const rim = new TorusGeometry(WHEEL_R, 0.09, 6, 48);
   wb.add(rim, new Matrix4().makeRotationY(Math.PI / 2), WOOD);
@@ -1599,9 +1656,12 @@ export function buildCave(): CaveVisuals {
   root.position.copy(CAVE_ORIGIN);
   root.visible = false;
 
+  const procedural: Object3D[] = [];
   const shellMesh = buildShell();
   root.add(shellMesh);
-  root.add(buildIce());
+  const ice = buildIce();
+  root.add(ice);
+  procedural.push(shellMesh, ice);
   const shaft = buildShaft();
   const glitter = buildGlitter();
   root.add(glitter);
@@ -1612,6 +1672,7 @@ export function buildCave(): CaveVisuals {
   const statics = buildStatics(ropeSpecs);
   root.add(statics.mesh);
   root.add(statics.wheel);
+  procedural.push(statics.mesh, ...statics.wheel.children);
 
   // Shared banks.
   let tileCount = 0;
@@ -1654,6 +1715,7 @@ export function buildCave(): CaveVisuals {
     const spec = PLATFORMS[i];
     const group = new Group();
     group.name = `Platform-${spec.id}`;
+    caveRec.group = `platform:${spec.id}`;
     const builder =
       spec.kind === 'station'
         ? buildStationFrame(spec, i, gaps.get(i))
@@ -1661,6 +1723,7 @@ export function buildCave(): CaveVisuals {
     const mesh = new Mesh(builder.build(), frameMat);
     group.add(mesh);
     root.add(group);
+    procedural.push(mesh);
     platforms.push({
       spec,
       group,
@@ -1720,10 +1783,13 @@ export function buildCave(): CaveVisuals {
     else part.rotation.set(0, spec.part === 'LeftWing' ? -Math.PI / 2 : Math.PI / 2, 0);
     holder.add(part);
     root.add(holder);
+    caveRec.group = `rack:${spec.part}`;
     const rackB = new WorksBuilder();
     box(rackB, 0.08, 1.0, 0.08, at.x + rack.x, at.y + 0.5, at.z + rack.z, WOOD_DARK);
     box(rackB, Math.abs(Math.sin(rack.yaw)) > 0.5 ? 0.08 : 0.7, 0.06, Math.abs(Math.sin(rack.yaw)) > 0.5 ? 0.7 : 0.08, at.x + rack.x, at.y + 0.98, at.z + rack.z, WOOD);
-    root.add(new Mesh(rackB.build(), frameMat));
+    const rackMesh = new Mesh(rackB.build(), frameMat);
+    root.add(rackMesh);
+    procedural.push(rackMesh);
     const glow = glowSprite(partGlowTex, 1.1, 0.6);
     glow.position.copy(holder.position);
     root.add(glow);
@@ -1734,17 +1800,23 @@ export function buildCave(): CaveVisuals {
   // The beacon: brazier on the top deck's east side, torch on a hook.
   const top = PLATFORMS.find((p) => p.beacon)!;
   const topAt = top.keys[0].a;
+  caveRec.group = 'brazier';
   const brazierGroup = buildBrazier();
   brazierGroup.position.set(topAt.x + GRID.pitch * 2 + 0.1, topAt.y - 0.1, topAt.z + GRID.pitch * 0.5);
   root.add(brazierGroup);
+  procedural.push(brazierGroup);
   const brazier = brazierGroup.position.clone().add(new Vector3(0, 1.3, 0));
+  caveRec.group = 'plinth';
   const plinth = new WorksBuilder();
   box(plinth, 0.9, 0.12, 1.4, brazierGroup.position.x, topAt.y - 0.16, brazierGroup.position.z, WOOD_DARK);
   // The torch hook on a post north of the centre square.
   const hook = new Vector3(topAt.x - 0.05, topAt.y + 1.1, topAt.z - HALF - 0.22);
   box(plinth, 0.08, 1.4, 0.08, hook.x, topAt.y + 0.55, hook.z - 0.06, WOOD_DARK);
   box(plinth, 0.04, 0.04, 0.14, hook.x, hook.y + 0.1, hook.z - 0.02, IRON);
-  root.add(new Mesh(plinth.build(), frameMat));
+  const plinthMesh = new Mesh(plinth.build(), frameMat);
+  root.add(plinthMesh);
+  procedural.push(plinthMesh);
+  caveRec.group = 'torch';
   const torch = buildTorch();
   torch.position.copy(hook);
   root.add(torch);
@@ -1826,7 +1898,51 @@ export function buildCave(): CaveVisuals {
     shell: shellMesh.material as MeshStandardMaterial,
     shaft,
     glitter,
+    procedural,
+    glows: null,
+    baked: false,
   };
+}
+
+/**
+ * Swap the procedural cave for the Blender bake (cave-baked.ts): the shell and every fixed timber become
+ * the two light-mapped regions, each machine and the wheel its baked mesh in its own frame (so the
+ * system moves them exactly as before), and the shared banks (decks, lamps, ropes) take the baked
+ * geometry and materials. The edge strips give way to the decks' own nosing; the step marker becomes
+ * light pooled on the next deck's boards (caveLight.uMarker, set by the system).
+ */
+export function applyBakedCave(v: CaveVisuals, b: CaveBaked): void {
+  for (const o of v.procedural) o.visible = false;
+  v.root.add(b.statics);
+  v.platforms.forEach((pv) => {
+    if (pv.spec.kind === 'station') return;
+    const m = b.machines.get(pv.spec.id);
+    if (m) pv.group.add(m);
+  });
+  const wheel = b.machines.get('wheel');
+  if (wheel) v.wheel.add(wheel);
+  v.decks.geometry = b.deckGeometry;
+  v.decks.material = b.deckMaterial;
+  v.lamps.geometry = b.lampGeometry;
+  v.lamps.material = b.lampMaterial;
+  const glows = new InstancedMesh(b.glowGeometry, b.glowMaterial, v.lamps.count);
+  glows.instanceMatrix = v.lamps.instanceMatrix;
+  glows.instanceColor = v.lamps.instanceColor;
+  glows.frustumCulled = false;
+  glows.renderOrder = 10;
+  glows.name = 'SignalGlows';
+  v.root.add(glows);
+  v.glows = glows;
+  v.strips.visible = false;
+  v.ropes.geometry = b.ropeGeometry;
+  v.ropes.material = b.ropeMaterial;
+  (v.marker.material as MeshBasicMaterial).visible = false;
+  v.shaft.visible = false;
+  // the glow sprites and beams are drawn on top of real light now: keep them out of the tone curve's
+  // brightest end so they read as glows, not white blots
+  for (const s of [...Object.values(v.partGlow), v.torchHalo, v.beaconGlow, v.brazierTarget]) s.material.toneMapped = false;
+  for (const l of v.lights) (l as HemisphereLight).intensity = 0.9;
+  v.baked = true;
 }
 
 /** A free side of a part station for the rack: offset from the anchor and facing. */
@@ -1850,3 +1966,9 @@ export function setRope(ropes: InstancedMesh, index: number, a: Vector3, b: Vect
 }
 
 export { CORNERS as TILE_CORNERS, EDGES as TILE_EDGES, EDGE_DIR, HALF as TILE_HALF };
+
+/** For the art pipeline: what the works sweep through, the fixed keep-outs, and the cave's outline. */
+export function caveClearance(): { swept: Swept[]; keep: Swept[]; frame: (y: number) => ReturnType<typeof shellFrame> } {
+  return { swept: sweptVolumes(), keep: keepOuts(), frame: shellFrame };
+}
+export const CAVE_SHELL = { floorY: FLOOR_Y, top: SHELL_TOP, wheelX: WHEEL_X, headframe: HEADFRAME, cableH: CABLE_H, hoistYoke: HOIST_YOKE, swingYoke: SWING_YOKE };

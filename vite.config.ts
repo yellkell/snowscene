@@ -42,4 +42,6 @@ export default defineConfig({
   },
   publicDir: 'public',
   base: './',
+  // stamped onto baked-asset URLs (src/game/baked/loaders.ts) so a new bake never meets cached old files
+  define: { __ASSET_STAMP__: JSON.stringify(Date.now().toString(36)) },
 });

@@ -1,0 +1,9 @@
+{
+ "props": {
+  "mesh": "props_lod.glb",
+  "switch": 45,
+  "ratio": 0.3,
+  "chunks": 54,
+  "tris": 70300
+ }
+}

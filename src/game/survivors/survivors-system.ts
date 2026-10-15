@@ -43,23 +43,24 @@
 import { createSystem, type Fog, Group, Vector3 } from '@iwsdk/core';
 import { audio } from '../audio.js';
 import { equipPair, setPack } from '../equipment.js';
-import { exp } from '../expedition/exp-state.js';
 import { HANDS, type Handedness } from '../hand-input.js';
 import { level } from '../level.js';
 import { poleTuning } from '../pole-system.js';
 import { faceYaw, getHeadWorld, getHeadYaw, placeHeadAt } from '../rig.js';
-import { sceneRefs } from '../scene-system.js';
+import { sceneRefs, setBakedLook } from '../scene-system.js';
+import { bakedView } from '../baked/light.js';
 import { fadeThen, game, Phase, requestRestart, setPhase, toast } from '../state.js';
 import { WALL_Z } from '../terrain.js';
 import { startTutorialKit } from '../tutorial-kit.js';
 import { tutorialLevel } from '../tutorial-level.js';
 import { BLOATER, BRUTE, CAP, GHOUL, GLITTER, Horde, KINDS, LUNGER, SPLITTER, TITAN } from './horde.js';
-import { Blades, Bolts, Chests, Gems, Hurls, Impacts, Novas, Orbs, Zaps } from './survivors-fx.js';
+import { Blades, Bolts, Chests, type FxGround, Gems, Hurls, Impacts, Novas, Orbs, Zaps } from './survivors-fx.js';
 import { Breath, Comets, Embers, Flames, Rockets } from './fire-fx.js';
+import { GroundDecals, GroundGlow, fxFrame } from './fx-assets.js';
 import { SurvivorsHud } from './survivors-hud.js';
 import { ARENA_X, ARENA_Z, duneHeight, survivorsLevel, survivorsView } from './survivors-level.js';
 import { survivors, survivorsControl } from './survivors-state.js';
-import { buildSurvivorsWorld } from './survivors-world.js';
+import { buildSurvivorsWorld, type SurvivorsWorld } from './survivors-world.js';
 import { Shards, SwarmMesh } from './swarm-mesh.js';
 import { UpgradeMenu } from './upgrade-menu.js';
 import {
@@ -126,6 +127,7 @@ const BOSS_WARNING = 8;
 export class SurvivorsSystem extends createSystem({}) {
   private built = false;
   private root!: Group;
+  private arena!: SurvivorsWorld;
   private horde = new Horde();
   private swarm!: SwarmMesh;
   private shards!: Shards;
@@ -143,6 +145,10 @@ export class SurvivorsSystem extends createSystem({}) {
   private breath!: Breath;
   private rockets!: Rockets;
   private comets!: Comets;
+  /** Fire's light on the snow, and what is printed into it (scorches, shadows). */
+  private fxGround!: FxGround;
+  /** Where the ember trail last scorched the snow. */
+  private readonly lastScorch = new Vector3(1e9, 0, 1e9);
   private hitFlares = 0;
   /** Fire Breath: seconds of roar left, and to its next bite. */
   private breathT = 0;
@@ -276,23 +282,26 @@ export class SurvivorsSystem extends createSystem({}) {
     this.built = true;
     this.root = new Group();
     this.root.name = 'SnowSurvivors';
-    this.root.add(buildSurvivorsWorld());
+    this.arena = buildSurvivorsWorld((o) => this.root.add(o));
+    this.root.add(this.arena.group);
     this.swarm = new SwarmMesh(this.root);
     this.shards = new Shards(this.root);
+    const ground: FxGround = { glow: new GroundGlow(this.root), decals: new GroundDecals(this.root) };
+    this.fxGround = ground;
     this.bolts = new Bolts(this.root);
     this.blades = new Blades(this.root);
-    this.novas = new Novas(this.root);
-    this.zaps = new Zaps(this.root);
+    this.novas = new Novas(this.root, ground);
+    this.zaps = new Zaps(this.root, ground);
     this.gems = new Gems(this.root);
-    this.orbs = new Orbs(this.root);
-    this.chests = new Chests(this.root);
-    this.hurls = new Hurls(this.root);
+    this.orbs = new Orbs(this.root, ground);
+    this.chests = new Chests(this.root, ground);
+    this.hurls = new Hurls(this.root, ground);
     this.impacts = new Impacts(this.root);
     this.embers = new Embers(this.root);
     this.flames = new Flames(this.root);
-    this.breath = new Breath(this.root);
+    this.breath = new Breath(this.root, ground.glow);
     this.rockets = new Rockets(this.root);
-    this.comets = new Comets(this.root);
+    this.comets = new Comets(this.root, ground.glow);
     this.root.visible = false;
     this.world.createTransformEntity(this.root, { persistent: true });
     this.world.createTransformEntity(this.hud.root, { persistent: true });
@@ -304,12 +313,13 @@ export class SurvivorsSystem extends createSystem({}) {
   // ---------------------------------------------------------- the run ---
 
   private start(): void {
-    if (this.busy || exp.active.peek()) return;
+    if (this.busy) return;
     this.busy = true;
     fadeThen(() => {
       this.build();
       const tutorial = sceneRefs.tutorialRoot?.object3D;
       if (tutorial) tutorial.visible = false;
+      setBakedLook(this.world.renderer, true);
       requestRestart();
       level.value = survivorsLevel;
       survivors.active.value = true;
@@ -349,6 +359,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.resetTuning();
       const tutorial = sceneRefs.tutorialRoot?.object3D;
       if (tutorial) tutorial.visible = true;
+      setBakedLook(this.world.renderer, false);
       level.value = tutorialLevel;
       const rig = this.player;
       rig.rotation.set(0, 0, 0);
@@ -417,6 +428,7 @@ export class SurvivorsSystem extends createSystem({}) {
     this.rockets.clear();
     this.comets.clear();
     this.patchLife.fill(0);
+    this.fxGround.decals.clear();
     this.pops.length = 0;
     this.breathT = 0;
     this.breathAlpha = 0;
@@ -465,6 +477,8 @@ export class SurvivorsSystem extends createSystem({}) {
     const mvz = pz - this.lastHead.z;
     if (mvx * mvx + mvz * mvz > 1e-6) this.moveDir.set(mvx, 0, mvz).normalize();
     this.lastHead.copy(this.head);
+    this.arena.update(dt, this.head, bakedView.forceProgress >= 0 ? bakedView.forceProgress : Math.min(1, this.time / RUN_SECONDS));
+    this.world.renderer.toneMappingExposure = bakedView.exposure;
 
     // An upgrade choice stops time: the horde, their bolts and boulders,
     // the crystals and every effect freeze where they are (only the cards
@@ -517,11 +531,13 @@ export class SurvivorsSystem extends createSystem({}) {
       this.breathT = 0;
     }
 
-    this.swarm.update(this.horde, clock, this.scene.fog as Fog | null);
+    this.swarm.update(this.horde, clock, this.scene.fog as Fog | null, this.head);
     this.shards.tick(simDt);
+    fxFrame(bakedView.exposure, clock);
+    this.fxGround.glow.begin();
     this.bolts.draw();
     this.novas.tick(simDt);
-    this.zaps.tick(simDt);
+    this.zaps.tick(simDt, this.head);
     this.impacts.tick(simDt, this.head);
     this.embers.setViewHeight(this.world.renderer.xr.isPresenting ? 1800 : this.world.renderer.domElement.height);
     this.embers.tick(simDt, clock);
@@ -533,6 +549,8 @@ export class SurvivorsSystem extends createSystem({}) {
     this.hurls.draw(clock);
     this.orbs.tick(simDt, clock);
     this.chests.tick(simDt, clock);
+    this.fxGround.glow.end();
+    this.fxGround.decals.update(simDt);
     void time;
     this.killSounds = Math.max(0, this.killSounds - dt * 14);
     this.fireSounds = 0;
@@ -674,7 +692,7 @@ export class SurvivorsSystem extends createSystem({}) {
       if (h.kind[i] !== GLITTER || h.dead[i]) continue;
       h.timer[i] -= dt;
       const r = h.radius(i);
-      if (trail) this.impacts.spawn(h.x[i] + (Math.random() - 0.5) * r, r * (0.8 + Math.random()), h.z[i] + (Math.random() - 0.5) * r, 0xffd166, 0.35);
+      if (trail) this.impacts.spawn(h.x[i] + (Math.random() - 0.5) * r, duneHeight(h.x[i], h.z[i]) + r * (0.8 + Math.random()), h.z[i] + (Math.random() - 0.5) * r, 0xffd166, 0.35);
       if (h.timer[i] > 0) continue;
       h.dead[i] = 1;
       this.shards.burst(h.x[i], 0.3, h.z[i], 30, 0xe8e2d0, 0.1, 2, 2.5);
@@ -955,7 +973,7 @@ export class SurvivorsSystem extends createSystem({}) {
     // A pop of light where it went (a few a frame).
     if (this.killFlares < KILL_FLARES) {
       this.killFlares++;
-      this.impacts.spawn(x, r * 0.7, z, k.accent, 0.5 + r * 0.6);
+      this.impacts.spawn(x, duneHeight(x, z) + r * 0.7, z, k.accent, 0.5 + r * 0.6);
     }
     if (kind === GLITTER) {
       this.glitterDown(x, z, r);
@@ -1061,7 +1079,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.chain++;
       this.chainT = 0;
       this.novas.burst(x, z, BURST_RADIUS, 0xff8a3d);
-      this.impacts.spawn(x, 0.9, z, 0xffb054, 2.6);
+      this.impacts.spawn(x, duneHeight(x, z) + 0.9, z, 0xffb054, 2.6);
       this.shards.burst(x, 0.9, z, 26, 0xff8a3d, 0.12, 5, 5);
       if (this.chain <= 8 || this.chain % 3 === 0) audio.boom(Math.min(1.2, 0.7 + this.chain * 0.05));
       const n = this.horde.gather(x, z, BURST_RADIUS, this.near);
@@ -1636,7 +1654,7 @@ export class SurvivorsSystem extends createSystem({}) {
             this.hitSet.add(f);
             this.zaps.zap(tx, ty, tz, this.horde.x[f], this.horde.radius(f) * 0.8, this.horde.z[f]);
             this.hit(f, dmg, this.horde.x[f] - tx, this.horde.z[f] - tz, 1.5);
-            this.impacts.spawn(this.horde.x[f], this.horde.radius(f) * 0.8, this.horde.z[f], 0xfffbb0, 0.7);
+            this.impacts.spawn(this.horde.x[f], duneHeight(this.horde.x[f], this.horde.z[f]) + this.horde.radius(f) * 0.8, this.horde.z[f], 0xfffbb0, 0.7);
           }
         }
         fx = tx;
@@ -1834,6 +1852,11 @@ export class SurvivorsSystem extends createSystem({}) {
         this.patchZ[i] = pz - (game.velocity.z / Math.max(0.1, this.speed)) * back;
         this.patchR[i] = (0.8 + 0.05 * L) * s.area * (wild ? 1.8 : 1);
         this.patchLife[i] = this.patchFull[i] = (2.4 + 0.25 * L) * (wild ? 2 : 1);
+        // The snow it burns melts and blackens (a decal every so often: they overlap).
+        if (Math.hypot(this.patchX[i] - this.lastScorch.x, this.patchZ[i] - this.lastScorch.z) > this.patchR[i] * 1.1) {
+          this.lastScorch.set(this.patchX[i], 0, this.patchZ[i]);
+          this.fxGround.decals.scorch(this.patchX[i], this.patchZ[i], this.patchR[i] * 1.3, this.patchFull[i] + 10);
+        }
       }
     }
     this.patchTick -= dt;
@@ -1861,11 +1884,14 @@ export class SurvivorsSystem extends createSystem({}) {
       const strength = Math.min(1, t * 8) * Math.min(1, life / 0.8);
       const r = this.patchR[i];
       const gy = duneHeight(this.patchX[i], this.patchZ[i]);
-      for (let k = 0; k < 4; k++) {
-        const a = i * 2.3 + k * 1.57;
-        const d = k === 0 ? 0 : r * 0.55;
-        f.add(this.patchX[i] + Math.cos(a) * d, gy, this.patchZ[i] + Math.sin(a) * d, r * (k === 0 ? 1.3 : 0.85), i * 1.7 + k, strength, time, this.head);
+      // Two fires per patch (each flipbook frame is a whole fire, several tongues and its smoke).
+      for (let k = 0; k < 2; k++) {
+        const a = i * 2.3 + k * 2.1;
+        const d = k === 0 ? 0 : r * 0.5;
+        f.add(this.patchX[i] + Math.cos(a) * d, gy, this.patchZ[i] + Math.sin(a) * d, r * (k === 0 ? 1.15 : 0.8), i * 1.7 + k, strength, time, this.head);
       }
+      // Its light on the snow (every third patch: they overlap, and light adds up).
+      if (i % 3 === 0) this.fxGround.glow.add(this.patchX[i], this.patchZ[i], r * 3.2, 1.0, 0.52, 0.2, 0.14 * strength, i * 1.3);
       if (dt > 0 && Math.random() < 0.25 * strength) {
         this.embers.emit(this.patchX[i] + (Math.random() - 0.5) * r, gy + 0.3, this.patchZ[i] + (Math.random() - 0.5) * r, 0, 1 + Math.random(), 0, 0.6 + Math.random() * 0.4, 0.12);
       }
@@ -1953,6 +1979,7 @@ export class SurvivorsSystem extends createSystem({}) {
       this.novas.burst(x, z, r * 1.6, 0xff6a2e);
       this.novas.burst(x, z, r, 0xffd27a);
       this.impacts.spawn(x, gy + 0.8, z, 0xffb054, 4);
+      this.fxGround.decals.scorch(x, z, r * 1.25, 24);
       this.shards.burst(x, gy + 0.4, z, 40, 0x3a2a24, 0.14, 6, 7);
       for (let k = 0; k < 50; k++) {
         const a = Math.random() * Math.PI * 2;
@@ -1989,7 +2016,7 @@ export class SurvivorsSystem extends createSystem({}) {
         // A spark where the blade bites (a few a frame at most).
         if (this.bladeSparks < 6) {
           this.bladeSparks++;
-          this.impacts.spawn(this.horde.x[i], this.horde.radius(i) * 0.7, this.horde.z[i], 0xffe28a, 0.45);
+          this.impacts.spawn(this.horde.x[i], duneHeight(this.horde.x[i], this.horde.z[i]) + this.horde.radius(i) * 0.7, this.horde.z[i], 0xffe28a, 0.45);
         }
         this.hit(i, dmg, this.horde.x[i] - px, this.horde.z[i] - pz, 4);
       }
