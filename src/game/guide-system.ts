@@ -191,6 +191,7 @@ export class GuideSystem extends createSystem({}) {
       game.partsPlaced.subscribe(() => this.refresh()),
       game.partsFound.subscribe(() => this.refresh()),
       game.beaconLit.subscribe(() => this.refresh()),
+      game.tutorialBeaten.subscribe(() => this.refresh()),
       game.barHeld.subscribe(() => this.refresh()),
       game.packOpen.subscribe(() => this.refresh()),
       equipment.version.subscribe(() => this.refresh()),
@@ -275,7 +276,7 @@ export class GuideSystem extends createSystem({}) {
           step: 'STEP 5 OF 6',
           title: 'Build your glider',
           body: immersive
-            ? 'Open your backpack (turn a palm up and look at it, or press A / X), pull out the glider parts you found in the cave and fit each one onto the frame.'
+            ? 'Open your backpack (turn a palm up and look at it), then use your other hand to grab each glider part you found in the cave out of the backpack and fit it onto the frame.'
             : 'Press E to take a glider part out of your pack and fit it onto the frame (B opens the pack).',
           hint: immersive ? `${next} (${placed} of 3 fitted)` : `${placed} of 3 fitted`,
         };
@@ -353,12 +354,14 @@ export class GuideSystem extends createSystem({}) {
     this.loadRow.setProperties({ display: this.worldReady ? 'none' : 'flex' });
     this.restartButton.setProperties({ display: phase === Phase.Landed ? 'flex' : 'none' });
     // Snow Survivors: offered at the trailhead and on the end screen, in VR
-    // only (it is played with the poles); once in, a way back to the
-    // mountain (in the pack), and another go when you fall.
+    // only (it is played with the poles) and once the tutorial has been
+    // beaten; once in, a way back to the mountain (in the pack), and another
+    // go when you fall.
     const inSurvivors = survivors.active.peek();
     const atTrailhead = !inSurvivors && phase === Phase.Poling && !this.panelInPack();
     this.survivorsButton.setProperties({
-      display: immersive && !inSurvivors && (atTrailhead || phase === Phase.Landed) ? 'flex' : 'none',
+      display:
+        immersive && game.tutorialBeaten.peek() && !inSurvivors && (atTrailhead || phase === Phase.Landed) ? 'flex' : 'none',
     });
     this.survivorsAgainButton.setProperties({ display: inSurvivors && survivors.dead.peek() ? 'flex' : 'none' });
     this.survivorsExitButton.setProperties({ display: inSurvivors ? 'flex' : 'none' });

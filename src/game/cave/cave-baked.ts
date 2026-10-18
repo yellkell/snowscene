@@ -17,6 +17,7 @@
 
 import {
   AdditiveBlending,
+  type Box3,
   CustomBlending,
   ZeroFactor,
   SrcColorFactor,
@@ -29,10 +30,12 @@ import {
   DoubleSide,
   Group,
   Float32BufferAttribute,
+  InstancedMesh,
   HalfFloatType,
   LatheGeometry,
   LinearFilter,
   LinearMipmapLinearFilter,
+  Matrix4,
   Mesh,
   type Object3D,
   PlaneGeometry,
@@ -51,7 +54,7 @@ import {
 import { assetUrl, loadGLTF, loadJSON, loadTexture, track } from '../baked/loaders.js';
 import { bakedLight, bakedView } from '../baked/light.js';
 import { firstGeometry } from '../baked/survivors-arena.js';
-import { loadChunked } from '../baked/lod.js';
+import { cutTriangles, loadChunked } from '../baked/lod.js';
 
 const DIR = 'cave/';
 
@@ -75,6 +78,8 @@ export interface CaveManifest {
   rope: { albedo: string; normal: string; lay: number; radius: number };
   volume: { file: string; dims: [number, number, number]; origin: [number, number, number]; step: number; max: [number, number, number] };
   lanterns: [number, number, number][];
+  /** How many of `lanterns` stand on the stations' corner posts (they come first; the rest hang from brackets). */
+  lanterns_station?: number;
   beacon: [number, number, number];
   /** The chimney's top ring: [y, cx, cz, rx, rz] (course space). */
   chimney: [number, number, number, number, number];
@@ -507,6 +512,81 @@ function lampMaterial(): ShaderMaterial {
   );
 }
 
+/* ── the lantern globes ─────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * The scanned lantern's globe came out of the bake's decimation with its shoulder unlit (a dark V under
+ * the hood) and half of the flame inside it dark: a clean glass globe goes over it, just inside the wire
+ * guard. Profile (radius, height above the lantern's base), traced off the baked glass.
+ */
+const GLOBE_PROFILE: [number, number][] = [
+  [0.0, 0.032],
+  [0.022, 0.034],
+  [0.033, 0.048],
+  [0.041, 0.068],
+  [0.0455, 0.088],
+  [0.0465, 0.104],
+  [0.0415, 0.122],
+  [0.036, 0.136],
+  [0.028, 0.147],
+  [0.014, 0.155],
+  [0.0, 0.157],
+];
+/** The flame's height above the lantern's base. */
+const GLOBE_FLAME_Y = 0.095;
+/** A manifest lantern point sits this far above its lantern's base: on a station post, and hung. */
+const LANTERN_BASE_DROP = { station: 0.12, hung: 0.17 };
+
+function globeMaterial(): ShaderMaterial {
+  return shader(
+    {},
+    /* glsl */ `
+    varying vec3 vW;
+    varying vec3 vN;
+    varying float vH;
+    void main() {
+      vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);
+      vW = wp.xyz;
+      vN = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+      vH = position.y;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }`,
+    /* glsl */ `
+    ${CAVE_GLSL}
+    varying vec3 vW;
+    varying vec3 vN;
+    varying float vH;
+    void main() {
+      // amber glass with the flame behind it: hottest looking straight through at flame height, as the
+      // baked globes are graded (well below where AgX clips a warm colour to white)
+      float f = abs(dot(normalize(vN), normalize(cameraPosition - vW)));
+      float h = (vH - ${GLOBE_FLAME_Y.toFixed(3)}) / 0.035;
+      float k = 0.05 + 0.1 * f * f + 0.35 * pow(f, 6.0) * exp(-h * h);
+      gl_FragColor = vec4(uGlobeCol * (k * ${(9 / CAVE_EXPOSURE).toFixed(4)}), 1.0);
+      ${OUT_FRAG}
+    }`,
+  );
+}
+
+/** Every lantern's globe, as one instanced bank (course space). */
+function lanternGlobes(man: CaveManifest): InstancedMesh {
+  const geo = new LatheGeometry(
+    GLOBE_PROFILE.map(([r, y]) => new Vector2(r, y)),
+    20,
+  );
+  const n = man.lanterns.length;
+  const station = man.lanterns_station ?? n;
+  const globes = new InstancedMesh(geo, globeMaterial(), n);
+  const m = new Matrix4();
+  man.lanterns.forEach(([x, y, z], i) => {
+    globes.setMatrixAt(i, m.makeTranslation(x, y - (i < station ? LANTERN_BASE_DROP.station : LANTERN_BASE_DROP.hung), z));
+  });
+  globes.instanceMatrix.needsUpdate = true;
+  globes.computeBoundingSphere();
+  globes.name = 'LanternGlobes';
+  return globes;
+}
+
 /** Soft glow cards round every lit lamp, facing the eye (shares the lamps' matrices and colours). */
 function glowMaterial(): ShaderMaterial {
   const m = shader(
@@ -929,7 +1009,8 @@ function lift(geo: BufferGeometry, dy: number): BufferGeometry {
   return geo;
 }
 
-export async function loadCaveBaked(origin: Vector3): Promise<CaveBaked> {
+/** `cut`: boxes (course space) whose pieces of the baked works are left out (see bakedRackCuts). */
+export async function loadCaveBaked(origin: Vector3, cut: readonly Box3[] = []): Promise<CaveBaked> {
   const man = await loadJSON<CaveManifest>(`${DIR}manifest.json`);
   const tex = (p: string, color: boolean, aniso = 4) => loadTexture(DIR + p, color, aniso);
   const debrisTex = man.debris ? Promise.all([tex(man.debris.albedo, true, 4), tex(man.debris.light, false, 4)]) : Promise.resolve(null);
@@ -968,9 +1049,12 @@ export async function loadCaveBaked(origin: Vector3): Promise<CaveBaked> {
   // the single baked mesh when there are none
   const region = async (kind: 'shell' | 'works' | 'debris', r: RegionInfo, albedo: Texture, light: Texture, label: string) => {
     const mat = regionMaterial(kind, r, albedo, light);
-    const chunked = await loadChunked(DIR, kind, mat, { label });
+    const regionCut = kind === 'works' ? cut : [];
+    const chunked = await loadChunked(DIR, kind, mat, { label, cut: regionCut });
     if (chunked) return chunked.group;
-    const mesh = new Mesh(firstGeometry((await loadGLTF(DIR + r.mesh)).scene)!, mat);
+    const geo = firstGeometry((await loadGLTF(DIR + r.mesh)).scene)!;
+    cutTriangles(geo, regionCut);
+    const mesh = new Mesh(geo, mat);
     mesh.name = label;
     mesh.frustumCulled = false;
     return mesh;
@@ -981,6 +1065,7 @@ export async function loadCaveBaked(origin: Vector3): Promise<CaveBaked> {
     ...(debris && man.debris ? [region('debris', man.debris, debris[0], debris[1], 'BakedDebris')] : []),
   ]);
   statics.add(...regions);
+  statics.add(lanternGlobes(man));
 
   // the pool: one big quad at the waterline (the shell hides its edges)
   const top = man.chimney;

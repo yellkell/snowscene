@@ -33,8 +33,20 @@ export const SUMMIT_STAND = new Vector3(CLIFF_CENTER_X, 0, WALL_Z - 1.4);
 /** Distance up the trail at which the cliff section begins. */
 export const CLIMB_TRIGGER_S = TRAIL_END_S + 1.5;
 
+const BEATEN_KEY = 'snowscene.tutorialBeaten';
+
+function readBeaten(): boolean {
+  try {
+    return localStorage.getItem(BEATEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export const game = {
   phase: signal<Phase>(Phase.Poling),
+  /** The tutorial has been flown to the end once (remembered on this device); unlocks Snow Survivors. */
+  tutorialBeaten: signal(readBeaten()),
   /** Metres remaining to the foot of the cliff, for the guide panel. */
   distanceToCliff: signal(Math.round(-WALL_Z)),
   /** How many glider parts have been fitted. */
@@ -90,6 +102,15 @@ export function fadeThen(action: () => void): void {
 }
 
 export function setPhase(phase: Phase): void {
+  // Beaten before the phase changes, so the end screen already offers Survivors.
+  if (phase === Phase.Landed && !game.tutorialBeaten.peek()) {
+    game.tutorialBeaten.value = true;
+    try {
+      localStorage.setItem(BEATEN_KEY, '1');
+    } catch {
+      // Private window or blocked storage: unlocked for this visit only.
+    }
+  }
   if (game.phase.peek() !== phase) game.phase.value = phase;
 }
 
