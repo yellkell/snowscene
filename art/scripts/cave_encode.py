@@ -235,6 +235,8 @@ lan = []
 for ln in LAYOUT['lanterns']:
     g = LAYOUT['groups'][ln['group']]
     lan.append([round(g[0] + ln['at'][0], 3), round(g[1] + ln['at'][1] + 0.02, 3), round(g[2] + ln['at'][2], 3)])
+# (the station lanterns come first; the runtime seats their globes 5 cm higher than the hung ones')
+MAN['lanterns_station'] = len(lan)
 xp = os.path.join(ROOT, 'art', 'work', 'cave_ref', 'lanterns_extra.json')
 if os.path.exists(xp):
     lan += json.load(open(xp))

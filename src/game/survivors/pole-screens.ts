@@ -36,16 +36,31 @@ import type { Handedness } from '../hand-input.js';
 import { poleMeshes } from '../pole-system.js';
 import type { HudState } from './survivors-hud.js';
 
-/** The pommel's face radius (m) and where it sits up the pole's -Z end. */
+/** The pommel's face radius (m). */
 const FACE_R = 0.034;
-const TOP_Z = -0.096;
+/** The top of the procedural pole's cap (pole-local z): the pommel's lowest seat. */
+const CAP_Z = -0.096;
+/** Where the neck goes into the grip, under the knob of either pole. */
+const NECK_ROOT_Z = -0.09;
 const PX = 256;
 
 interface Pommel {
   side: Handedness;
   group: Group;
+  neck: Mesh;
   ctx: CanvasRenderingContext2D;
   texture: CanvasTexture;
+}
+
+/**
+ * Where the pommel sits up the pole's -Z end: on the cap, or above the
+ * highest point of the grip (the baked pole's knob and wrist strap rise
+ * well past the cap and would cover the screen).
+ */
+function pommelSeat(pole: Mesh): number {
+  const geometry = pole.geometry;
+  if (!geometry.boundingBox) geometry.computeBoundingBox();
+  return Math.min(CAP_Z, geometry.boundingBox!.min.z - 0.004);
 }
 
 /** Steel housing, brass bezel and the screen, built facing +Z. */
@@ -54,9 +69,9 @@ function buildPommel(side: Handedness): Pommel {
   group.name = `PoleScreen-${side}`;
   const steel = new MeshStandardMaterial({ color: 0x7f8a99, roughness: 0.38, metalness: 0.65 });
   const brass = new MeshStandardMaterial({ color: 0xc9a04a, roughness: 0.32, metalness: 0.8 });
-  // A short neck off the rubber cap, then the puck.
-  const neck = new Mesh(new CylinderGeometry(0.013, 0.017, 0.012, 12).rotateX(Math.PI / 2), steel);
-  neck.position.z = -0.006;
+  // A neck up out of the grip (as long as the seat needs), then the puck.
+  const neck = new Mesh(new CylinderGeometry(0.009, 0.012, 1, 12).rotateX(Math.PI / 2), steel);
+  setNeck(neck, CAP_Z);
   const puck = new Mesh(new CylinderGeometry(FACE_R + 0.004, FACE_R + 0.002, 0.014, 28).rotateX(Math.PI / 2), steel);
   puck.position.z = 0.007;
   const bezel = new Mesh(new TorusGeometry(FACE_R + 0.0025, 0.0028, 8, 32), brass);
@@ -70,7 +85,14 @@ function buildPommel(side: Handedness): Pommel {
   screen.position.z = 0.0145;
   group.add(neck, puck, bezel, screen);
   group.visible = false;
-  return { side, group, ctx, texture };
+  return { side, group, neck, ctx, texture };
+}
+
+/** Run the neck from the puck's back down to where it enters the grip. */
+function setNeck(neck: Mesh, seat: number): void {
+  const length = Math.max(0.012, NECK_ROOT_Z - seat);
+  neck.scale.z = length;
+  neck.position.z = -length / 2;
 }
 
 export class PoleScreens {
@@ -78,6 +100,8 @@ export class PoleScreens {
   private readonly pommels: Pommel[] = [buildPommel('left'), buildPommel('right')];
   private redraw = 0;
   private clock = 0;
+  private readonly seat: Record<Handedness, number> = { left: CAP_Z, right: CAP_Z };
+  private readonly seatFor: Record<Handedness, unknown> = { left: null, right: null };
   private readonly top = new Vector3();
   private readonly ndc = new Vector3();
   private readonly n = new Vector3();
@@ -103,19 +127,26 @@ export class PoleScreens {
     for (const p of this.pommels) {
       const pole: Mesh | undefined = poleMeshes[p.side];
       const g = p.group;
+      if (pole && this.seatFor[p.side] !== pole.geometry) {
+        // The baked pole replaces the procedural one once it loads.
+        this.seatFor[p.side] = pole.geometry;
+        this.seat[p.side] = pommelSeat(pole);
+        setNeck(p.neck, this.seat[p.side]);
+      }
+      const seat = this.seat[p.side];
       // On the handle: always in a headset, and on a desktop while the
       // handle's top is on screen.
       let onPole = presenting;
       if (!presenting && pole?.visible && camera) {
         pole.updateWorldMatrix(true, false);
-        this.ndc.set(0, 0, TOP_Z).applyMatrix4(pole.matrixWorld).project(camera);
+        this.ndc.set(0, 0, seat).applyMatrix4(pole.matrixWorld).project(camera);
         onPole = this.ndc.z < 1 && Math.abs(this.ndc.x) < 0.88 && this.ndc.y > -0.88 && this.ndc.y < 0.9;
       }
       if (onPole) {
         g.visible = !!pole?.visible;
         if (!g.visible || !pole) continue;
         pole.updateWorldMatrix(true, false);
-        this.top.set(0, 0, TOP_Z).applyMatrix4(pole.matrixWorld);
+        this.top.set(0, 0, seat).applyMatrix4(pole.matrixWorld);
         // Out of the cap: the pole's -Z.
         this.n.set(0, 0, -1).transformDirection(pole.matrixWorld);
       } else {

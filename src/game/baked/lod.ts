@@ -10,7 +10,7 @@
  * the chunk's open border is locked, so a stand-in meets a full-detail neighbour vertex for vertex.
  */
 
-import { BufferAttribute, BufferGeometry, Group, type Material, Mesh, type Object3D, Uint16BufferAttribute, Uint32BufferAttribute, Vector3 } from '@iwsdk/core';
+import { BufferAttribute, BufferGeometry, type Box3, Group, type Material, Mesh, type Object3D, Uint16BufferAttribute, Uint32BufferAttribute, Vector3 } from '@iwsdk/core';
 import { MeshoptSimplifier } from 'meshoptimizer';
 import { fogCullables } from '../fog-cull.js';
 import { loadGLTF, loadJSON } from './loaders.js';
@@ -72,7 +72,34 @@ export interface Chunked {
  * The layer `name` of `dir` as chunks under one group, or null when it has none. The chunks' centres
  * follow the group wherever it is placed (the cave and the party move theirs).
  */
-export async function loadChunked(dir: string, name: string, material: Material, opts: { label?: string } = {}): Promise<Chunked | null> {
+/**
+ * Drop every triangle of an indexed geometry that lies wholly inside one of `boxes` (positions in the
+ * geometry's own space): for taking a piece out of a bake without rebaking it.
+ */
+export function cutTriangles(geo: BufferGeometry, boxes: readonly Box3[]): void {
+  if (!boxes.length || !geo.index) return;
+  const index = geo.index.array;
+  const pos = geo.attributes.position;
+  const p = new Vector3();
+  const inside = (v: number, box: Box3) => box.containsPoint(p.fromBufferAttribute(pos, v));
+  const keep: number[] = [];
+  for (let t = 0; t < index.length; t += 3) {
+    const a = index[t];
+    const b = index[t + 1];
+    const c = index[t + 2];
+    if (boxes.some((box) => inside(a, box) && inside(b, box) && inside(c, box))) continue;
+    keep.push(a, b, c);
+  }
+  if (keep.length === index.length) return;
+  geo.setIndex(pos.count > 65535 ? new Uint32BufferAttribute(keep, 1) : new Uint16BufferAttribute(keep, 1));
+}
+
+export async function loadChunked(
+  dir: string,
+  name: string,
+  material: Material,
+  opts: { label?: string; cut?: readonly Box3[] } = {},
+): Promise<Chunked | null> {
   const info = (await lodIndex(dir))[name];
   if (!info) return null;
   const gltf = await loadGLTF(dir + info.mesh);
@@ -87,6 +114,7 @@ export async function loadChunked(dir: string, name: string, material: Material,
   const meshes: Mesh[] = [];
   const t0 = performance.now();
   for (const [k, geo] of parts) {
+    if (opts.cut) cutTriangles(geo, opts.cut);
     const chunk = new Group();
     chunk.name = `${group.name}-${k}`;
     const near = new Mesh(geo, material);

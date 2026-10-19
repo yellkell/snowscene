@@ -48,7 +48,7 @@ import {
   validateScore,
   wheelTurns,
 } from './cave-score.js';
-import { applyBakedCave, buildCave, CAVE_ORIGIN, type CaveVisuals, LAMP, setRope, TILE_CORNERS, TILE_EDGES, EDGE_DIR, TILE_HALF, TORCH_CROWN, TORCH_GRIP, TORCH_HEAD, TORCH_SCALE } from './cave-build.js';
+import { applyBakedCave, bakedRackCuts, buildCave, CAVE_ORIGIN, type CaveVisuals, LAMP, setRope, TILE_CORNERS, TILE_EDGES, EDGE_DIR, TILE_HALF, TORCH_CROWN, TORCH_GRIP, TORCH_HEAD, TORCH_SCALE } from './cave-build.js';
 import { captureCaveEnv, type CaveBaked, caveLight, caveView, loadCaveBaked } from './cave-baked.js';
 import type { GliderPartId } from '../glider-model.js';
 import { bakedLight } from '../baked/light.js';
@@ -175,7 +175,7 @@ export class CaveSystem extends createSystem({}) {
     this.v.root.updateMatrixWorld(true);
     // The Blender bake replaces the procedural cave once it has loaded (the procedural one stays as the
     // fallback if it can't).
-    loadCaveBaked(CAVE_ORIGIN)
+    loadCaveBaked(CAVE_ORIGIN, bakedRackCuts())
       .then((b) => {
         applyBakedCave(this.v, b);
         caveView.look = b.look;

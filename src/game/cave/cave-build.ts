@@ -12,6 +12,7 @@
 import {
   AdditiveBlending,
   BackSide,
+  Box3,
   BoxGeometry,
   BufferAttribute,
   BufferGeometry,
@@ -1877,7 +1878,6 @@ export function buildCave(): CaveVisuals {
     const holder = new Group();
     holder.name = `Rack-${spec.part}`;
     caveRec.group = `rack:${spec.part}`;
-    const rackB = new WorksBuilder();
     const inWay = i === lastPart ? inWaySpot(i) : null;
     if (inWay) {
       // Hanging over the edge you step off by, at hand height, spread across
@@ -1888,20 +1888,17 @@ export function buildCave(): CaveVisuals {
       holder.add(part);
       root.add(holder);
     } else {
+      // Laid along the station's own rail, at hand height: no rack of its
+      // own (one stood off the deck's edge on nothing, like a stray rail).
       const rack = rackSpot(spec, gaps.get(i));
-      holder.position.set(at.x + rack.x, at.y + 1.05, at.z + rack.z);
-      // Wings lie along the rack; the bar stands up.
+      holder.position.set(at.x + rack.x, at.y + 1.065, at.z + rack.z);
+      // Wings lie along the rail; the bar stands up.
       holder.rotation.y = rack.yaw;
       if (spec.part === 'ControlBar') part.rotation.set(-1.2, 0, 0);
       else part.rotation.set(0, spec.part === 'LeftWing' ? -Math.PI / 2 : Math.PI / 2, 0);
       holder.add(part);
       root.add(holder);
-      box(rackB, 0.08, 1.0, 0.08, at.x + rack.x, at.y + 0.5, at.z + rack.z, WOOD_DARK);
-      box(rackB, Math.abs(Math.sin(rack.yaw)) > 0.5 ? 0.08 : 0.7, 0.06, Math.abs(Math.sin(rack.yaw)) > 0.5 ? 0.7 : 0.08, at.x + rack.x, at.y + 0.98, at.z + rack.z, WOOD);
     }
-    const rackMesh = new Mesh(rackB.build(), frameMat);
-    root.add(rackMesh);
-    procedural.push(rackMesh);
     const glow = glowSprite(partGlowTex, 1.1, 0.6);
     glow.position.copy(holder.position);
     root.add(glow);
@@ -2114,12 +2111,42 @@ function inWaySpot(index: number): { x: number; z: number; px: number; pz: numbe
   return { x, z, px, pz, yaw: dx !== 0 ? Math.PI / 2 : 0 };
 }
 
-/** A free side of a part station for the rack: offset from the anchor and facing. */
-function rackSpot(spec: PlatformSpec, gaps: Set<string> | undefined): { x: number; z: number; yaw: number } {
+/** A railed edge of the station's centre square (the south one if it can), and which way the rail runs. */
+function rackEdge(spec: PlatformSpec, gaps: Set<string> | undefined): { d: Sq; yaw: number } {
   const rails = railEdges(spec, gaps).filter((r) => r.sq[0] === 0 && r.sq[1] === 0);
   const pick = rails.find((r) => r.edge === 'S') ?? rails[0] ?? { sq: [0, 0] as Sq, edge: 'S' as Edge };
   const d = EDGE_DIR[pick.edge];
-  return { x: d[0] * (HALF + 0.22), z: d[1] * (HALF + 0.22), yaw: d[0] === 0 ? 0 : Math.PI / 2 };
+  return { d, yaw: d[0] === 0 ? 0 : Math.PI / 2 };
+}
+
+/** Where a glider part lies on its station: on the top rail of that edge (platform-local). */
+function rackSpot(spec: PlatformSpec, gaps: Set<string> | undefined): { x: number; z: number; yaw: number } {
+  const { d, yaw } = rackEdge(spec, gaps);
+  return { x: d[0] * (HALF - 0.02), z: d[1] * (HALF - 0.02), yaw };
+}
+
+/**
+ * The racks the current Blender bake still has (a post and a bar 0.22 m off the deck's edge, standing
+ * on nothing), as course-space boxes for the loader to cut out of the baked works.
+ */
+export function bakedRackCuts(): Box3[] {
+  const gaps = gapEdges();
+  const last = PLATFORMS.reduce((best, p, i) => (p.part && (best < 0 || ROUTE_STEP[i] > ROUTE_STEP[best]) ? i : best), -1);
+  const cuts: Box3[] = [];
+  PLATFORMS.forEach((spec, i) => {
+    if (!spec.part || i === last) return;
+    const at = spec.keys[0].a;
+    const { d, yaw } = rackEdge(spec, gaps.get(i));
+    const x = at.x + d[0] * (HALF + 0.22);
+    const z = at.z + d[1] * (HALF + 0.22);
+    // the 0.7 m bar runs along the rail; 0.08 m square timbers, with their iron at the joints
+    const along = 0.38;
+    const across = 0.08;
+    const hx = yaw === 0 ? along : across;
+    const hz = yaw === 0 ? across : along;
+    cuts.push(new Box3(new Vector3(x - hx, at.y - 0.04, z - hz), new Vector3(x + hx, at.y + 1.06, z + hz)));
+  });
+  return cuts;
 }
 
 const tmpM = new Matrix4();
